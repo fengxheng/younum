@@ -95,7 +95,6 @@ final class ImportSession extends ChangeNotifier {
     required this.repository,
     required this.fileSource,
     required int ledgerId,
-    this.sourceNamespace = 'manual',
   }) : _initialLedgerId = ledgerId;
 
   final LedgerRepository repository;
@@ -106,6 +105,26 @@ final class ImportSession extends ChangeNotifier {
 
   /// 当前导入到哪个账本。
   int get ledgerId => _ledgerId;
+
+  String _sourceNamespace = 'manual';
+
+  /// 来源命名空间（`wechat` / `alipay` / `manual`）。
+  ///
+  /// 这个值会参与同源去重键，所以它和「微信 / 支付宝」是分开的：
+  /// 一份自己整理过的 CSV，不该和平台导出的账单混成同一个来源。
+  /// 由「选择账单来源」页带过来，见 [useSource]。
+  String get sourceNamespace => _sourceNamespace;
+
+  /// 设定来源。由来源选择页在进入选文件页之前调用。
+  ///
+  /// 换来源相当于换了一份账单的语境，所以先 [reset] —— 否则会拿着一份
+  /// 「按另一个来源暂存好」的批次去提交，去重键就错了。
+  void useSource(String sourceNamespace) {
+    if (_sourceNamespace == sourceNamespace) return;
+    reset();
+    _sourceNamespace = sourceNamespace;
+    notifyListeners();
+  }
 
   /// 切换账本。
   ///
@@ -118,12 +137,6 @@ final class ImportSession extends ChangeNotifier {
     _ledgerId = ledgerId;
     notifyListeners();
   }
-
-  /// 来源命名空间。手工导入的文件归到 `manual`。
-  ///
-  /// 这个值会参与同源去重键，所以它和「微信/支付宝」区分开：
-  /// 一份自己整理过的 CSV，不该和平台导出的账单混成同一个来源。
-  final String sourceNamespace;
 
   ImportPhase _phase = ImportPhase.idle;
   String? _errorMessage;

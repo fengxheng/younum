@@ -88,6 +88,10 @@ class _ParsingScreenState extends State<ParsingScreen> {
         _forwarded = true;
         context.replaceWith(AppRoutes.mapping);
       case ImportPhase.idle:
+        // 回到「还没选文件」就说明用户取消了选择。必须离开这一页：
+        // 不定进度的转圈是无限动画，停在这里等于永运转不停。
+        _forwarded = true;
+        Navigator.of(context).maybePop();
       case ImportPhase.picking:
       case ImportPhase.reading:
       case ImportPhase.committing:

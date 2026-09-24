@@ -198,7 +198,11 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.exportGuide:
         return (context) => const ExportGuideScreen();
       case AppRoutes.upload:
-        return (context) => const UploadScreen();
+        return (context) => UploadScreen(
+          args: settings.arguments is ImportSourceArgs
+              ? settings.arguments! as ImportSourceArgs
+              : null,
+        );
       case AppRoutes.parsing:
         return (context) => const ParsingScreen();
       case AppRoutes.mapping:

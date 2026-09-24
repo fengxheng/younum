@@ -32,6 +32,21 @@ class CategoryPickArgs {
   final String? transactionId;
 }
 
+/// 进入「选择账单文件」时带上的来源。
+///
+/// 来源会进入**同源去重键**（命名空间 + 账户 + 稳定源交易 ID），
+/// 所以不能三条入口都用同一个值 —— 否则同一单号的微信与支付宝记录
+/// 会被当成同一笔，而不同来源的同一单号本来就不是一回事。
+class ImportSourceArgs {
+  const ImportSourceArgs({required this.sourceNamespace, this.title});
+
+  /// 写进 `import_batch.source_namespace` 的值。
+  final String sourceNamespace;
+
+  /// 页面标题用的名字，例如「微信支付」。
+  final String? title;
+}
+
 /// 分类图标编辑器参数。
 class CategoryEditorArgs {
   const CategoryEditorArgs({required this.categoryName, this.returnRoute});

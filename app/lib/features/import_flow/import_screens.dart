@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_routes.dart';
+import '../../app/route_args.dart';
 import '../../core/components/buttons.dart';
 import '../../core/components/category_grid.dart';
 import '../../core/components/fields.dart';
@@ -46,7 +47,13 @@ class ImportSourceScreen extends StatelessWidget {
                   subtitle: '导入微信导出的账单文件',
                   icon: YounumIcons.wallet,
                   trailingWidget: const _RowChevron(),
-                  onTap: () => context.open(AppRoutes.upload),
+                  onTap: () => context.open(
+                    AppRoutes.upload,
+                    arguments: const ImportSourceArgs(
+                      sourceNamespace: 'wechat',
+                      title: '微信支付',
+                    ),
+                  ),
                 ),
                 YounumListRow(
                   title: '支付宝',
@@ -54,16 +61,30 @@ class ImportSourceScreen extends StatelessWidget {
                   icon: YounumIcons.wallet,
                   iconTone: YounumTileTone.blue,
                   trailingWidget: const _RowChevron(),
-                  onTap: () => context.open(AppRoutes.upload),
+                  onTap: () => context.open(
+                    AppRoutes.upload,
+                    arguments: const ImportSourceArgs(
+                      sourceNamespace: 'alipay',
+                      title: '支付宝',
+                    ),
+                  ),
                 ),
                 YounumListRow(
                   title: '通用表格',
-                  subtitle: 'CSV / XLSX，手动匹配列名',
+                  subtitle: 'CSV，手动匹配列名',
                   icon: YounumIcons.settings,
                   iconTone: YounumTileTone.purple,
                   trailingWidget: const _RowChevron(),
                   showDivider: false,
-                  onTap: () => context.open(AppRoutes.mapping),
+                  // 不能直接跳到「匹配字段」页：那时还没有文件，
+                  // 用户会到一个无列可匹配的死路上。先去选文件。
+                  onTap: () => context.open(
+                    AppRoutes.upload,
+                    arguments: const ImportSourceArgs(
+                      sourceNamespace: 'manual',
+                      title: '通用表格',
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -251,7 +272,10 @@ class _GuideStep extends StatelessWidget {
 /// 已经解析好一份账单时（例如用户从核对页返回），这一页改为展示**真实**的
 /// 文件信息与统计，并给一个「继续核对」的入口，而不是让用户再选一次。
 class UploadScreen extends StatefulWidget {
-  const UploadScreen({super.key});
+  const UploadScreen({super.key, this.args});
+
+  /// 从「选择账单来源」页带过来的来源。
+  final ImportSourceArgs? args;
 
   @override
   State<UploadScreen> createState() => _UploadScreenState();
@@ -263,9 +287,25 @@ class _UploadScreenState extends State<UploadScreen> {
   /// 默认勾上：这是一个告知性的确认，不是一个需要用户费心才能通过的门槛。
   bool _consent = true;
 
+  /// 来源只在**真正开始解析之前**应用。
+  ///
+  /// 不能在 `didChangeDependencies` 里做：`useSource` 换来源时会重置会话并
+  /// 通知监听者，而那时框架正在 build（widget 测试会直接报
+  /// 「setState() called during build」）。真正需要它准备好的一刻就是
+  /// 点「选择账单文件」的时候。
+  void _applySource() {
+    final args = widget.args;
+    if (args == null) return;
+    // 来源会进入同源去重键，所以必须在解析之前设好。
+    ImportSessionScope.read(context).useSource(args.sourceNamespace);
+  }
+
+  String? get _sourceTitle => widget.args?.title;
+
   Future<void> _pick() async {
     final session = ImportSessionScope.read(context);
     if (!session.canPick) return;
+    _applySource();
 
     // 先切到解析页再开始读文件：读取与解析都在后台做（指南 4.2.9），
     // 用户不该在这一页干等；解析页会在有结论之后自己往下走。
@@ -287,7 +327,11 @@ class _UploadScreenState extends State<UploadScreen> {
         children: <Widget>[
           Text('导入你的月账单', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gapSm),
-          YounumMutedText('一次支持一个文件，可多次追加导入。'),
+          YounumMutedText(
+            _sourceTitle == null
+                ? '一次支持一个文件，可多次追加导入。'
+                : '来自「$_sourceTitle」。一次支持一个文件，可多次追加导入。',
+          ),
           const SizedBox(height: YounumDimens.gapLg),
 
           Container(

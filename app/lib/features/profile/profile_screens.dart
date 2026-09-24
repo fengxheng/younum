@@ -189,16 +189,18 @@ class ImportHistoryScreen extends StatefulWidget {
 }
 
 class _ImportHistoryScreenState extends State<ImportHistoryScreen> {
-  bool _loaded = false;
-
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_loaded) return;
-    _loaded = true;
+  void initState() {
+    super.initState();
     // 读真实批次。这一页可能是从别处（首页、我的）直接进来的，
     // 不能假设导入会话里已经有历史。
-    ImportSessionScope.read(context).loadHistory();
+    //
+    // 放在 initState 里并推迟到首帧之后：直接在 build 期间改会话状态
+    // 会触发「setState() called during build」。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ImportSessionScope.read(context).loadHistory();
+    });
   }
 
   @override
