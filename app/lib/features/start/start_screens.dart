@@ -362,6 +362,9 @@ class _OrganizeArt extends StatelessWidget {
           child: Transform.rotate(
             angle: -14 * 3.141592653589793 / 180,
             child: _MiniReceipt(
+              // 比另一张宽：这句说明比它的兄弟长，见 [_MiniReceipt.width]。
+              // 卡片右侧会被前面那张盖住，但文字到不了那么远，不会被挡住。
+              width: 176,
               background: const Color(YounumColors.surface),
               borderColor: colors.borderColor,
               lines: <Widget>[
@@ -369,7 +372,14 @@ class _OrganizeArt extends StatelessWidget {
                 const SizedBox(height: 18),
                 Text('月账单', style: text.amountInline.copyWith(fontSize: 24)),
                 const YounumDashedDivider(margin: EdgeInsets.symmetric(vertical: 10)),
-                Text('一次导入 · 开始整理', style: text.micro),
+                // 折行会把这句话拆成「…开始整」+「理」，很难看，
+                // 所以宁可省略也不能换行。
+                Text(
+                  '一次导入 · 开始整理',
+                  style: text.micro,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ],
             ),
           ),
@@ -507,16 +517,24 @@ class _MiniReceipt extends StatelessWidget {
     required this.background,
     required this.borderColor,
     required this.lines,
+    this.width = 152,
   });
 
   final Color background;
   final Color borderColor;
   final List<Widget> lines;
 
+  /// 卡片宽度。
+  ///
+  /// 需要放宽时才改：原型的说明文字是 9px，而应用里的辅助字号下限是
+  /// 11sp（指南 6.3），同一个盒子里放不下同一句话 —— 真机上
+  /// 「一次导入 · 开始整理」就被折成了两行，末行只剩一个字。
+  final double width;
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 152,
+      width: width,
       height: 172,
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
