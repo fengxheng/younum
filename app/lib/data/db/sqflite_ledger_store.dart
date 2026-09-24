@@ -36,8 +36,8 @@ import 'younum_schema.dart';
 /// SQLite 存储。
 final class SqfliteLedgerStore implements LedgerStore {
   SqfliteLedgerStore({String? databasePath, DatabaseFactory? factory})
-      : _customPath = databasePath,
-        _factory = factory ?? databaseFactory;
+    : _customPath = databasePath,
+      _factory = factory ?? databaseFactory;
 
   static const String fileName = 'younum.db';
 
@@ -51,7 +51,8 @@ final class SqfliteLedgerStore implements LedgerStore {
     final existing = _database;
     if (existing != null) return existing;
 
-    final path = _customPath ?? p.join(await _factory.getDatabasesPath(), fileName);
+    final path =
+        _customPath ?? p.join(await _factory.getDatabasesPath(), fileName);
     final database = await _factory.openDatabase(
       path,
       options: OpenDatabaseOptions(
@@ -118,18 +119,14 @@ final class SqfliteLedgerStore implements LedgerStore {
         DemoLedgerSeed.demoLedger(),
         DemoLedgerSeed.realLedger(),
       ]) {
-        await txn.insert(
-          'ledger',
-          <String, Object?>{
-            'id': ledger.id,
-            'name': ledger.name,
-            'is_demo': ledger.isDemo ? 1 : 0,
-            'currency': ledger.currency,
-            'time_zone': ledger.timeZone,
-            'created_at_ms': ledger.createdAtMs,
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore,
-        );
+        await txn.insert('ledger', <String, Object?>{
+          'id': ledger.id,
+          'name': ledger.name,
+          'is_demo': ledger.isDemo ? 1 : 0,
+          'currency': ledger.currency,
+          'time_zone': ledger.timeZone,
+          'created_at_ms': ledger.createdAtMs,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
       for (final category in DemoLedgerSeed.categories()) {
         await txn.insert(
@@ -185,7 +182,10 @@ final class SqfliteLedgerStore implements LedgerStore {
     // v1 的分类集合不按账本划分（指南 3.2 的 Category 没有账本维度），
     // 参数保留是为了后续支持「每本账一套分类」时不用改调用方。
     final db = await _db;
-    final rows = await db.query('category', orderBy: 'parent_id ASC, sort_order ASC, id ASC');
+    final rows = await db.query(
+      'category',
+      orderBy: 'parent_id ASC, sort_order ASC, id ASC',
+    );
     return <Category>[for (final row in rows) _categoryFrom(row)];
   }
 
@@ -232,7 +232,9 @@ final class SqfliteLedgerStore implements LedgerStore {
     final transactions = <LedgerTransaction>[
       for (final row in transactionRows) _transactionFrom(row),
     ];
-    final baseIds = <int>[for (final transaction in transactions) transaction.id];
+    final baseIds = <int>[
+      for (final transaction in transactions) transaction.id,
+    ];
 
     // 跨月退款：还要把「关联到这些消费的退款」带进来，即使退款本身在别的月份。
     final links = <RefundLink>[];
@@ -244,7 +246,9 @@ final class SqfliteLedgerStore implements LedgerStore {
         column: 'original_transaction_id',
         ids: baseIds,
       );
-      links.addAll(<RefundLink>[for (final row in linkRows) _refundLinkFrom(row)]);
+      links.addAll(<RefundLink>[
+        for (final row in linkRows) _refundLinkFrom(row),
+      ]);
       final refundIds = <int>[
         for (final link in links) link.refundTransactionId,
       ];
@@ -378,7 +382,11 @@ final class SqfliteLedgerStore implements LedgerStore {
         UPDATE txn SET review_status = ?, version = version + 1
         WHERE id = ? AND version = ?
         ''',
-        <Object?>[ReviewStatus.resolved.storageValue, before.id, before.version],
+        <Object?>[
+          ReviewStatus.resolved.storageValue,
+          before.id,
+          before.version,
+        ],
       );
       if (updated != 1) {
         conflicted = true;
@@ -414,7 +422,11 @@ final class SqfliteLedgerStore implements LedgerStore {
         UPDATE txn SET review_status = ?, version = version + 1
         WHERE id = ? AND version = ?
         ''',
-        <Object?>[ReviewStatus.deferred.storageValue, before.id, before.version],
+        <Object?>[
+          ReviewStatus.deferred.storageValue,
+          before.id,
+          before.version,
+        ],
       );
       if (updated != 1) {
         conflicted = true;
@@ -619,7 +631,12 @@ final class SqfliteLedgerStore implements LedgerStore {
       ORDER BY action.id DESC
       LIMIT 1
       ''',
-      <Object?>[ledgerId, month.year, month.month, ReviewActionState.available.storageValue],
+      <Object?>[
+        ledgerId,
+        month.year,
+        month.month,
+        ReviewActionState.available.storageValue,
+      ],
     );
     if (rows.isEmpty) return null;
     return _undoFromRow(rows.first, ledgerId: ledgerId, month: month);
@@ -692,7 +709,9 @@ final class SqfliteLedgerStore implements LedgerStore {
     final db = await _db;
     await db.update(
       'review_action',
-      <String, Object?>{'undo_state': ReviewActionState.invalidated.storageValue},
+      <String, Object?>{
+        'undo_state': ReviewActionState.invalidated.storageValue,
+      },
       where: 'id = ?',
       whereArgs: <Object?>[actionId],
     );
@@ -722,16 +741,12 @@ final class SqfliteLedgerStore implements LedgerStore {
     );
     for (var position = 0; position < session.entries.length; position++) {
       final entry = session.entries[position];
-      await executor.insert(
-        'review_queue_item',
-        <String, Object?>{
-          'session_id': sessionId,
-          'position': position,
-          'transaction_id': entry.transactionId,
-          'bucket': entry.bucket.storageValue,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await executor.insert('review_queue_item', <String, Object?>{
+        'session_id': sessionId,
+        'position': position,
+        'transaction_id': entry.transactionId,
+        'bucket': entry.bucket.storageValue,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     return sessionId;
   }
@@ -744,7 +759,11 @@ final class SqfliteLedgerStore implements LedgerStore {
       'review_session',
       columns: <String>['id'],
       where: 'ledger_id = ? AND year = ? AND month = ?',
-      whereArgs: <Object?>[session.ledgerId, session.month.year, session.month.month],
+      whereArgs: <Object?>[
+        session.ledgerId,
+        session.month.year,
+        session.month.month,
+      ],
       limit: 1,
     );
     if (rows.isNotEmpty) return rows.first['id']! as int;
@@ -784,24 +803,24 @@ final class SqfliteLedgerStore implements LedgerStore {
   static int _endOf(YearMonth month) => _startOf(month.next) - 1;
 
   static Ledger _ledgerFrom(Map<String, Object?> row) => Ledger(
-        id: row['id']! as int,
-        name: row['name']! as String,
-        isDemo: (row['is_demo']! as int) == 1,
-        currency: row['currency']! as String,
-        timeZone: row['time_zone']! as String,
-        createdAtMs: row['created_at_ms']! as int,
-      );
+    id: row['id']! as int,
+    name: row['name']! as String,
+    isDemo: (row['is_demo']! as int) == 1,
+    currency: row['currency']! as String,
+    timeZone: row['time_zone']! as String,
+    createdAtMs: row['created_at_ms']! as int,
+  );
 
   static Category _categoryFrom(Map<String, Object?> row) => Category(
-        id: row['id']! as int,
-        parentId: row['parent_id'] as int?,
-        name: row['name']! as String,
-        iconType: CategoryIconType.parse(row['icon_type']! as String),
-        iconKey: row['icon_key'] as String?,
-        sortOrder: row['sort_order']! as int,
-        isBuiltin: (row['is_builtin']! as int) == 1,
-        archived: (row['archived']! as int) == 1,
-      );
+    id: row['id']! as int,
+    parentId: row['parent_id'] as int?,
+    name: row['name']! as String,
+    iconType: CategoryIconType.parse(row['icon_type']! as String),
+    iconKey: row['icon_key'] as String?,
+    sortOrder: row['sort_order']! as int,
+    isBuiltin: (row['is_builtin']! as int) == 1,
+    archived: (row['archived']! as int) == 1,
+  );
 
   static LedgerTransaction _transactionFrom(Map<String, Object?> row) =>
       LedgerTransaction(
@@ -827,27 +846,26 @@ final class SqfliteLedgerStore implements LedgerStore {
   static Map<String, Object?> _transactionValues(
     LedgerTransaction transaction, {
     bool includeId = true,
-  }) =>
-      <String, Object?>{
-        if (includeId && transaction.isPersisted) 'id': transaction.id,
-        'ledger_id': transaction.ledgerId,
-        'source_namespace': transaction.sourceNamespace,
-        'source_account': transaction.sourceAccount,
-        'source_transaction_id': transaction.sourceTransactionId,
-        'dedupe_key': transaction.dedupeKey,
-        'occurred_at_ms': transaction.occurredAtMs,
-        'raw_time_text': transaction.rawTimeText,
-        'time_zone': transaction.timeZone,
-        'amount_cents': transaction.amountCents,
-        'currency': transaction.currency,
-        'merchant': transaction.merchant,
-        'note': transaction.note,
-        'nature': transaction.nature.storageValue,
-        'review_status': transaction.reviewStatus.storageValue,
-        'exclude_reason': transaction.excludeReason,
-        'version': transaction.version,
-        'import_batch_id': transaction.importBatchId,
-      };
+  }) => <String, Object?>{
+    if (includeId && transaction.isPersisted) 'id': transaction.id,
+    'ledger_id': transaction.ledgerId,
+    'source_namespace': transaction.sourceNamespace,
+    'source_account': transaction.sourceAccount,
+    'source_transaction_id': transaction.sourceTransactionId,
+    'dedupe_key': transaction.dedupeKey,
+    'occurred_at_ms': transaction.occurredAtMs,
+    'raw_time_text': transaction.rawTimeText,
+    'time_zone': transaction.timeZone,
+    'amount_cents': transaction.amountCents,
+    'currency': transaction.currency,
+    'merchant': transaction.merchant,
+    'note': transaction.note,
+    'nature': transaction.nature.storageValue,
+    'review_status': transaction.reviewStatus.storageValue,
+    'exclude_reason': transaction.excludeReason,
+    'version': transaction.version,
+    'import_batch_id': transaction.importBatchId,
+  };
 
   static Map<String, Object?> _categoryValues(Category category) =>
       <String, Object?>{
@@ -862,18 +880,18 @@ final class SqfliteLedgerStore implements LedgerStore {
       };
 
   static Allocation _allocationFrom(Map<String, Object?> row) => Allocation(
-        id: row['id']! as int,
-        transactionId: row['transaction_id']! as int,
-        categoryId: row['category_id']! as int,
-        amountCents: row['amount_cents']! as int,
-      );
+    id: row['id']! as int,
+    transactionId: row['transaction_id']! as int,
+    categoryId: row['category_id']! as int,
+    amountCents: row['amount_cents']! as int,
+  );
 
   static RefundLink _refundLinkFrom(Map<String, Object?> row) => RefundLink(
-        id: row['id']! as int,
-        refundTransactionId: row['refund_transaction_id']! as int,
-        originalTransactionId: row['original_transaction_id']! as int,
-        amountCents: row['amount_cents']! as int,
-      );
+    id: row['id']! as int,
+    refundTransactionId: row['refund_transaction_id']! as int,
+    originalTransactionId: row['original_transaction_id']! as int,
+    amountCents: row['amount_cents']! as int,
+  );
 
   static RefundAllocation _refundAllocationFrom(Map<String, Object?> row) =>
       RefundAllocation(
@@ -893,34 +911,35 @@ final class SqfliteLedgerStore implements LedgerStore {
   /// 而它只是**日志**，不需要被 SQL 查询，也不需要外键。
   /// 需要被查询的部分（状态、版本、分配）都在正式表里。
   static String _encodeUndo(UndoRecord undo) => jsonEncode(<String, Object?>{
-        'targets': <Map<String, Object?>>[
-          for (final target in undo.targets)
-            <String, Object?>{
-              'id': target.transactionId,
-              'version': target.beforeVersion,
-              'status': target.beforeStatus.storageValue,
-              'nature': target.beforeNature.storageValue,
-              'allocations': <Map<String, Object?>>[
-                for (final draft in target.beforeAllocations)
-                  <String, Object?>{
-                    'categoryId': draft.categoryId,
-                    'amountCents': draft.amountCents,
-                  },
-              ],
-            },
-        ],
-        'entries': <String>[
-          for (final entry in undo.beforeEntries)
-            '${entry.bucket.storageValue}:${entry.transactionId}',
-        ],
-      });
+    'targets': <Map<String, Object?>>[
+      for (final target in undo.targets)
+        <String, Object?>{
+          'id': target.transactionId,
+          'version': target.beforeVersion,
+          'status': target.beforeStatus.storageValue,
+          'nature': target.beforeNature.storageValue,
+          'allocations': <Map<String, Object?>>[
+            for (final draft in target.beforeAllocations)
+              <String, Object?>{
+                'categoryId': draft.categoryId,
+                'amountCents': draft.amountCents,
+              },
+          ],
+        },
+    ],
+    'entries': <String>[
+      for (final entry in undo.beforeEntries)
+        '${entry.bucket.storageValue}:${entry.transactionId}',
+    ],
+  });
 
   static UndoRecord _undoFromRow(
     Map<String, Object?> row, {
     required int ledgerId,
     required YearMonth month,
   }) {
-    final decoded = jsonDecode(row['before_json']! as String) as Map<String, Object?>;
+    final decoded =
+        jsonDecode(row['before_json']! as String) as Map<String, Object?>;
     final targets = <UndoTarget>[
       for (final raw in (decoded['targets']! as List<Object?>))
         _targetFromJson(raw! as Map<String, Object?>),
@@ -943,15 +962,15 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   static UndoTarget _targetFromJson(Map<String, Object?> raw) => UndoTarget(
-        transactionId: raw['id']! as int,
-        beforeVersion: raw['version']! as int,
-        beforeStatus: ReviewStatus.parse(raw['status']! as String),
-        beforeNature: TransactionNature.parse(raw['nature']! as String),
-        beforeAllocations: <AllocationDraft>[
-          for (final draft in (raw['allocations']! as List<Object?>))
-            _draftFromJson(draft! as Map<String, Object?>),
-        ],
-      );
+    transactionId: raw['id']! as int,
+    beforeVersion: raw['version']! as int,
+    beforeStatus: ReviewStatus.parse(raw['status']! as String),
+    beforeNature: TransactionNature.parse(raw['nature']! as String),
+    beforeAllocations: <AllocationDraft>[
+      for (final draft in (raw['allocations']! as List<Object?>))
+        _draftFromJson(draft! as Map<String, Object?>),
+    ],
+  );
 
   static AllocationDraft _draftFromJson(Map<String, Object?> raw) =>
       AllocationDraft(

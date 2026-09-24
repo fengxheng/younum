@@ -12,7 +12,10 @@
 library;
 
 /// 当前结构版本。
-const int younumSchemaVersion = 1;
+///
+/// v1：账本、分类、交易、分配、退款关联、整理会话
+/// v2：导入批次、导入行暂存、交易来源绑定
+const int younumSchemaVersion = 2;
 
 /// v1 的建表语句。
 ///
@@ -207,5 +210,93 @@ const List<String> younumSchemaV1 = <String>[
   '''
   CREATE UNIQUE INDEX idx_month_review_unique
     ON month_review(ledger_id, year, month)
+  ''',
+];
+
+/// v2 新增：导入批次、导入行暂存、交易来源绑定。
+///
+/// 这三张表是「先落暂存区、用户确认后再写入正式交易」这条规则的载体
+/// （指南 4.3）：**未确认的数据不进入首页金额**。
+///
+/// [transactionOrigin] 是整个撤回机制的关键：一笔交易可以由多个批次
+/// 同时发现（同一把消费出现在微信与支付宝两份账单里是常事），
+/// 所以「这笔交易还需要吗」必须按**引用计数**判断，
+/// 不能按交易上的单个 `batchId` 批量删（指南 4.4）。
+const List<String> younumSchemaV2 = <String>[
+  '''
+  CREATE TABLE import_batch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ledger_id INTEGER NOT NULL REFERENCES ledger(id) ON DELETE CASCADE,
+    source_namespace TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_hash TEXT NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    encoding TEXT NOT NULL,
+    delimiter TEXT NOT NULL,
+    range_start_ms INTEGER,
+    range_end_ms INTEGER,
+    stage TEXT NOT NULL CHECK (stage IN (
+      'SELECTED', 'READING', 'VALIDATING', 'REVIEW_REQUIRED', 'READY',
+      'COMMITTING', 'COMMITTED', 'FAILED', 'CANCELED'
+    )),
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    new_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    invalid_count INTEGER NOT NULL DEFAULT 0,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    started_at_ms INTEGER NOT NULL,
+    committed_at_ms INTEGER,
+    reverted_at_ms INTEGER
+  )
+  ''',
+  'CREATE INDEX idx_import_batch_ledger ON import_batch(ledger_id, id DESC)',
+  // 同一份文件不应该被重复导两次。哈希只用来识别「同一个文件」，
+  // 它不能代替逐笔去重（指南 4.3）。
+  'CREATE INDEX idx_import_batch_hash ON import_batch(ledger_id, file_hash)',
+
+  '''
+  CREATE TABLE import_row (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL,
+    raw_text TEXT,
+    occurred_at_ms INTEGER,
+    amount_cents INTEGER,
+    direction TEXT CHECK (
+      direction IS NULL OR
+      direction IN ('EXPENSE', 'INCOME', 'TRANSFER', 'UNKNOWN')
+    ),
+    merchant TEXT,
+    status TEXT NOT NULL CHECK (
+      status IN ('NEW', 'DUPLICATE', 'INVALID', 'SKIPPED', 'IMPORTED')
+    ),
+    issue TEXT,
+    dedupe_key TEXT,
+    included INTEGER NOT NULL DEFAULT 1 CHECK (included IN (0, 1)),
+    transaction_id INTEGER REFERENCES txn(id) ON DELETE SET NULL
+  )
+  ''',
+  '''
+  CREATE UNIQUE INDEX idx_import_row_unique
+    ON import_row(batch_id, row_number)
+  ''',
+  'CREATE INDEX idx_import_row_status ON import_row(batch_id, status)',
+
+  '''
+  CREATE TABLE transaction_origin (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL REFERENCES txn(id) ON DELETE CASCADE,
+    batch_id INTEGER NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL
+  )
+  ''',
+  // 同一批次里的同一行只能绑定一次（防止重试造成二次写入）。
+  '''
+  CREATE UNIQUE INDEX idx_transaction_origin_unique
+    ON transaction_origin(batch_id, row_number)
+  ''',
+  '''
+  CREATE INDEX idx_transaction_origin_txn
+    ON transaction_origin(transaction_id)
   ''',
 ];

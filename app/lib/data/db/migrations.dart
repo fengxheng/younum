@@ -56,9 +56,7 @@ Future<List<String>> applyMigrations({
 }) async {
   if (fromVersion == toVersion) return const <String>[];
   if (toVersion < fromVersion) {
-    throw MigrationError(
-      '不支持降级：数据库是 v$fromVersion，代码期望 v$toVersion',
-    );
+    throw MigrationError('不支持降级：数据库是 v$fromVersion，代码期望 v$toVersion');
   }
 
   final applied = <String>[];
