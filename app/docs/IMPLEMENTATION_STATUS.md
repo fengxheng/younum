@@ -344,14 +344,36 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 结构与模型（`ImportStage` 九态、批次、行、来源绑定） | `lib/domain/models/import_records.dart` | 静态检查 + 真机 |
 | 暂存 / 提交 / 撤回的编排（含跨批次复用与引用计数） | `lib/domain/repositories/import_workflow.dart` | 单元测试 18 个 + 真机 3 个 |
 | 系统文件选择器（自写平台通道，不用插件） | `lib/data/files/system_file_source.dart` + `MainActivity.kt` | 单元测试 17 个 + 真机 5 个 |
+| 导入会话（跨页状态、逐组重复取舍、编码重试） | `lib/features/import_flow/import_session.dart` | 单元测试 27 个 |
+| 导入界面（选文件 / 解析 / 映射 / 核对 / 重复 / 异常 / 历史撤回） | `lib/features/import_flow/*.dart` + `profile_screens.dart` | **界面测试 8 个** |
 | v1 → v2 迁移：新增导入三张表 | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
 | v2 → v3 迁移：批次记住来源 URI | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试 | `flutter test` | **241 passed** |
+| 单元测试（含界面测试） | `flutter test` | **290 passed** |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **28 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
+| 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
+
+界面测试（`test/import_flow_widget_test.dart`）把真正的 `YounumApp` 挂起来，
+从首页一路走到核对页与提交完成，文件来源用假实现。它当场抓出了三个真 bug：
+在 `didChangeDependencies` 里改会话状态（build 期间 notifyListeners）、
+用户取消后解析页永远转下去、导入记录页在 build 期间读历史。
+这三类都是 `flutter analyze` 与纯逻辑单测看不出来的。
+
+**仍然阻塞在阶段 3 后续的功能**
+
+* **真实账单样本：仍然一次都没试过。** 一切都在仿造导出格式的测试数据上验过。
+* **「用户真的在系统选择器里点一份账单」未验证** —— 那一步需要人手点，
+  自动化点不可靠。清单在 `docs/MANUAL_CHECKS.md` 第一节。
+  这是阶段 3 目前最大的不确定性。
+* 平台适配器的完整字段集（当前是通用 CSV，靠表头别名匹配）、XLSX（未选型）。
+* 导入失败与 `COMMITTING` 中途崩溃：`ImportStage.isInFlight` 已经能识别出
+  「上次写到一半」的批次，但还没有启动时扫描并恢复的逻辑。
+* 导入异常明细的导出（依赖阶段 5 的导出能力，所以暂时没有这个按钮 ——
+  不做一个只弹「暂不可用」的按钮）。
+* Photo Picker、WorkManager、通知权限未接入。
 
 真机上的 v1 → v2 用例是这样做的：先手工造一个只建 v1 结构、版本号写着 1、
 并且**已经存有账单数据**（账本、分类、交易、分配、整理会话、月范围确认）的库，
@@ -379,13 +401,17 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 **明确未验证**
 
+> 完整清单见 `docs/MANUAL_CHECKS.md`（带复选框，可以逐项验并写上日期）。
+
 * 真实微信 / 支付宝 CSV / XLSX 的兼容性**完全没有验证**，也没有任何真实样本。
+* 「在系统选择器里真的选一份微信 / 支付宝账单」、选各种异常文件、
+  连续快速点两次选择文件 —— 都需要人手，见清单第一节。
 * XLSX 解析库未选型，需先做真机内存与兼容性验证再锁定依赖。
-* Photo Picker、WorkManager、通知权限、Storage Access Framework 均未接入。
+* Photo Picker、WorkManager、通知权限未接入。
+  Storage Access Framework 已接入（见 DECISIONS 第 34 节），**没有全盘文件权限**。
 * **旋转、大字号、TalkBack 未回归**。阶段 2 改了首页与整理页的布局，
-  小屏幕 / 大字号下底部操作行是否仍可见只在本机 412dp 宽的手机上验过。
-* 六套主题在真机上逐一走查仍未做（主题系统未改，但首页新增了
-  「来源 / 整改进度」两块，值得重看一遍颜色对比度）。
+  阶段 3 又新增了六个导入页面，都没在真机上逐一走查。
+* 六套主题在真机上逐一走查仍未做。
 
 **已知取舍**
 
@@ -412,18 +438,17 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 ## 下一步（最小任务）
 
-1. **阶段 4：把已实现但用户点不到的规则接上界面**
-   —— 详情页编辑、拆分（`AllocationRules`）、非消费（交易性质）、
-   退款关联（`RefundRules` + `linkRefund`）。这些的规则与仓库入口
-   都已实现并有测试，缺的是界面。
+1. **拿一份真实的微信 / 支付宝账单导一遍。**
+   这是阶段 3 剩下的最大不确定性：整条链路都在仿造格式上验过，
+   但一份真文件可能带来完全没想到的格式。清单见 `docs/MANUAL_CHECKS.md`。
 2. **在月报页补上「确认本月范围完整」的入口**。
    现在只能从整理完成页确认，没有它就看不了环比与分类变化 ——
    这是用户视角下最明显的一个缺口。
-3. **阶段 3：导入（进行中）**。
-   已完成：CSV 解析、编码探测、`import_batch` / `import_row` /
-   `transaction_origin` 三张表与 v1→v2 迁移、表头识别与字段映射、
-   逐行标准化、两级去重判定。
-   还缺：平台适配器的完整字段集、导入事务与撤回、系统文件选择器（SAF）、
-   界面接线。没有这一步，真实账本永远是空的。
-4. **阶段 5 剩余**：导出 PNG / CSV（含防公式注入），导入记录页接真实批次。
+3. **阶段 4：把已实现但用户点不到的规则接上界面**
+   —— 详情页编辑、拆分（`AllocationRules`）、非消费（交易性质）、
+   退款关联（`RefundRules` + `linkRefund`）。这些的规则与仓库入口
+   都已实现并有测试，缺的是界面。
+4. **阶段 3 剩余**：平台适配器的完整字段集、XLSX 选型、
+   `COMMITTING` 中途崩溃后的启动恢复逻辑、导入异常明细导出。
+5. **阶段 5 剩余**：导出 PNG / CSV（含防公式注入）。
 
