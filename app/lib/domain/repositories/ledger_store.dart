@@ -14,6 +14,7 @@ library;
 
 import '../models/allocation.dart';
 import '../models/category.dart';
+import '../models/import_records.dart';
 import '../models/ledger.dart';
 import '../models/ledger_dataset.dart';
 import '../models/ledger_transaction.dart';
@@ -150,6 +151,17 @@ abstract interface class LedgerStore {
     required UndoRecord undo,
   });
 
+  /// 按同源去重键批量找已有交易，返回「去重键 → 交易 ID」。
+  ///
+  /// 提交导入时用它判断某一笔到底是**新交易**还是**库里已经有的同一笔**。
+  /// 后者只能新增一条来源绑定，不能再插一条交易 —— 否则真机上会直接撞
+  /// `(ledger_id, dedupe_key)` 的唯一索引，整批提交失败；
+  /// 而且撤回时就判断不出「这笔还被别的批次引用着」。
+  Future<Map<String, int>> transactionIdsByDedupeKey({
+    required int ledgerId,
+    required List<String> dedupeKeys,
+  });
+
   /// 写入一条退款关联（含可选的退款分配）。返回关联 ID。
   ///
   /// 同一笔退款只能有一条关联 —— 由数据库的唯一约束最终保证。
@@ -176,4 +188,102 @@ abstract interface class LedgerStore {
 
   /// 把一条日志标记为失效（目标交易被别处改过）。
   Future<void> invalidateAction(int actionId);
+
+  // ---------------------------------------------------------------------------
+  // 导入
+  //
+  // 这一组动作存在的原因：**未确认的数据不进入首页金额**。
+  // 解析结果先写进暂存区（`import_batch` + `import_row`），
+  // 用户确认后才由 [commitImport] 在一个事务里写进正式账。
+  // ---------------------------------------------------------------------------
+
+  /// 写入一个导入批次连同它的全部暂存行，返回批次 ID。
+  ///
+  /// 批次与行必须**一起**落库。只写了行没有批次，或反过来，
+  /// 都会留下一份用户看不见、也删不掉的残骸。
+  Future<int> insertImportBatch({
+    required ImportBatch batch,
+    required List<ImportRow> rows,
+  });
+
+  /// 更新批次的状态与统计。
+  Future<void> updateImportBatch(ImportBatch batch);
+
+  /// 删除一个批次及其暂存行与来源绑定。
+  ///
+  /// 只用于还在暂存区、从未提交过的批次；已提交的批次要走 [revertImport]。
+  Future<void> deleteImportBatch(int batchId);
+
+  /// 某账本的导入批次，最新的在前。
+  Future<List<ImportBatch>> importBatches({required int ledgerId});
+
+  /// 一个批次里的全部暂存行，按文件行号升序。
+  Future<List<ImportRow>> importRows({required int batchId});
+
+  /// 改写暂存行的取舍（用户在核对页上取消勾选某些行）。
+  Future<void> updateImportRows(List<ImportRow> rows);
+
+  /// 把暂存行写进正式账，**一个事务**完成。
+  ///
+  /// [entries] 每一项是「暂存行 + 要写入的交易」。
+  ///
+  /// 如果 `transaction.isPersisted` 为真，说明这笔在库里已经有了
+  /// （同源键命中），此时**只新增来源绑定**，不再插一条交易。
+  /// 返回该批涉及的交易 ID，顺序与 [entries] 一致。
+  ///
+  /// 事务语义很关键：要么整批进去、要么全不进去。写了一半的批次会让
+  /// 首页金额出现一个用户无法解释的中间值，而且重试时会变成重复入账。
+  Future<List<int>> commitImport({
+    required int batchId,
+    required List<({ImportRow row, LedgerTransaction transaction})> entries,
+    required int nowMs,
+    required int totalRows,
+    required int duplicateCount,
+    required int invalidCount,
+    required int amountCents,
+  });
+
+  /// 撤回一个已提交的导入批次。
+  ///
+  /// 只删除**同时满足**下面三个条件的交易：
+  ///
+  /// * 只有这一个批次引用它（同一笔消费被两份账单同时导入时，撤回其中一份
+  ///   不能连带删掉另一份的成果）；
+  /// * 用户没给它分过类（没有 allocation）；
+  /// * 用户没改过它（version == 1，整理状态还是 PENDING）。
+  ///
+  /// 后两条同样重要：撤回的是「这次导入」，不是用户在导入之后做的工作。
+  Future<ImportRevert> revertImport({required int batchId, required int nowMs});
+}
+
+/// 撤回结果。
+///
+/// 三种去向分开列，是因为它们对应三句不同的用户可见说明：
+/// 「已删除 N 笔」「M 笔别的账单也导入过，已保留」「K 笔你已经整理过，已保留」。
+/// 合成一个数字的话，界面就只能含糊地说「部分交易被保留」。
+final class ImportRevert {
+  const ImportRevert({
+    required this.deletedTransactionIds,
+    required this.sharedTransactionIds,
+    required this.editedTransactionIds,
+  });
+
+  /// 被删掉的交易：只有这一个批次引用，并且用户还没动过。
+  final List<int> deletedTransactionIds;
+
+  /// 保留下来的交易：还被其它批次引用（同一笔消费出现在两份账单里）。
+  final List<int> sharedTransactionIds;
+
+  /// 保留下来的交易：用户已经分过类或改过，不能再悄悄抹掉。
+  final List<int> editedTransactionIds;
+
+  int get deletedCount => deletedTransactionIds.length;
+
+  int get keptCount =>
+      sharedTransactionIds.length + editedTransactionIds.length;
+
+  @override
+  String toString() =>
+      'ImportRevert(删除 $deletedCount, 共享保留 ${sharedTransactionIds.length}, '
+      '已整理保留 ${editedTransactionIds.length})';
 }

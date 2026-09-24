@@ -167,6 +167,7 @@ final class ImportBatch {
     int? amountCents,
     int? committedAtMs,
     int? revertedAtMs,
+    bool clearRevertedAt = false,
   }) => ImportBatch(
     id: id ?? this.id,
     ledgerId: ledgerId,
@@ -186,7 +187,8 @@ final class ImportBatch {
     invalidCount: invalidCount ?? this.invalidCount,
     amountCents: amountCents ?? this.amountCents,
     committedAtMs: committedAtMs ?? this.committedAtMs,
-    revertedAtMs: revertedAtMs ?? this.revertedAtMs,
+    // 重新提交时必须能把「已撤回」清掉，`??` 做不到这件事。
+    revertedAtMs: clearRevertedAt ? null : (revertedAtMs ?? this.revertedAtMs),
   );
 
   @override
@@ -326,6 +328,7 @@ final class ImportRow {
     ImportRowStatus? status,
     bool? included,
     int? transactionId,
+    bool clearTransactionId = false,
   }) => ImportRow(
     id: id,
     batchId: batchId,
@@ -339,7 +342,10 @@ final class ImportRow {
     issue: issue,
     dedupeKey: dedupeKey,
     included: included ?? this.included,
-    transactionId: transactionId ?? this.transactionId,
+    // 撤回时必须能把引用**清掉**，而 `??` 保留旧值做不到这件事。
+    transactionId: clearTransactionId
+        ? null
+        : (transactionId ?? this.transactionId),
   );
 
   @override

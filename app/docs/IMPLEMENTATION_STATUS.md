@@ -342,12 +342,13 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 编码探测（BOM → UTF-8 严格 → GBK 对比） | `lib/domain/rules/text_decoding.dart` | 单元测试 14 个 |
 | 表头识别、字段映射、行标准化、两级去重 | `lib/domain/rules/import_rules.dart` | 单元测试 31 个 |
 | 结构与模型（`ImportStage` 九态、批次、行、来源绑定） | `lib/domain/models/import_records.dart` | 静态检查 + 真机 |
+| 暂存 / 提交 / 撤回的编排（含跨批次复用与引用计数） | `lib/domain/repositories/import_workflow.dart` | 单元测试 18 个 + 真机 3 个 |
 | v1 → v2 迁移：新增导入三张表 | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试 | `flutter test` | **206 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **24 passed** |
+| 单元测试 | `flutter test` | **224 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **27 passed** |
 
 真机上的 v1 → v2 用例是这样做的：先手工造一个只建 v1 结构、版本号写着 1、
 并且**已经存有账单数据**（账本、分类、交易、分配、整理会话、月范围确认）的库，
@@ -357,9 +358,13 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 **仍然阻塞在阶段 3 后续的功能**
 
-* 平台适配器的完整字段集（当前是通用 CSV）、字段映射界面、导入事务与撤回、
-  幂等性与 `COMMITTING` 崩溃恢复、系统文件选择器（SAF）、界面接线。
+* 平台适配器的完整字段集（当前是通用 CSV）、字段映射界面、系统文件选择器（SAF）、
+  界面接线。数据的暂存/提交/撤回已经能跑通，缺的是「让用户点得到」。
+  真机上已经验证过的两条关键性质：**暂存时不进正式账**、
+  **撤回只删不再被引用的交易且不动用户已分过类的交易**。
 * 还缺 `category_icon_asset` 表（阶段 4 用）。
+* 导入失败与 `COMMITTING` 中途崩溃：`ImportStage.isInFlight` 已经能识别出
+  「上次写到一半」的批次，但还没有启动时扫描并恢复的逻辑。
 * 没有任何真实微信 / 支付宝账单样本，平台适配器只在**仿造导出格式**的
   测试数据上验过；真文件的兼容性仍需实际样本确认。
 * XLSX 解析库未选型，需先做真机内存与兼容性验证再锁定依赖。

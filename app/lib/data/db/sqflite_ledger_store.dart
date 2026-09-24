@@ -23,6 +23,7 @@ import '../../core/time/statistics_time.dart';
 import '../../data/seed/demo_ledger_seed.dart';
 import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
+import '../../domain/models/import_records.dart';
 import '../../domain/models/ledger.dart';
 import '../../domain/models/ledger_dataset.dart';
 import '../../domain/models/ledger_transaction.dart';
@@ -491,6 +492,37 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<Map<String, int>> transactionIdsByDedupeKey({
+    required int ledgerId,
+    required List<String> dedupeKeys,
+  }) async {
+    if (dedupeKeys.isEmpty) return const <String, int>{};
+    final db = await _db;
+    final unique = dedupeKeys.toSet().toList();
+    final found = <String, int>{};
+    // 自己分块，而不是复用 _queryIn：那个辅助函数的 ids 是 List<int>，
+    // 在 SQL 里拼字符串键的占位符并不合适。
+    const chunkSize = 200;
+    for (var start = 0; start < unique.length; start += chunkSize) {
+      final chunk = unique.sublist(
+        start,
+        start + chunkSize > unique.length ? unique.length : start + chunkSize,
+      );
+      final placeholders = List<String>.filled(chunk.length, '?').join(', ');
+      final rows = await db.rawQuery(
+        'SELECT id, dedupe_key FROM txn '
+        'WHERE ledger_id = ? AND dedupe_key IN ($placeholders)',
+        <Object?>[ledgerId, ...chunk],
+      );
+      for (final row in rows) {
+        final key = row['dedupe_key'] as String?;
+        if (key != null) found[key] = row['id']! as int;
+      }
+    }
+    return found;
+  }
+
+  @override
   Future<int> insertRefundLink({
     required int refundTransactionId,
     required int originalTransactionId,
@@ -820,6 +852,390 @@ final class SqfliteLedgerStore implements LedgerStore {
     sortOrder: row['sort_order']! as int,
     isBuiltin: (row['is_builtin']! as int) == 1,
     archived: (row['archived']! as int) == 1,
+  );
+
+  // ---------------------------------------------------------------------------
+  // 导入
+  // ---------------------------------------------------------------------------
+
+  @override
+  Future<int> insertImportBatch({
+    required ImportBatch batch,
+    required List<ImportRow> rows,
+  }) async {
+    final db = await _db;
+    return db.transaction<int>((txn) async {
+      final batchId = await txn.insert(
+        'import_batch',
+        _importBatchValues(batch),
+      );
+      for (final row in rows) {
+        await txn.insert('import_row', _importRowValues(row, batchId: batchId));
+      }
+      return batchId;
+    });
+  }
+
+  @override
+  Future<void> updateImportBatch(ImportBatch batch) async {
+    final db = await _db;
+    await db.update(
+      'import_batch',
+      _importBatchValues(batch),
+      where: 'id = ?',
+      whereArgs: <Object?>[batch.id],
+    );
+  }
+
+  @override
+  Future<void> deleteImportBatch(int batchId) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'import_batch',
+        columns: <String>['stage', 'reverted_at_ms'],
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return;
+      final committed =
+          ImportStage.parse(rows.first['stage']! as String).isCommitted;
+      final reverted = rows.first['reverted_at_ms'] != null;
+      if (committed && !reverted) {
+        // 提交过的批次不能这样删掉：交易会失去来源记录，
+        // 撤回时就再也判断不出「还有没有别处引用」了。
+        // 但**已撤回**的批次名下已经没有交易，可以放心删。
+        throw StateError('已提交的批次不能直接删除，请先撤回');
+      }
+      await txn.delete(
+        'transaction_origin',
+        where: 'batch_id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+      await txn.delete(
+        'import_row',
+        where: 'batch_id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+      await txn.delete(
+        'import_batch',
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+    });
+  }
+
+  @override
+  Future<List<ImportBatch>> importBatches({required int ledgerId}) async {
+    final db = await _db;
+    final rows = await db.query(
+      'import_batch',
+      where: 'ledger_id = ?',
+      whereArgs: <Object?>[ledgerId],
+      orderBy: 'id DESC',
+    );
+    return <ImportBatch>[for (final row in rows) _importBatchFrom(row)];
+  }
+
+  @override
+  Future<List<ImportRow>> importRows({required int batchId}) async {
+    final db = await _db;
+    final rows = await db.query(
+      'import_row',
+      where: 'batch_id = ?',
+      whereArgs: <Object?>[batchId],
+      orderBy: 'row_number ASC',
+    );
+    return <ImportRow>[for (final row in rows) _importRowFrom(row)];
+  }
+
+  @override
+  Future<void> updateImportRows(List<ImportRow> rows) async {
+    if (rows.isEmpty) return;
+    final db = await _db;
+    await db.transaction((txn) async {
+      for (final row in rows) {
+        await txn.update(
+          'import_row',
+          <String, Object?>{
+            'status': row.status.storageValue,
+            'included': row.included ? 1 : 0,
+            'transaction_id': row.transactionId,
+          },
+          where: 'id = ?',
+          whereArgs: <Object?>[row.id],
+        );
+      }
+    });
+  }
+
+  @override
+  Future<List<int>> commitImport({
+    required int batchId,
+    required List<({ImportRow row, LedgerTransaction transaction})> entries,
+    required int nowMs,
+    required int totalRows,
+    required int duplicateCount,
+    required int invalidCount,
+    required int amountCents,
+  }) async {
+    final db = await _db;
+    return db.transaction<List<int>>((txn) async {
+      final batches = await txn.query(
+        'import_batch',
+        columns: <String>['stage', 'reverted_at_ms'],
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+        limit: 1,
+      );
+      if (batches.isEmpty) {
+        throw StateError('批次 $batchId 不存在');
+      }
+      final committed =
+          ImportStage.parse(batches.first['stage']! as String).isCommitted;
+      final reverted = batches.first['reverted_at_ms'] != null;
+      // 已撤回的批次可以再提交一次：那是用户主动退回后又想装回来。
+      if (committed && !reverted) {
+        // 幂等：重复提交不能再写一遍交易，否则首页金额直接翻倍。
+        throw StateError('批次 $batchId 已经提交过');
+      }
+
+      final written = <int>[];
+      for (final entry in entries) {
+        final int transactionId;
+        if (entry.transaction.isPersisted) {
+          // 库里已经有了同一笔（同源键命中）：只新增来源绑定。
+          // 再插一条会直接撞 (ledger_id, dedupe_key) 唯一索引，整批失败。
+          transactionId = entry.transaction.id;
+        } else {
+          final values = _transactionValues(
+            entry.transaction,
+            includeId: false,
+          );
+          // 只作为「最早发现这笔的批次」留个痕。撤回判定一律走
+          // transaction_origin —— 见 DECISIONS 第 30 节。
+          values['import_batch_id'] = batchId;
+          transactionId = await txn.insert('txn', values);
+        }
+
+        await txn.insert('transaction_origin', <String, Object?>{
+          'transaction_id': transactionId,
+          'batch_id': batchId,
+          'row_number': entry.row.rowNumber,
+        });
+
+        if (entry.row.id != ImportRow.idUnassigned) {
+          await txn.update(
+            'import_row',
+            <String, Object?>{
+              'status': ImportRowStatus.imported.storageValue,
+              'transaction_id': transactionId,
+            },
+            where: 'id = ?',
+            whereArgs: <Object?>[entry.row.id],
+          );
+        }
+        written.add(transactionId);
+      }
+
+      await txn.update(
+        'import_batch',
+        <String, Object?>{
+          'stage': ImportStage.committed.storageValue,
+          'committed_at_ms': nowMs,
+          'reverted_at_ms': null,
+          'total_rows': totalRows,
+          'new_count': written.length,
+          'duplicate_count': duplicateCount,
+          'invalid_count': invalidCount,
+          'amount_cents': amountCents,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+      return written;
+    });
+  }
+
+  @override
+  Future<ImportRevert> revertImport({
+    required int batchId,
+    required int nowMs,
+  }) async {
+    final db = await _db;
+    return db.transaction<ImportRevert>((txn) async {
+      final origins = await txn.query(
+        'transaction_origin',
+        columns: <String>['transaction_id'],
+        where: 'batch_id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+      final owned = <int>{
+        for (final row in origins) row['transaction_id']! as int,
+      };
+
+      final deleted = <int>[];
+      final shared = <int>[];
+      final edited = <int>[];
+      for (final transactionId in owned) {
+        final others = await txn.query(
+          'transaction_origin',
+          columns: <String>['id'],
+          where: 'transaction_id = ? AND batch_id <> ?',
+          whereArgs: <Object?>[transactionId, batchId],
+          limit: 1,
+        );
+        if (others.isNotEmpty) {
+          shared.add(transactionId);
+          continue;
+        }
+
+        final allocations = await txn.query(
+          'allocation',
+          columns: <String>['id'],
+          where: 'transaction_id = ?',
+          whereArgs: <Object?>[transactionId],
+          limit: 1,
+        );
+        final rows = await txn.query(
+          'txn',
+          columns: <String>['version', 'review_status'],
+          where: 'id = ?',
+          whereArgs: <Object?>[transactionId],
+          limit: 1,
+        );
+        final touched =
+            allocations.isNotEmpty ||
+            (rows.isNotEmpty &&
+                ((rows.first['version']! as int) > 1 ||
+                    rows.first['review_status'] !=
+                        ReviewStatus.pending.storageValue));
+        if (touched) {
+          edited.add(transactionId);
+          continue;
+        }
+
+        // allocation 那边有 ON DELETE CASCADE，但只可能是空的（上面已经挡过）。
+        await txn.delete(
+          'txn',
+          where: 'id = ?',
+          whereArgs: <Object?>[transactionId],
+        );
+        deleted.add(transactionId);
+      }
+
+      await txn.delete(
+        'transaction_origin',
+        where: 'batch_id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+      // 暂存行回到「可再次提交」的样子。不清 transaction_id 的话，
+      // 界面会显示一个已经不存在的交易 ID。
+      await txn.update(
+        'import_row',
+        <String, Object?>{
+          'transaction_id': null,
+          'status': ImportRowStatus.newRow.storageValue,
+        },
+        where: 'batch_id = ? AND status = ?',
+        whereArgs: <Object?>[batchId, ImportRowStatus.imported.storageValue],
+      );
+      await txn.update(
+        'import_batch',
+        <String, Object?>{'reverted_at_ms': nowMs},
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+
+      return ImportRevert(
+        deletedTransactionIds: deleted,
+        sharedTransactionIds: shared,
+        editedTransactionIds: edited,
+      );
+    });
+  }
+
+  static Map<String, Object?> _importBatchValues(ImportBatch batch) =>
+      <String, Object?>{
+        if (batch.id != ImportBatch.idUnassigned) 'id': batch.id,
+        'ledger_id': batch.ledgerId,
+        'source_namespace': batch.sourceNamespace,
+        'file_name': batch.fileName,
+        'file_hash': batch.fileHash,
+        'file_size_bytes': batch.fileSizeBytes,
+        'encoding': batch.encoding,
+        'delimiter': batch.delimiter,
+        'range_start_ms': batch.rangeStartMs,
+        'range_end_ms': batch.rangeEndMs,
+        'stage': batch.stage.storageValue,
+        'total_rows': batch.totalRows,
+        'new_count': batch.newCount,
+        'duplicate_count': batch.duplicateCount,
+        'invalid_count': batch.invalidCount,
+        'amount_cents': batch.amountCents,
+        'started_at_ms': batch.startedAtMs,
+        'committed_at_ms': batch.committedAtMs,
+        'reverted_at_ms': batch.revertedAtMs,
+      };
+
+  static Map<String, Object?> _importRowValues(
+    ImportRow row, {
+    required int batchId,
+  }) => <String, Object?>{
+    if (row.id != ImportRow.idUnassigned) 'id': row.id,
+    'batch_id': batchId,
+    'row_number': row.rowNumber,
+    'raw_text': row.rawText,
+    'occurred_at_ms': row.occurredAtMs,
+    'amount_cents': row.amountCents,
+    'direction': row.direction?.storageValue,
+    'merchant': row.merchant,
+    'status': row.status.storageValue,
+    'issue': row.issue,
+    'dedupe_key': row.dedupeKey,
+    'included': row.included ? 1 : 0,
+    'transaction_id': row.transactionId,
+  };
+
+  static ImportBatch _importBatchFrom(Map<String, Object?> row) => ImportBatch(
+    id: row['id']! as int,
+    ledgerId: row['ledger_id']! as int,
+    sourceNamespace: row['source_namespace']! as String,
+    fileName: row['file_name']! as String,
+    fileHash: row['file_hash']! as String,
+    fileSizeBytes: row['file_size_bytes']! as int,
+    encoding: row['encoding']! as String,
+    delimiter: row['delimiter']! as String,
+    stage: ImportStage.parse(row['stage']! as String),
+    startedAtMs: row['started_at_ms']! as int,
+    rangeStartMs: row['range_start_ms'] as int?,
+    rangeEndMs: row['range_end_ms'] as int?,
+    totalRows: row['total_rows']! as int,
+    newCount: row['new_count']! as int,
+    duplicateCount: row['duplicate_count']! as int,
+    invalidCount: row['invalid_count']! as int,
+    amountCents: row['amount_cents']! as int,
+    committedAtMs: row['committed_at_ms'] as int?,
+    revertedAtMs: row['reverted_at_ms'] as int?,
+  );
+
+  static ImportRow _importRowFrom(Map<String, Object?> row) => ImportRow(
+    id: row['id']! as int,
+    batchId: row['batch_id']! as int,
+    rowNumber: row['row_number']! as int,
+    status: ImportRowStatus.parse(row['status']! as String),
+    rawText: row['raw_text'] as String?,
+    occurredAtMs: row['occurred_at_ms'] as int?,
+    amountCents: row['amount_cents'] as int?,
+    direction: row['direction'] == null
+        ? null
+        : ImportDirection.parse(row['direction']! as String),
+    merchant: row['merchant'] as String?,
+    issue: row['issue'] as String?,
+    dedupeKey: row['dedupe_key'] as String?,
+    included: (row['included']! as int) == 1,
+    transactionId: row['transaction_id'] as int?,
   );
 
   static LedgerTransaction _transactionFrom(Map<String, Object?> row) =>

@@ -58,9 +58,11 @@ final class ReviewSnapshot {
 
   /// 已完成整理的笔数（指南 3.3：跳过不计完成数）。
   int get resolvedCount => dataset.transactions
-      .where((transaction) =>
-          transaction.month == record.month &&
-          transaction.reviewStatus == ReviewStatus.resolved)
+      .where(
+        (transaction) =>
+            transaction.month == record.month &&
+            transaction.reviewStatus == ReviewStatus.resolved,
+      )
       .length;
 
   int get totalCount => resolvedCount + mainQueue.length + deferred.length;
@@ -69,18 +71,18 @@ final class ReviewSnapshot {
 
   /// 本月金额与分类概况。
   MonthOverview get overview => MonthOverview.compute(
-        month: record.month,
-        dataset: dataset,
-        coverageConfirmed: coverageConfirmed,
-        isDemoLedger: isDemoLedger,
-      );
+    month: record.month,
+    dataset: dataset,
+    coverageConfirmed: coverageConfirmed,
+    isDemoLedger: isDemoLedger,
+  );
 
   /// 把队列里的 ID 还原成交易对象。
   ///
   /// 找不到的记录直接跳过：宁可少一张卡片，也不能整页崩掉。
   List<LedgerTransaction> _resolve(List<int> ids) => <LedgerTransaction>[
-        for (final id in ids) ?dataset.transaction(id),
-      ];
+    for (final id in ids) ?dataset.transaction(id),
+  ];
 
   @override
   String toString() =>
@@ -123,7 +125,7 @@ final class ReviewFailed extends ReviewOutcome {
 /// 账本仓库。
 final class LedgerRepository {
   LedgerRepository(this._store, {DateTime Function()? clock})
-      : _clock = clock ?? DateTime.now;
+    : _clock = clock ?? DateTime.now;
 
   final LedgerStore _store;
   final DateTime Function() _clock;
@@ -209,8 +211,7 @@ final class LedgerRepository {
   Future<LedgerDataset> dataset({
     required int ledgerId,
     Set<YearMonth>? months,
-  }) =>
-      _store.dataset(ledgerId: ledgerId, months: months);
+  }) => _store.dataset(ledgerId: ledgerId, months: months);
 
   /// 某月的金额与分类概况。
   Future<MonthOverview> monthOverview({
@@ -219,8 +220,10 @@ final class LedgerRepository {
   }) async {
     final ledger = await _ledgerById(ledgerId);
     final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
-    final confirmed =
-        await _store.coverageConfirmed(ledgerId: ledgerId, month: month);
+    final confirmed = await _store.coverageConfirmed(
+      ledgerId: ledgerId,
+      month: month,
+    );
     return MonthOverview.compute(
       month: month,
       dataset: dataset,
@@ -236,16 +239,20 @@ final class LedgerRepository {
   }) async {
     final ledger = await _ledgerById(ledgerId);
     final wanted = months.toList();
-    final dataset =
-        await _store.dataset(ledgerId: ledgerId, months: wanted.toSet());
+    final dataset = await _store.dataset(
+      ledgerId: ledgerId,
+      months: wanted.toSet(),
+    );
     final result = <MonthOverview>[];
     for (final month in wanted) {
       result.add(
         MonthOverview.compute(
           month: month,
           dataset: dataset,
-          coverageConfirmed:
-              await _store.coverageConfirmed(ledgerId: ledgerId, month: month),
+          coverageConfirmed: await _store.coverageConfirmed(
+            ledgerId: ledgerId,
+            month: month,
+          ),
           isDemoLedger: ledger.isDemo,
         ),
       );
@@ -267,7 +274,10 @@ final class LedgerRepository {
   }) async {
     final ledger = await _ledgerById(ledgerId);
     final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
-    final stored = await _store.loadReviewSession(ledgerId: ledgerId, month: month);
+    final stored = await _store.loadReviewSession(
+      ledgerId: ledgerId,
+      month: month,
+    );
 
     final reconciled = _reconcile(
       ledgerId: ledgerId,
@@ -280,9 +290,14 @@ final class LedgerRepository {
       await _store.saveReviewSession(record: reconciled.record);
     }
 
-    final action = await _store.latestAvailableAction(ledgerId: ledgerId, month: month);
-    final confirmed =
-        await _store.coverageConfirmed(ledgerId: ledgerId, month: month);
+    final action = await _store.latestAvailableAction(
+      ledgerId: ledgerId,
+      month: month,
+    );
+    final confirmed = await _store.coverageConfirmed(
+      ledgerId: ledgerId,
+      month: month,
+    );
 
     return ReviewSnapshot(
       record: reconciled.record,
@@ -309,7 +324,10 @@ final class LedgerRepository {
     // 消费必须完成「有效分配」才算处理完成（指南 3.3）。
     final ruleError = AllocationRules.validate(
       originalCents: transaction.amountCents,
-      items: AllocationRules.singleCategory(categoryId, transaction.amountCents),
+      items: AllocationRules.singleCategory(
+        categoryId,
+        transaction.amountCents,
+      ),
     );
     if (ruleError != null) return ReviewRejected(ruleError.message);
 
@@ -400,8 +418,9 @@ final class LedgerRepository {
     if (deferred.isEmpty) return const ReviewRejected('稍后队列里没有记录');
 
     final entries = <ReviewQueueEntry>[
-      ...snapshot.record.entries
-          .where((entry) => entry.bucket == ReviewBucket.main),
+      ...snapshot.record.entries.where(
+        (entry) => entry.bucket == ReviewBucket.main,
+      ),
       for (final transaction in deferred)
         ReviewQueueEntry(
           transactionId: transaction.id,
@@ -411,7 +430,9 @@ final class LedgerRepository {
     final nextRecord = snapshot.record.copyWith(
       entries: entries,
       updatedAtMs: _nowMs(),
-      currentTransactionId: entries.isEmpty ? null : entries.first.transactionId,
+      currentTransactionId: entries.isEmpty
+          ? null
+          : entries.first.transactionId,
       clearCurrent: entries.isEmpty,
     );
 
@@ -473,9 +494,7 @@ final class LedgerRepository {
     final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
     for (final target in action.targets) {
       if (dataset.refundsOf(target.transactionId).isEmpty) continue;
-      return const ReviewRejected(
-        '这笔记录还有关联的退款，请先解除退款关联再撤销',
-      );
+      return const ReviewRejected('这笔记录还有关联的退款，请先解除退款关联再撤销');
     }
 
     final restored = ReviewSessionRecord(
@@ -493,9 +512,7 @@ final class LedgerRepository {
       if (!ok) {
         // 目标记录在操作之后又被改过：标记失效，说明原因，不覆盖新数据。
         await _store.invalidateAction(action.id!);
-        return ReviewConflict(
-          '「${action.label}」之后这条记录又被修改过，撤销会覆盖更新的数据，已停止',
-        );
+        return ReviewConflict('「${action.label}」之后这条记录又被修改过，撤销会覆盖更新的数据，已停止');
       }
     } catch (error) {
       return ReviewFailed(error);
@@ -513,8 +530,11 @@ final class LedgerRepository {
     required int ledgerId,
     required YearMonth month,
     required bool value,
-  }) =>
-      _store.setCoverageConfirmed(ledgerId: ledgerId, month: month, value: value);
+  }) => _store.setCoverageConfirmed(
+    ledgerId: ledgerId,
+    month: month,
+    value: value,
+  );
 
   // ---------------------------------------------------------------------------
   // 退款关联
@@ -575,7 +595,9 @@ final class LedgerRepository {
       // 唯一约束（同一退款只能关联一次）在这里被挡下。
       return ReviewFailed(error);
     }
-    return ReviewSucceeded(await loadSnapshot(ledgerId: ledgerId, month: month));
+    return ReviewSucceeded(
+      await loadSnapshot(ledgerId: ledgerId, month: month),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -610,6 +632,12 @@ final class LedgerRepository {
 
   int _nowMs() => _clock().millisecondsSinceEpoch;
 
+  /// 当前时间（毫秒）。
+  ///
+  /// 公开出来是给 `ImportWorkflow` 用的：导入批次的时间戳必须走同一个
+  /// 可注入的时钟，否则测试里就没法得到确定的时间。
+  int nowMs() => _nowMs();
+
   List<AllocationDraft> _draftsOf(LedgerDataset dataset, int transactionId) =>
       <AllocationDraft>[
         for (final allocation in dataset.allocationsOf(transactionId))
@@ -619,27 +647,28 @@ final class LedgerRepository {
           ),
       ];
 
-  ReviewSessionRecord _withoutEntry(ReviewSessionRecord record, int transactionId) =>
-      record.copyWith(
-        entries: <ReviewQueueEntry>[
-          for (final entry in record.entries)
-            if (entry.transactionId != transactionId) entry,
-        ],
-      );
+  ReviewSessionRecord _withoutEntry(
+    ReviewSessionRecord record,
+    int transactionId,
+  ) => record.copyWith(
+    entries: <ReviewQueueEntry>[
+      for (final entry in record.entries)
+        if (entry.transactionId != transactionId) entry,
+    ],
+  );
 
   /// 把某笔挪到指定队列的末尾。
   ReviewSessionRecord _withBucket(
     ReviewSessionRecord record,
     int transactionId,
     ReviewBucket bucket,
-  ) =>
-      record.copyWith(
-        entries: <ReviewQueueEntry>[
-          ...record.entries,
-          ReviewQueueEntry(transactionId: transactionId, bucket: bucket),
-        ],
-        currentTransactionId: _firstMainId(record.entries, transactionId),
-      );
+  ) => record.copyWith(
+    entries: <ReviewQueueEntry>[
+      ...record.entries,
+      ReviewQueueEntry(transactionId: transactionId, bucket: bucket),
+    ],
+    currentTransactionId: _firstMainId(record.entries, transactionId),
+  );
 
   int? _firstMainId(List<ReviewQueueEntry> entries, int removedId) {
     for (final entry in entries) {
@@ -680,9 +709,15 @@ final class LedgerRepository {
 
     final wanted = <ReviewQueueEntry>[
       for (final transaction in pending)
-        ReviewQueueEntry(transactionId: transaction.id, bucket: ReviewBucket.main),
+        ReviewQueueEntry(
+          transactionId: transaction.id,
+          bucket: ReviewBucket.main,
+        ),
       for (final transaction in deferred)
-        ReviewQueueEntry(transactionId: transaction.id, bucket: ReviewBucket.deferred),
+        ReviewQueueEntry(
+          transactionId: transaction.id,
+          bucket: ReviewBucket.deferred,
+        ),
     ];
 
     if (stored == null) {
@@ -692,7 +727,9 @@ final class LedgerRepository {
           month: month,
           entries: wanted,
           updatedAtMs: _nowMs(),
-          currentTransactionId: wanted.isEmpty ? null : wanted.first.transactionId,
+          currentTransactionId: wanted.isEmpty
+              ? null
+              : wanted.first.transactionId,
         ),
         changed: true,
       );
@@ -709,7 +746,9 @@ final class LedgerRepository {
       final bucket = allowed[entry.transactionId];
       if (bucket == null) continue;
       if (!seen.add(entry.transactionId)) continue;
-      kept.add(ReviewQueueEntry(transactionId: entry.transactionId, bucket: bucket));
+      kept.add(
+        ReviewQueueEntry(transactionId: entry.transactionId, bucket: bucket),
+      );
     }
     final additions = <ReviewQueueEntry>[
       for (final entry in wanted)
@@ -717,7 +756,8 @@ final class LedgerRepository {
     ];
     final merged = <ReviewQueueEntry>[...kept, ...additions];
 
-    final changed = merged.length != stored.entries.length ||
+    final changed =
+        merged.length != stored.entries.length ||
         !_sameOrder(merged, stored.entries);
 
     return _ReconcileResult(

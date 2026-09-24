@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
@@ -5,9 +8,11 @@ import 'package:sqflite/sqflite.dart';
 import 'package:younum/data/db/sqflite_ledger_store.dart';
 import 'package:younum/data/db/younum_schema.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
+import 'package:younum/domain/models/import_records.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/models/review_session_record.dart';
 import 'package:younum/domain/models/year_month.dart';
+import 'package:younum/domain/repositories/import_workflow.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
 
 /// 数据库层测试，跑在**真实的 Android SQLite** 上。
@@ -756,6 +761,144 @@ void main() {
             '提交过程重试时不能把同一行绑两次，否则引用计数会虚高、'
             '撤回批次时该删的交易删不掉',
       );
+    });
+  });
+  group('导入的暂存、提交与撤回', () {
+    const real = DemoLedgerSeed.realLedgerId;
+    final billedMonth = YearMonth(2026, 9);
+
+    final billBytes = Uint8List.fromList(
+      utf8.encode('''
+微信支付账单明细
+交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+2026-09-23 14:26:00,商户消费,老王牛肉面,牛肉面,支出,¥28.00,零钱,支付成功,4200001,M1001,/
+2026-09-24 09:02:11,商户消费,地铁公司,地铁,支出,¥5.00,零钱,支付成功,4200002,M1002,/
+2026-09-26 11:05:00,商户消费,某网店,杯子,支出,¥32.50,零钱,已全额退款,4200004,M1004,退款
+共 3 笔,合计,-33.00,,,,
+'''),
+    );
+
+    Future<ImportStaged> stageImport(
+      LedgerRepository repository,
+      String name,
+    ) async {
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: name,
+        bytes: billBytes,
+        sourceNamespace: 'wechat',
+        sourceAccount: '零钱',
+      );
+      expect(result, isA<ImportStaged>(), reason: '$result');
+      return result as ImportStaged;
+    }
+
+    test('暂存时不进正式账，提交后才在一个事务里写进去', () async {
+      final repository = _repositoryFor(store);
+      final staged = await stageImport(repository, 'wechat.csv');
+      expect(staged.preview.freshCount, 2);
+      expect(staged.preview.invalidCount, 1, reason: '退款那行');
+
+      // 这是整个导入设计的地基：没确认的数据不能进首页金额。
+      expect(
+        (await repository.dataset(ledgerId: real)).transactions,
+        isEmpty,
+        reason: '真实账本仍是空的',
+      );
+
+      final committed = await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      expect(committed.count, 2);
+      expect(committed.amountCents, 2800 + 500);
+
+      final db = await openRaw();
+      expect(await countOf(db, 'txn'), 8, reason: '6 笔演示 + 2 笔导入');
+      expect(await countOf(db, 'transaction_origin'), 2);
+      expect(await countOf(db, 'import_row'), 3, reason: '2 笔入账 + 1 笔退款');
+
+      final batches = await db.query('import_batch');
+      expect(batches.first['stage'], 'COMMITTED');
+      expect(batches.first['new_count'], 2);
+      expect(batches.first['amount_cents'], 3300);
+
+      // 同一份文件再导一次，交易不再增加（同源键顶住了）。
+      expect(
+        (await repository.dataset(ledgerId: real)).transactions,
+        hasLength(2),
+      );
+    });
+
+    test('撤回只删不再被任何批次引用的交易', () async {
+      final repository = _repositoryFor(store);
+      final first = await stageImport(repository, 'wechat.csv');
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: first.preview.batchId,
+      );
+
+      // 第二份账单：同一批单号，但用户在核对页上决定「仍然导入」其中一笔。
+      // 这一步在真机 SQL 上是关键 —— 如果提交时又插一条交易，
+      // 会直接撞 (ledger_id, dedupe_key) 唯一索引，整批失败。
+      final second = await stageImport(repository, 'wechat-again.csv');
+      expect(second.preview.duplicateCount, 2);
+      final rows = await repository.importRows(batchId: second.preview.batchId);
+      final duplicate = rows.firstWhere(
+        (row) => row.status == ImportRowStatus.duplicate,
+      );
+      await repository.updateImportRows(<ImportRow>[
+        duplicate.copyWith(included: true, status: ImportRowStatus.newRow),
+      ]);
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: second.preview.batchId,
+      );
+
+      final db = await openRaw();
+      expect(await countOf(db, 'txn'), 8, reason: '复用已有那一笔，不再插新交易');
+      expect(await countOf(db, 'transaction_origin'), 3, reason: '那一笔有两处来源');
+
+      final reverted = await repository.revertImport(
+        batchId: first.preview.batchId,
+      );
+      expect(reverted.deletedCount, 1);
+      expect(reverted.sharedTransactionIds, hasLength(1));
+      expect(
+        (await repository.dataset(ledgerId: real)).transactions,
+        hasLength(1),
+        reason: '被第二份引用的那笔必须留下，否则用户会凭空少一笔消费',
+      );
+    });
+
+    test('撤回不动用户已经分过类的交易', () async {
+      final repository = _repositoryFor(store);
+      final staged = await stageImport(repository, 'wechat.csv');
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+
+      final dataset = await repository.dataset(ledgerId: real);
+      final classified = dataset.transactions.firstWhere(
+        (transaction) => transaction.merchant == '老王牛肉面',
+      );
+      await repository.confirm(
+        ledgerId: real,
+        month: billedMonth,
+        transactionId: classified.id,
+        categoryId: SeedCategoryIds.food,
+      );
+
+      final reverted = await repository.revertImport(
+        batchId: staged.preview.batchId,
+      );
+      expect(reverted.deletedCount, 1);
+      expect(reverted.editedTransactionIds, <int>[classified.id]);
+
+      final db = await openRaw();
+      expect(await countOf(db, 'allocation'), 1, reason: '用户做的分类不能因为撤回导入而消失');
+      expect(await countOf(db, 'txn'), 7, reason: '6 笔演示 + 1 笔保留下来的');
     });
   });
 }
