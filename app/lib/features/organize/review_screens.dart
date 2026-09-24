@@ -15,9 +15,6 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/money/money.dart';
-import '../../core/time/statistics_time.dart';
-import '../../data/sample/sample_data.dart';
-import '../../domain/models/ledger_transaction.dart';
 import 'category_registry.dart';
 import 'review_card.dart';
 import 'review_session.dart';
@@ -27,43 +24,13 @@ import 'review_session.dart';
 /// 详情页必须依据**实际交易 ID** 展示与编辑，不能固定成某一笔
 /// （指南第 5 节 detail）。找不到时返回 null，由调用方给出解释与返回入口。
 ///
-/// 查找顺序：先找**真实数据**（当前队列 / 稍后队列 / 已完成），
-/// 找不到再回退到设计走查用的样例列表 —— 明细与趋势页在阶段 5 之前
-/// 仍然展示样例数据，它们的 ID 也来自那里。
+/// 从会话的完整数据集里找，而不是只翻当前队列：明细、分类下钻、分享
+/// 都可能指向已归类、收入、退款或别的月份的记录。
 ReviewCard? _resolveTransaction(BuildContext context, String? id) {
   final session = ReviewSessionScope.of(context);
-  final candidates = <ReviewCard>[
-    ...session.queue,
-    ...session.deferred,
-    ...session.done.map((entry) => entry.card),
-  ];
   final target = int.tryParse(id ?? '');
-  if (target != null) {
-    for (final candidate in candidates) {
-      if (candidate.id == target) return candidate;
-    }
-  }
-  if (id == null) return candidates.isEmpty ? null : candidates.first;
-
-  for (final transaction in <SampleTransaction>[
-    ...SampleData.reviewQueue,
-    ...SampleData.deferredQueue,
-  ]) {
-    if (transaction.id != id) continue;
-    return ReviewCard(
-      transaction: LedgerTransaction(
-        id: 0,
-        ledgerId: 0,
-        occurredAtMs: 0,
-        amountCents: transaction.amountCents,
-        merchant: transaction.merchant,
-        nature: TransactionNature.unknown,
-        reviewStatus: ReviewStatus.pending,
-        timeZone: StatisticsTime.timeZone,
-      ),
-    );
-  }
-  return null;
+  if (target == null) return session.current;
+  return session.cardFor(target);
 }
 
 /// 交易不存在时的解释页。

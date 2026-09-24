@@ -221,7 +221,12 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.trends:
         return (context) => const TrendsScreen();
       case AppRoutes.transactions:
-        return (context) => const TransactionsScreen();
+        final args = settings.arguments;
+        return (context) => TransactionsScreen(
+              args: args is TransactionsArgs
+                  ? args
+                  : const TransactionsArgs(),
+            );
       case AppRoutes.share:
         return (context) => const ShareScreen();
       case AppRoutes.months:

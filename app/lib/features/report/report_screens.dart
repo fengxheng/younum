@@ -17,7 +17,12 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/money/money.dart';
-import '../../data/sample/sample_data.dart';
+import '../../core/time/statistics_time.dart';
+import '../../domain/models/ledger_transaction.dart';
+import '../../domain/models/year_month.dart';
+import '../../domain/rules/month_insights.dart';
+import '../../domain/rules/month_overview.dart';
+import '../../domain/rules/monthly_stats.dart';
 import '../organize/category_registry.dart';
 import '../organize/review_session.dart';
 
@@ -27,11 +32,82 @@ Color _seriesColor(int index) => ColorMath.toColor(
       YounumColors.categorySeries[index % YounumColors.categorySeries.length],
     );
 
-/// 按金额降序排列的分类。
-List<SampleCategory> get _sortedCategories {
-  final list = List<SampleCategory>.of(SampleData.categories);
-  list.sort((a, b) => b.amountCents.compareTo(a.amountCents));
-  return list;
+/// 基点转百分比文本，保留一位小数。
+String _percentText(int basisPoints) =>
+    '${(basisPoints / 100).toStringAsFixed(1)}%';
+
+/// 交易性质的中文说明。
+String _natureLabel(TransactionNature nature) => switch (nature) {
+      TransactionNature.expense => '消费',
+      TransactionNature.income => '收入',
+      TransactionNature.transfer => '转账',
+      TransactionNature.refund => '退款',
+      TransactionNature.excluded => '排除统计',
+      TransactionNature.unknown => '待判断',
+    };
+
+/// 金额前缀：支出是负方向，收入与退款是正方向。
+///
+/// 金额在库里一律存**非负绝对值**，方向由交易性质表达（指南 3.1），
+/// 因此符号必须在这里显式补上，不能指望数值自带正负。
+String _signedAmount(LedgerTransaction transaction) {
+  final body = '¥${Money.format(transaction.amountCents, grouped: true)}';
+  return switch (transaction.nature) {
+    TransactionNature.expense => '\u2212$body',
+    TransactionNature.income || TransactionNature.refund => '+$body',
+    TransactionNature.transfer ||
+    TransactionNature.excluded ||
+    TransactionNature.unknown =>
+      body,
+  };
+}
+
+/// 载入中占位。避免在拿到数据之前先把 0 画出来闪一下。
+class _ReportLoading extends StatelessWidget {
+  const _ReportLoading({this.title, this.bottomBar = false});
+
+  final String? title;
+  final bool bottomBar;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = const Center(child: YounumMutedText('正在读取本地账单…'));
+    return YounumScreen(
+      title: title,
+      bottomBar: bottomBar ? const AppBottomBar() : null,
+      child: body,
+    );
+  }
+}
+
+/// 当前月份还没有可展示的消费。
+///
+/// 指南 3.4：只有收入或没有消费时使用空状态，**不能除以零绘制环形图**。
+class _NoExpense extends StatelessWidget {
+  const _NoExpense({required this.month, required this.description});
+
+  final YearMonth month;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        YounumEmptyState(
+          icon: YounumIcons.navReport,
+          title: '${month.label}还没有消费记录',
+          description: description,
+        ),
+        const SizedBox(height: YounumDimens.gap),
+        PrimaryAction(
+          label: '导入月账单',
+          trailingArrow: true,
+          onPressed: () => context.open(AppRoutes.billImport),
+        ),
+      ],
+    );
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -43,7 +119,9 @@ List<SampleCategory> get _sortedCategories {
 /// 三条硬规则（指南 3.4）：
 /// * 范围未确认完整时标注「部分账单」，不冒充完整月报；
 /// * 没有消费时用空状态，不画空环形图、不除以零；
-/// * 环比只在两个月都完整且上月净消费大于 0 时显示。
+/// * 环比只在两个月都完整且上月净消费大于 0 时显示百分比。
+///
+/// 数字全部来自 `MonthReport`：与首页、趋势、明细、分享用的是**同一份**计算结果。
 class ReportScreen extends StatelessWidget {
   const ReportScreen({super.key, this.debugForceEmpty = false});
 
@@ -54,17 +132,48 @@ class ReportScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final session = ReviewSessionScope.of(context);
-    final month = SampleData.month;
-    final coverageConfirmed = session.coverageConfirmed;
+    final overview = session.overview;
+    final insights = session.insights;
+    if (overview == null || insights == null) {
+      return const _ReportLoading(bottomBar: true);
+    }
 
-    if (debugForceEmpty) {
-      return const YounumScreen(
-        bottomBar: AppBottomBar(),
-        child: YounumEmptyState(
-          icon: YounumIcons.navReport,
-          title: '这个月还没有消费记录',
-          description: '导入账单并完成整理后，这里会出现分类结构、趋势与环比。'
-              '没有消费时不展示占比，也不计算环比。',
+    final month = overview.month;
+    final summary = overview.summary;
+    final routeArgs = <Widget>[
+      Row(
+        children: <Widget>[
+          Expanded(child: Text('YOUR MONTH IN REVIEW', style: text.eyebrow)),
+          PlainTextButton(
+            label: month.label,
+            trailingIcon: YounumIcons.expandMore,
+            semanticLabel: '切换月份，当前 ${month.label}',
+            onTap: () => context.open(AppRoutes.months),
+          ),
+        ],
+      ),
+      Text('${month.month} 月消费手记', style: text.screenTitle),
+      const SizedBox(height: YounumDimens.gap),
+    ];
+
+    if (debugForceEmpty || !summary.hasExpense) {
+      return YounumScreen(
+        bottomBar: const AppBottomBar(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            ...routeArgs,
+            _NoExpense(
+              month: month,
+              description: debugForceEmpty
+                  ? '设计走查：这一屏用来检查没有消费时的呈现。'
+                      '没有消费时不展示占比，也不计算环比。'
+                  : summary.importedExpenseCount == 0
+                      ? '这个月还没有导入账单。导入后完成整理，这里会出现分类结构、趋势与环比。'
+                      : '这个月已导入 ${summary.importedExpenseCount} 笔记录，'
+                          '但还没有确认归类的消费，所以暂时没有可展示的占比。',
+            ),
+          ],
         ),
       );
     }
@@ -74,31 +183,24 @@ class ReportScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Row(
-            children: <Widget>[
-              Expanded(child: Text('YOUR MONTH IN REVIEW', style: text.eyebrow)),
-              PlainTextButton(
-                label: SampleData.monthLabel,
-                trailingIcon: YounumIcons.expandMore,
-                semanticLabel: '切换月份，当前 ${SampleData.monthLabel}',
-                onTap: () => context.open(AppRoutes.months),
-              ),
-            ],
-          ),
-          Text('9 月消费手记', style: text.screenTitle),
-          const SizedBox(height: YounumDimens.gap),
+          ...routeArgs,
           YounumPanel(
             tone: YounumPanelTone.dark,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 YounumMutedText(
-                  coverageConfirmed ? '这个月，一共花了' : '这个月，截至 9月30日一共花了',
+                  overview.progress.isCompleteMonth
+                      ? '这个月，一共花了'
+                      // 没确认范围完整时要说清「截至哪天」，
+                      // 不能把已导入的一部分说成一整月。
+                      : '这个月，截至 ${month.month}月'
+                          '${insights.averageDenominatorDays}日一共花了',
                   style: text.body.copyWith(fontSize: 13),
                 ),
                 const SizedBox(height: YounumDimens.gapSm),
                 AmountText(
-                  cents: month.totalCents,
+                  cents: summary.netExpenseCents,
                   scale: AmountScale.panel,
                   color: YounumColors.of(context).onDarkPanelColor,
                 ),
@@ -107,21 +209,31 @@ class ReportScreen extends StatelessWidget {
                   spacing: 8,
                   runSpacing: 8,
                   children: <Widget>[
-                    // 环比只在两个月都完整时才显示（指南 3.4）。
-                    const YounumBadge('↘ ${SampleData.monthOverMonthText}'),
-                    YounumBadge('${month.transactionCount} 笔消费'),
-                    if (!coverageConfirmed)
+                    if (insights.canShowMonthOverMonthPercent)
+                      YounumBadge(
+                        '${insights.monthOverMonthBasisPoints! > 0 ? '↗' : '↘'} '
+                        '环比 ${_percentText(insights.monthOverMonthBasisPoints!.abs())}',
+                      ),
+                    YounumBadge('${summary.expenseCount} 笔消费'),
+                    if (summary.refundCents != 0)
+                      YounumBadge(
+                        '已抵扣退款 ¥${Money.format(summary.refundCents, grouped: true)}',
+                        tone: YounumBadgeTone.onDark,
+                      ),
+                    if (!overview.progress.isCompleteMonth)
                       const YounumBadge('部分账单', tone: YounumBadgeTone.onDark),
                   ],
                 ),
               ],
             ),
           ),
-          if (!coverageConfirmed)
-            const YounumNotice(
-              '你还没有确认 9 月账单范围完整。上面的金额只代表已导入的部分，'
+          if (!overview.progress.isCompleteMonth)
+            YounumNotice(
+              '你还没有确认 ${month.month} 月账单范围完整。上面的金额只代表已导入的部分，'
               '不能直接与完整自然月比较。',
             ),
+          if (summary.issues.isNotEmpty)
+            YounumNotice('有几笔记录的数据需要核对：${summary.issues.join('；')}'),
           YounumPanel(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -137,11 +249,11 @@ class ReportScreen extends StatelessWidget {
                 ),
                 YounumDonutChart(
                   centerLabel: '消费分布',
-                  centerValue: '${SampleData.categories.length} 类',
-                  slices: _donutSlices,
+                  centerValue: '${summary.byCategory.length} 类',
+                  slices: _donutSlices(summary),
                 ),
                 const SizedBox(height: YounumDimens.gapLg),
-                YounumLegend(entries: _legendEntries),
+                YounumLegend(entries: _legendEntries(summary)),
               ],
             ),
           ),
@@ -152,62 +264,61 @@ class ReportScreen extends StatelessWidget {
               onTap: () => context.open(AppRoutes.trends),
             ),
           ),
-          YounumMutedText(SampleData.insights.join('\n')),
+          YounumMutedText(insights.findings.join('\n')),
           const SizedBox(height: YounumDimens.gapLg),
           PrimaryAction(
             label: '保存我的月度回顾',
             style: YounumActionStyle.secondary,
             onPressed: () => context.open(AppRoutes.share),
           ),
-          const YounumDemoNote(
-            '设计走查：本页金额沿用设计稿样例。阶段 5 起改为实时汇总查询，'
-            '并保证分类净额之和与消费净额精确相等。',
-          ),
         ],
       ),
     );
   }
 
-  static List<YounumDonutSlice> get _donutSlices {
-    final total = SampleData.month.totalCents;
-    final sorted = _sortedCategories;
-    final slices = <YounumDonutSlice>[];
-    for (var index = 0; index < sorted.length; index++) {
-      slices.add(
+  /// 环形图切片。净额为 0 的分类不会出现在 [MonthlySummary.byCategory] 里，
+  /// 所以这里不需要再过滤。
+  static List<YounumDonutSlice> _donutSlices(MonthlySummary summary) {
+    if (summary.netExpenseCents <= 0) return const <YounumDonutSlice>[];
+    return <YounumDonutSlice>[
+      for (var index = 0; index < summary.byCategory.length; index++)
         YounumDonutSlice(
-          label: sorted[index].name,
-          value: sorted[index].amountCents.toDouble(),
+          label: summary.byCategory[index].categoryName,
+          value: summary.byCategory[index].netCents.toDouble(),
           color: _seriesColor(index),
         ),
-      );
-    }
-    // 防御：总额为 0 时不产生任何切片，由组件渲染中性底环。
-    return total == 0 ? <YounumDonutSlice>[] : slices;
+    ];
   }
 
   /// 图例取前 5 类，其余合并，避免图例过长。
-  static List<YounumLegendEntry> get _legendEntries {
-    final total = SampleData.month.totalCents;
-    final sorted = _sortedCategories;
-    final entries = <YounumLegendEntry>[];
+  static List<YounumLegendEntry> _legendEntries(MonthlySummary summary) {
     const visible = 5;
-    for (var index = 0; index < sorted.length && index < visible; index++) {
+    final entries = <YounumLegendEntry>[];
+    for (var index = 0;
+        index < summary.byCategory.length && index < visible;
+        index++) {
+      final category = summary.byCategory[index];
+      final basisPoints = summary.shareBasisPointsOf(category.categoryId);
       entries.add(
         YounumLegendEntry(
-          label: sorted[index].name,
-          value: '${(sorted[index].amountCents / total * 100).toStringAsFixed(1)}%',
+          label: category.categoryName,
+          value: basisPoints == null ? '—' : _percentText(basisPoints),
           color: _seriesColor(index),
         ),
       );
     }
-    if (sorted.length > visible) {
-      final rest = sorted
-          .skip(visible)
-          .fold<int>(0, (sum, category) => sum + category.amountCents);
+    if (summary.byCategory.length > visible) {
+      var rest = 0;
+      for (final category in summary.byCategory.skip(visible)) {
+        rest += category.netCents;
+      }
+      final total = summary.netExpenseCents;
       entries.add(
         YounumLegendEntry(
           label: '其余',
-          value: '${(rest / total * 100).toStringAsFixed(1)}%',
+          value: total <= 0
+              ? '—'
+              : '${(rest * 100 / total).toStringAsFixed(1)}%',
           color: const Color(YounumColors.categorySeriesRest),
         ),
       );
@@ -233,8 +344,12 @@ class BreakdownScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final registry = CategoryRegistryScope.of(context);
-    final total = SampleData.month.totalCents;
-    final sorted = _sortedCategories;
+    final overview = ReviewSessionScope.of(context).overview;
+    if (overview == null) return const _ReportLoading(title: '消费分布');
+
+    final month = overview.month;
+    final summary = overview.summary;
+    final categories = summary.byCategory;
 
     return YounumScreen(
       title: '消费分布',
@@ -244,58 +359,82 @@ class BreakdownScreen extends StatelessWidget {
           Row(
             children: <Widget>[
               Expanded(child: Text('钱花在了这里', style: text.screenTitle)),
-              const YounumBadge('9月'),
+              YounumBadge(month.shortLabel),
             ],
           ),
           const SizedBox(height: YounumDimens.gapSm),
           YounumMutedText(
-            '共 ${sorted.length} 类用途 · ¥${Money.format(total, grouped: true)}',
+            '共 ${categories.length} 类用途 · '
+            '¥${Money.format(summary.netExpenseCents, grouped: true)}',
           ),
           const SizedBox(height: YounumDimens.gap),
-          for (var index = 0; index < sorted.length; index++)
-            YounumListRow(
-              leading: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  SizedBox(
-                    width: 26,
-                    child: Text('0${index + 1}', style: text.caption),
+          if (categories.isEmpty)
+            const YounumEmptyState(
+              icon: YounumIcons.navReport,
+              title: '这个月还没有可展示的消费',
+              description: '完成归类之后，这里会按用途列出每一类的净额与占比。',
+            )
+          else
+            for (var index = 0; index < categories.length; index++)
+              YounumListRow(
+                leading: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    SizedBox(
+                      width: 26,
+                      child: Text(
+                        '${index + 1}'.padLeft(2, '0'),
+                        style: text.caption,
+                      ),
+                    ),
+                    YounumTileIcon(
+                      iconKey: registry
+                          .iconFor(
+                            categories[index].categoryName,
+                            fallbackIconKey:
+                                YounumIcons.defaultCategoryIconKey,
+                          )
+                          .iconKey,
+                      imagePath:
+                          registry.iconFor(categories[index].categoryName).imagePath,
+                    ),
+                  ],
+                ),
+                title: categories[index].categoryName,
+                subtitleWidget: YounumProgressTrack(
+                  // 用「相对最高一项」画长度条，视觉上最长的正好占满。
+                  value: categories.first.netCents == 0
+                      ? 0
+                      : categories[index].netCents / categories.first.netCents,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 8, bottom: 2),
+                  semanticLabel: '${categories[index].categoryName} 占比',
+                ),
+                trailingWidget: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: <Widget>[
+                    Text(
+                      '¥${Money.format(categories[index].netCents, grouped: true)}',
+                      style: text.amountRow,
+                    ),
+                    const SizedBox(height: 4),
+                    YounumCaptionText(
+                      switch (summary.shareBasisPointsOf(categories[index].categoryId)) {
+                        final basisPoints? => _percentText(basisPoints),
+                        _ => '—',
+                      },
+                    ),
+                  ],
+                ),
+                // 下钻到该分类的具体消费记录（指南 10.3）。
+                onTap: () => context.open(
+                  AppRoutes.transactions,
+                  arguments: TransactionsArgs(
+                    categoryName: categories[index].categoryName,
                   ),
-                  YounumTileIcon(
-                    iconKey: registry
-                        .iconFor(
-                          sorted[index].name,
-                          fallbackIconKey: sorted[index].iconKey,
-                        )
-                        .iconKey,
-                    imagePath: registry.iconFor(sorted[index].name).imagePath,
-                  ),
-                ],
+                ),
+                showDivider: index != categories.length - 1,
               ),
-              title: sorted[index].name,
-              subtitleWidget: YounumProgressTrack(
-                value: sorted[index].amountCents / sorted.first.amountCents,
-                height: 4,
-                margin: const EdgeInsets.only(top: 8, bottom: 2),
-                semanticLabel: '${sorted[index].name} 占比',
-              ),
-              trailingWidget: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: <Widget>[
-                  Text(
-                    '¥${Money.format(sorted[index].amountCents, grouped: true)}',
-                    style: text.amountRow,
-                  ),
-                  const SizedBox(height: 4),
-                  YounumCaptionText(
-                    '${(sorted[index].amountCents / total * 100).toStringAsFixed(1)}%',
-                  ),
-                ],
-              ),
-              // 下钻到该分类的具体消费记录。
-              onTap: () => context.open(AppRoutes.transactions),
-              showDivider: index != sorted.length - 1,
-            ),
           const YounumPillNote('点击任一分类，查看对应的消费记录'),
         ],
       ),
@@ -316,8 +455,17 @@ class TrendsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
-    final amounts = SampleData.recentMonthsCents;
-    final maxAmount = amounts.reduce((a, b) => a > b ? a : b);
+    final session = ReviewSessionScope.of(context);
+    final report = session.report;
+    final insights = session.insights;
+    if (report == null || insights == null) {
+      return const _ReportLoading(title: '消费趋势');
+    }
+
+    final summary = report.overview.summary;
+    final month = report.overview.month;
+    final window = report.trend;
+    final recordedCount = window.where((point) => point.hasRecords).length;
 
     return YounumScreen(
       title: '消费趋势',
@@ -334,40 +482,77 @@ class TrendsScreen extends StatelessWidget {
               children: <Widget>[
                 Row(
                   children: <Widget>[
-                    Expanded(child: Text('近 6 个月', style: text.sectionTitle)),
-                    YounumCaptionText('单位 / 元'),
+                    Expanded(
+                      child: Text('近 ${window.length} 个月', style: text.sectionTitle),
+                    ),
+                    const YounumCaptionText('单位 / 元'),
                   ],
                 ),
                 const SizedBox(height: YounumDimens.gap),
                 AmountText(
-                  cents: SampleData.month.totalCents,
+                  cents: summary.netExpenseCents,
                   scale: AmountScale.panel,
                 ),
                 const SizedBox(height: YounumDimens.gapSm),
-                const YounumBadge('环比 −12.8%'),
-                _TrendChart(
-                  amounts: amounts,
-                  firstMonth: SampleData.firstTrendMonth,
-                  maxAmount: maxAmount,
-                ),
+                if (insights.canShowMonthOverMonthPercent)
+                  YounumBadge(
+                    '环比 ${insights.monthOverMonthBasisPoints! > 0 ? '+' : '\u2212'}'
+                    '${_percentText(insights.monthOverMonthBasisPoints!.abs())}',
+                  )
+                else if (insights.canShowMonthOverMonthDelta)
+                  YounumBadge(
+                    '比上月${(insights.monthOverMonthDeltaCents ?? 0) > 0 ? '多' : '少'} '
+                    '¥${Money.format((insights.monthOverMonthDeltaCents ?? 0).abs(), grouped: true)}',
+                  )
+                else
+                  const YounumBadge('暂无可比月份', tone: YounumBadgeTone.onDark),
+                _TrendChart(points: window, peak: report.trendPeakCents),
               ],
             ),
           ),
           YounumPanel(
             child: Column(
-              children: const <Widget>[
-                YounumLineInfo(label: '日均消费', value: SampleData.dayAverageText),
-                YounumLineInfo(label: '单笔最高', value: SampleData.highestSingleText),
+              children: <Widget>[
+                YounumLineInfo(
+                  label: insights.averageUsesFullMonth ? '日均消费' : '已覆盖范围日均',
+                  value: insights.dayAverageCents == null
+                      ? '—'
+                      : '¥${Money.format(insights.dayAverageCents!, grouped: true)}'
+                          '${insights.averageUsesFullMonth ? '' : '（${insights.averageDenominatorDays} 天）'}',
+                ),
+                YounumLineInfo(
+                  label: '单笔最高',
+                  value: insights.highestSingle == null
+                      ? '—'
+                      : '¥${Money.format(insights.highestSingle!.amountCents, grouped: true)}'
+                          ' · ${insights.highestSingleCategoryName ?? _natureLabel(insights.highestSingle!.nature)}',
+                ),
                 YounumLineInfo(
                   label: '消费最少的一天',
-                  value: SampleData.lowestDayText,
+                  value: insights.lowestSpendingDay == null
+                      ? '—'
+                      : '${month.month}月${insights.lowestSpendingDay!.day}日 · '
+                          '¥${Money.format(insights.lowestSpendingDay!.expenseCents, grouped: true)}',
                 ),
               ],
             ),
           ),
           const YounumSectionHeader(title: '变化来自哪里'),
-          const YounumLineInfo(label: '餐饮', value: '比上月减少 ¥216.40'),
-          const YounumLineInfo(label: '购物', value: '比上月减少 ¥590.00'),
+          if (insights.categoryChanges.isEmpty)
+            YounumMutedText(
+              insights.canShowMonthOverMonthDelta
+                  ? '这个月与上月相比，各分类没有变化。'
+                  : '需要连续两个范围完整的月份才能比较分类变化。'
+                      '现在只有 $recordedCount 个月有记录。',
+            )
+          else
+            for (final change in insights.categoryChanges)
+              YounumLineInfo(
+                label: change.categoryName,
+                value:
+                    '比上月${change.isIncrease ? '增加' : '减少'} '
+                    '¥${Money.format(change.deltaCents.abs(), grouped: true)}',
+              ),
           const YounumNotice(
             '按完整自然月比较，包含已确认消费及关联退款，不含收入与账户转账。'
             '首次使用时不展示环比；上月为零时只显示金额差，不显示「无限增长」。',
@@ -382,27 +567,26 @@ class TrendsScreen extends StatelessWidget {
 ///
 /// 用普通 Widget 搭建而不是截图，并给出文字摘要（指南 6.2）。
 class _TrendChart extends StatelessWidget {
-  const _TrendChart({
-    required this.amounts,
-    required this.firstMonth,
-    required this.maxAmount,
-  });
+  const _TrendChart({required this.points, required this.peak});
 
-  final List<int> amounts;
-  final int firstMonth;
-  final int maxAmount;
+  final List<MonthTrendPoint> points;
+  final int peak;
 
   @override
   Widget build(BuildContext context) {
-    final colors = YounumColors.of(context);
     final text = YounumText.of(context);
-    final summary = <String>[
-      for (var index = 0; index < amounts.length; index++)
-        '${firstMonth + index}月 ${Money.format(amounts[index], grouped: true)}元',
-    ].join('，');
+    final colors = YounumColors.of(context);
+
+    final summary = points
+        .map(
+          (point) => point.hasRecords
+              ? '${point.month.month}月 ${Money.format(point.netExpenseCents, grouped: true)}元'
+              : '${point.month.month}月 无记录',
+        )
+        .join('，');
 
     return Semantics(
-      label: '近 6 个月消费',
+      label: '近 ${points.length} 个月消费',
       value: summary,
       child: ExcludeSemantics(
         child: SizedBox(
@@ -410,7 +594,7 @@ class _TrendChart extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: <Widget>[
-              for (var index = 0; index < amounts.length; index++)
+              for (var index = 0; index < points.length; index++)
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 5),
@@ -421,13 +605,16 @@ class _TrendChart extends StatelessWidget {
                           child: Align(
                             alignment: Alignment.bottomCenter,
                             child: FractionallySizedBox(
-                              heightFactor: maxAmount == 0
+                              // 没有记录的月份柱子高度为 0，但月份标签仍然保留，
+                              // 不把空月份从窗口里抹掉。
+                              heightFactor: peak <= 0
                                   ? 0
-                                  : amounts[index] / maxAmount,
+                                  : (points[index].netExpenseCents / peak)
+                                      .clamp(0.0, 1.0),
                               child: Container(
                                 width: 26,
                                 decoration: BoxDecoration(
-                                  color: index == amounts.length - 1
+                                  color: index == points.length - 1
                                       ? colors.primaryColor
                                       : const Color(YounumColors.chartBar),
                                   borderRadius: const BorderRadius.vertical(
@@ -439,10 +626,7 @@ class _TrendChart extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          '${firstMonth + index}月',
-                          style: text.micro,
-                        ),
+                        Text('${points[index].month.month}月', style: text.micro),
                       ],
                     ),
                   ),
@@ -464,7 +648,9 @@ class _TrendChart extends StatelessWidget {
 /// 支持按整理状态筛选与按商户 / 用途搜索；修改后所有相关页面金额一致
 /// （指南第 5 节 transactions）。
 class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({super.key});
+  const TransactionsScreen({super.key, this.args = const TransactionsArgs()});
+
+  final TransactionsArgs args;
 
   @override
   State<TransactionsScreen> createState() => _TransactionsScreenState();
@@ -477,46 +663,73 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   String _filter = '全部';
   String _query = '';
 
+  /// 从分类详情下钻进来时预先应用的分类筛选（指南 10.3）。
+  String? _category;
+
+  @override
+  void initState() {
+    super.initState();
+    _category = widget.args.categoryName;
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
-  /// 演示账本的记录集合。
-  List<SampleTransaction> get _all => <SampleTransaction>[
-        ...SampleData.reviewQueue,
-        ...SampleData.deferredQueue,
-      ];
+  /// 当月的全部记录。
+  List<LedgerTransaction> get _all {
+    final report = ReviewSessionScope.of(context).report;
+    if (report == null) return const <LedgerTransaction>[];
+    final month = report.overview.month;
+    return <LedgerTransaction>[
+      for (final transaction in report.dataset.transactions)
+        if (transaction.month == month) transaction,
+    ]..sort((a, b) {
+        final byTime = b.occurredAtMs.compareTo(a.occurredAtMs);
+        return byTime != 0 ? byTime : b.id.compareTo(a.id);
+      });
+  }
 
-  List<SampleTransaction> get _visible {
-    final session = ReviewSessionScope.of(context);
-    final resolved = <String, String>{
-      for (final entry in session.done)
-        entry.card.id.toString(): entry.category,
-    };
+  /// 某笔记录归类到的分类名。
+  String? _categoryOf(LedgerTransaction transaction) {
+    final dataset = ReviewSessionScope.of(context).report?.dataset;
+    if (dataset == null) return null;
+    final allocations = dataset.allocationsOf(transaction.id);
+    if (allocations.isEmpty) return null;
+    return dataset.categoryName(allocations.first.categoryId);
+  }
 
-    var list = _all.where((transaction) {
+  /// 当前筛选 + 搜索之后的记录。
+  List<LedgerTransaction> _visible(List<LedgerTransaction> all) {
+    var list = all.where((transaction) {
+      if (_category != null && _categoryOf(transaction) != _category) {
+        return false;
+      }
       switch (_filter) {
         case '待整理':
-          return !resolved.containsKey(transaction.id) &&
-              transaction.categoryName == '待整理';
+          return transaction.reviewStatus != ReviewStatus.resolved &&
+              transaction.nature.isExpense;
         case '已归类':
-          return resolved.containsKey(transaction.id);
+          return transaction.reviewStatus == ReviewStatus.resolved;
         case '非消费':
-          return false;
+          return !transaction.nature.isExpense;
         default:
           return true;
       }
     }).toList();
 
-    if (_query.trim().isNotEmpty) {
-      final needle = _query.trim().toLowerCase();
+    final needle = _query.trim().toLowerCase();
+    if (needle.isNotEmpty) {
       list = list
           .where(
             (transaction) =>
                 transaction.merchant.toLowerCase().contains(needle) ||
-                transaction.categoryName.toLowerCase().contains(needle),
+                (_categoryOf(transaction) ?? '')
+                    .toLowerCase()
+                    .contains(needle) ||
+                _natureLabel(transaction.nature).contains(needle),
           )
           .toList();
     }
@@ -527,11 +740,13 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final session = ReviewSessionScope.of(context);
-    final resolved = <String, String>{
-      for (final entry in session.done)
-        entry.card.id.toString(): entry.category,
-    };
-    final visible = _visible;
+    final report = session.report;
+    if (report == null) return const _ReportLoading(title: '全部明细');
+
+    final month = report.overview.month;
+    final all = _all;
+    final visible = _visible(all);
+    final registry = CategoryRegistryScope.of(context);
 
     return YounumScreen(
       title: '全部明细',
@@ -539,24 +754,33 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Text(
-            _filter == '全部' ? '每一笔，都能找到' : '$_filter消费明细',
+            _filter == '全部' && _category == null
+                ? '每一笔，都能找到'
+                : '${_category ?? ''}$_filter记录',
             style: text.screenTitle,
           ),
           const SizedBox(height: YounumDimens.gap),
           TextField(
             controller: _searchController,
-            onChanged: (value) => setState(() => _query = value),
-            style: text.input,
             decoration: const InputDecoration(
-              hintText: '搜索商户、用途或备注',
-              prefixIcon: Icon(Icons.search, size: 20),
+              hintText: '搜索商户或用途',
+              prefixIcon: Icon(YounumIcons.search),
             ),
+            textInputAction: TextInputAction.search,
+            onChanged: (value) => setState(() => _query = value),
           ),
           const SizedBox(height: YounumDimens.gap),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: <Widget>[
+              if (_category != null)
+                YounumChip(
+                  label: '$_category ✕',
+                  selected: true,
+                  semanticPrefix: '清除分类筛选',
+                  onTap: () => setState(() => _category = null),
+                ),
               for (final filter in _filters)
                 YounumChip(
                   label: filter,
@@ -571,7 +795,8 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
             children: <Widget>[
               Expanded(
                 child: YounumMutedText(
-                  '${SampleData.monthLabel} · 示例账本 ${visible.length} 笔',
+                  '${month.label} · ${session.isDemoLedger ? '示例账本 ' : ''}'
+                  '${visible.length} / ${all.length} 笔',
                 ),
               ),
               PlainTextButton(
@@ -590,18 +815,23 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
           else
             for (var index = 0; index < visible.length; index++)
               YounumListRow(
-                key: ValueKey<String>(visible[index].id),
+                key: ValueKey<int>(visible[index].id),
                 title: visible[index].merchant,
                 subtitle:
-                    '${visible[index].dateText} · ${resolved[visible[index].id] ?? '待整理'}',
-                iconKey: SampleData.iconKeyFor(
-                  resolved[visible[index].id] ?? visible[index].categoryName,
-                ),
-                trailingText: '−${Money.format(visible[index].amountCents)}',
+                    '${StatisticsTime.formatShort(visible[index].occurredAtMs)} · '
+                    '${_categoryOf(visible[index]) ?? _natureLabel(visible[index].nature)}'
+                    '${visible[index].reviewStatus == ReviewStatus.deferred ? ' · 稍后处理' : ''}',
+                iconKey: registry
+                    .iconFor(
+                      _categoryOf(visible[index]) ?? '',
+                      fallbackIconKey: YounumIcons.defaultCategoryIconKey,
+                    )
+                    .iconKey,
+                trailingText: _signedAmount(visible[index]),
                 onTap: () => context.open(
                   AppRoutes.transactionDetail,
                   arguments: TransactionDetailArgs(
-                    transactionId: visible[index].id,
+                    transactionId: '${visible[index].id}',
                   ),
                 ),
                 showDivider: index != visible.length - 1,
@@ -635,7 +865,11 @@ class _ShareScreenState extends State<ShareScreen> {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final colors = YounumColors.of(context);
-    final month = SampleData.month;
+    final overview = ReviewSessionScope.of(context).overview;
+    if (overview == null) return const _ReportLoading(title: '保存月度回顾');
+
+    final month = overview.month;
+    final summary = overview.summary;
 
     return YounumScreen(
       title: '保存月度回顾',
@@ -656,9 +890,14 @@ class _ShareScreenState extends State<ShareScreen> {
                 Row(
                   children: <Widget>[
                     Expanded(
-                      child: Text('∷ 有数', style: text.listPrimary.copyWith(fontSize: 15)),
+                      child: Text(
+                        '∷ 有数',
+                        style: text.listPrimary.copyWith(fontSize: 15),
+                      ),
                     ),
-                    YounumCaptionText('2026 / 09'),
+                    YounumCaptionText(
+                      '${month.year} / ${month.month.toString().padLeft(2, '0')}',
+                    ),
                   ],
                 ),
                 const SizedBox(height: YounumDimens.gap),
@@ -667,11 +906,11 @@ class _ShareScreenState extends State<ShareScreen> {
                   style: text.screenTitle.copyWith(fontSize: 26),
                 ),
                 const SizedBox(height: YounumDimens.gapSm),
-                YounumMutedText('我的 9 月消费手记'),
+                YounumMutedText('我的 ${month.month} 月消费手记'),
                 const SizedBox(height: YounumDimens.gap),
                 if (_showAmount)
                   AmountText(
-                    cents: month.totalCents,
+                    cents: summary.netExpenseCents,
                     scale: AmountScale.panel,
                   )
                 else
@@ -692,10 +931,12 @@ class _ShareScreenState extends State<ShareScreen> {
                 Row(
                   children: <Widget>[
                     Expanded(
-                      child: YounumCaptionText('${month.transactionCount} 笔生活记录'),
+                      child: YounumCaptionText(
+                        '${summary.importedExpenseCount} 笔生活记录',
+                      ),
                     ),
                     YounumCaptionText(
-                      '${SampleData.categories.length} 种生活用途',
+                      '${summary.byCategory.length} 种生活用途',
                     ),
                   ],
                 ),
@@ -717,7 +958,7 @@ class _ShareScreenState extends State<ShareScreen> {
             label: '导出月度回顾',
             onPressed: () => showYounumToast(
               context,
-              'PNG 导出将在阶段 5 接入：会按当前主题与隐私开关重新生成文件',
+              'PNG 导出将在阶段 5 后续接入：会按当前主题与隐私开关重新生成文件',
             ),
           ),
           const SizedBox(height: YounumDimens.gap),
@@ -726,12 +967,12 @@ class _ShareScreenState extends State<ShareScreen> {
             style: YounumActionStyle.secondary,
             onPressed: () => showYounumToast(
               context,
-              'CSV 导出将在阶段 5 接入：含防公式注入处理，且不等同于完整备份',
+              'CSV 导出将在阶段 5 后续接入：含防公式注入处理，且不等同于完整备份',
             ),
           ),
           const YounumDemoNote(
-            '设计走查：本页的隐私开关已按规则「每次进入默认隐藏」，'
-            '但导出本身尚未接入文件写入，因此不会产生半成品文件。',
+            '本页金额已经来自真实查询；隐私开关按规则「每次进入默认隐藏」。'
+            '导出尚未接入文件写入，因此不会产生半成品文件。',
           ),
         ],
       ),
@@ -754,20 +995,36 @@ class MonthsScreen extends StatefulWidget {
 }
 
 class _MonthsScreenState extends State<MonthsScreen> {
-  int _selected = 9;
+  int? _year;
+  int? _pickedMonth;
 
-  /// 该月的状态。9 月整理中，4–8 月已完成，其余尚无记录。
-  String _statusOf(int month) {
-    if (month == 9) return '整理中';
-    if (month > 3 && month < 9) return '已完成';
-    return '—';
+  /// 年份默认取当前会话所在月份，切换年份后按用户选择走。
+  int _effectiveYear(YearMonth current) => _year ?? current.year;
+
+  int get _selectedMonth => _pickedMonth ?? 0;
+
+  /// 某个月的状态说明。
+  String _statusOf(MonthOverview overview) {
+    if (!overview.summary.hasRecords) return '—';
+    if (overview.progress.isCompleteMonth) return '已完成';
+    if (overview.progress.isFullyProcessed) return '待确认';
+    return '整理中';
   }
-
-  bool get _hasData => _selected > 3 && _selected <= 9;
 
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
+    final session = ReviewSessionScope.of(context);
+    final report = session.report;
+    final current = session.month;
+    if (report == null || current == null) {
+      return const _ReportLoading(title: '我的月份');
+    }
+
+    final year = _effectiveYear(current);
+    final selected = _selectedMonth;
+    YearMonth monthOf(int month) => YearMonth(year, month);
+    MonthOverview overviewOf(int month) => report.overviewOf(monthOf(month));
 
     return YounumScreen(
       title: '我的月份',
@@ -778,11 +1035,35 @@ class _MonthsScreenState extends State<MonthsScreen> {
           const SizedBox(height: YounumDimens.gap),
           Row(
             children: <Widget>[
-              Expanded(child: Text('2026 年', style: text.sectionTitle)),
-              YounumMutedText(
-                '已记录 ${SampleData.recordedMonthCount} 个月',
+              YounumIconButton(
+                icon: YounumIcons.back,
+                semanticLabel: '上一年',
+                onPressed: () => setState(() {
+                  _year = year - 1;
+                  _pickedMonth = null;
+                }),
+              ),
+              Expanded(
+                child: Text(
+                  '$year 年',
+                  style: text.sectionTitle,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              YounumIconButton(
+                icon: YounumIcons.forward,
+                semanticLabel: '下一年',
+                onPressed: () => setState(() {
+                  _year = year + 1;
+                  _pickedMonth = null;
+                }),
               ),
             ],
+          ),
+          const SizedBox(height: YounumDimens.gapSm),
+          YounumMutedText(
+            '已记录 ${report.recordedMonths.length} 个月'
+            '${report.recordedMonths.isEmpty ? '' : '，最近的是 ${report.recordedMonths.first.label}'}',
           ),
           const SizedBox(height: YounumDimens.gap),
           GridView.count(
@@ -796,51 +1077,64 @@ class _MonthsScreenState extends State<MonthsScreen> {
               for (var month = 1; month <= 12; month++)
                 _MonthCell(
                   month: month,
-                  status: _statusOf(month),
-                  selected: month == _selected,
-                  onTap: () => setState(() => _selected = month),
+                  status: _statusOf(overviewOf(month)),
+                  selected: month == selected ||
+                      (selected == 0 && monthOf(month) == current),
+                  onTap: () => setState(() => _pickedMonth = month),
                 ),
             ],
           ),
           const SizedBox(height: YounumDimens.gap),
           YounumPanel(
             tone: YounumPanelTone.soft,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
+            child: Builder(
+              builder: (context) {
+                final target = selected == 0 ? current : monthOf(selected);
+                final overview = report.overviewOf(target);
+                final hasRecords = overview.summary.hasRecords;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Expanded(
-                      child: Text('$_selected 月账单', style: text.sectionTitle),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            '${target.month} 月账单',
+                            style: text.sectionTitle,
+                          ),
+                        ),
+                        YounumBadge(
+                          hasRecords ? _statusOf(overview) : '尚无记录',
+                        ),
+                      ],
                     ),
-                    YounumBadge(_hasData ? _statusOf(_selected) : '尚无记录'),
+                    const SizedBox(height: YounumDimens.gapSm),
+                    YounumMutedText(
+                      hasRecords
+                          // 有记录就如实给出金额，不等到「整理完」才显示。
+                          ? '已导入 ${overview.summary.importedExpenseCount} 笔 · '
+                              '净消费 ¥${Money.format(overview.summary.netExpenseCents, grouped: true)}'
+                          : '${target.month} 月还没有导入账单，不会有任何金额或分类数据。',
+                    ),
+                    const SizedBox(height: YounumDimens.gap),
+                    PrimaryAction(
+                      label: '查看这个月',
+                      trailingArrow: true,
+                      onPressed: hasRecords
+                          ? () async {
+                              await session.selectMonth(target);
+                              if (!context.mounted) return;
+                              Navigator.of(context).maybePop();
+                            }
+                          : null,
+                    ),
                   ],
-                ),
-                const SizedBox(height: YounumDimens.gapSm),
-                YounumMutedText(
-                  _hasData
-                      ? '按月份查看账单与消费回顾'
-                      : '$_selected 月还没有导入账单，不会有任何金额或分类数据。',
-                ),
-                const SizedBox(height: YounumDimens.gap),
-                PrimaryAction(
-                  label: '查看这个月',
-                  trailingArrow: true,
-                  onPressed: _hasData
-                      ? () {
-                          showYounumToast(
-                            context,
-                            '阶段 5 起会按 $_selected 月加载真实数据',
-                          );
-                        }
-                      : null,
-                ),
-              ],
+                );
+              },
             ),
           ),
           const YounumDemoNote(
-            '设计走查：切换月份会更新下方面板的状态，'
-            '没有记录的月份不会显示任何金额。真实按月查询在阶段 5 接入。',
+            '切换月份会读取对应月份的真实数据；没有记录的月份不显示任何金额。',
           ),
         ],
       ),
@@ -865,10 +1159,11 @@ class _MonthCell extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = YounumColors.of(context);
     final text = YounumText.of(context);
+    final hasRecords = status != '—';
     return Semantics(
       selected: selected,
       button: true,
-      label: '$month 月，$status',
+      label: '$month 月，${hasRecords ? status : '没有记录'}',
       excludeSemantics: true,
       child: Material(
         color: Colors.transparent,

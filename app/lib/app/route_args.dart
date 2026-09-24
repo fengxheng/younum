@@ -50,6 +50,17 @@ class TransactionDetailArgs {
   final String? transactionId;
 }
 
+/// 明细检索参数。
+///
+/// 指南 10.3 要求「按分类下钻只显示对应明细」，所以从分类详情进入明细时
+/// 必须带上分类名，而不是打开一个没有筛选的全部明细。
+class TransactionsArgs {
+  const TransactionsArgs({this.categoryName});
+
+  /// 进入时预先应用的分类筛选。
+  final String? categoryName;
+}
+
 /// 分类详情（下钻）参数。
 class BreakdownArgs {
   const BreakdownArgs({this.categoryName});

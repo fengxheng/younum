@@ -423,11 +423,26 @@ class ReviewSession extends ChangeNotifier {
     }
   }
 
+  /// 按 ID 取一张卡片。
+  ///
+  /// 详情页用它：明细、分类下钻、分享都可能指向**不在当前队列里**的记录
+  /// （已归类、收入、退款、其它月份），所以从完整数据集里找，
+  /// 而不是只翻队列。
+  ReviewCard? cardFor(int transactionId) {
+    final transaction = (_report?.dataset ?? _snapshot?.dataset)
+        ?.transaction(transactionId);
+    if (transaction == null) return null;
+    return _cardOf(transaction);
+  }
+
+  /// 按 ID 找分类。
+  Category? categoryOf(int categoryId) => _categoryById(categoryId);
+
   /// 把交易记录翻译成展示模型。
   ReviewCard _cardOf(LedgerTransaction transaction) {
-    final snapshot = _snapshot;
-    if (snapshot == null) return ReviewCard(transaction: transaction);
-    final allocations = snapshot.dataset.allocationsOf(transaction.id);
+    final dataset = _report?.dataset ?? _snapshot?.dataset;
+    if (dataset == null) return ReviewCard(transaction: transaction);
+    final allocations = dataset.allocationsOf(transaction.id);
     if (allocations.isEmpty) return ReviewCard(transaction: transaction);
     final allocation = allocations.first;
     return ReviewCard(
