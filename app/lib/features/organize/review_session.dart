@@ -172,6 +172,20 @@ class ReviewSession extends ChangeNotifier {
           if (!category.archived) category,
       ];
 
+  /// 本月可作为「原消费」的记录，供退款关联选择。
+  ///
+  /// 只放消费：退款只能抵扣消费（指南 3.5）。已经拆过的原消费也放进来，
+  /// 由仓库层告诉用户「这种要先指定抵扣到哪些用途」，
+  /// 而不是在列表里默默隐掉一整类记录。
+  List<ReviewCard> get refundableOriginals {
+    final dataset = _report?.dataset ?? _snapshot?.dataset;
+    if (dataset == null) return const <ReviewCard>[];
+    return <ReviewCard>[
+      for (final transaction in dataset.transactions)
+        if (transaction.nature.isExpense) _cardOf(transaction),
+    ];
+  }
+
   /// 当前卡片。
   ReviewCard? get current {
     final transaction = _snapshot?.current;
@@ -348,6 +362,26 @@ class ReviewSession extends ChangeNotifier {
         transactionId: transactionId,
         note: note,
         categoryId: categoryId,
+      ),
+    );
+  }
+
+  /// 把一笔退款关联到原消费，并同时把它标成退款、处理完成。
+  Future<bool> linkRefundAndResolve({
+    required int refundTransactionId,
+    required int originalTransactionId,
+  }) async {
+    if (_committing) return false;
+    final ledgerId = _ledgerId;
+    final month = _month;
+    if (ledgerId == null || month == null) return false;
+
+    return _commit(
+      () => repository.linkRefundAndResolve(
+        ledgerId: ledgerId,
+        month: month,
+        refundTransactionId: refundTransactionId,
+        originalTransactionId: originalTransactionId,
       ),
     );
   }

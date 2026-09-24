@@ -69,8 +69,14 @@ abstract interface class LedgerStore {
 
   /// 取账本的数据集。
   ///
-  /// [months] 为 null 表示取全部；给定月份时，额外带上**关联到这些月份消费的
-  /// 退款**（即使退款本身发生在别的月份）—— 跨月退款要算对就必须这样取数。
+  /// [months] 为 null 表示取全部交易；给定月份时，额外带上**关联到这些月份
+  /// 消费的退款**（即使退款本身发生在别的月份）—— 跨月退款要算对就必须
+  /// 这样取数。
+  ///
+  /// ⚠️ **退款连接只在给了月份时返回。** `months == null` 拿到的是
+  /// 「所有交易」，`refundLinks` 与 `refundAllocations` 都是空的。
+  /// 要判断某笔退款有没有关联过，得按月取（判据在 [LedgerDataset.linkForRefund]，
+  /// 但那个数据集得先带上连接）。这是两个实现一致的行为，不是某一端的偏差。
   Future<LedgerDataset> dataset({
     required int ledgerId,
     Set<YearMonth>? months,
@@ -138,6 +144,23 @@ abstract interface class LedgerStore {
     required LedgerTransaction before,
     required ReviewSessionRecord session,
     required UndoRecord undo,
+  });
+
+  /// 把一笔退款关联到原消费，**并在同一个事务里**把它标成退款、置为已处理。
+  ///
+  /// 为什么不拆成两次写：`RefundRules.validateLink` 的注释说得很清楚 ——
+  /// 分两步会凭空制造中间状态（「已关联但还不是退款」或「是退款却没关联」），
+  /// 而中间状态会被统计与外部读取看到。
+  ///
+  /// 与 [insertRefundLink] 一样**不写撤销日志**：解除关联是一个独立操作
+  /// （指南 3.5.7：退款恢复待核对），不是「撤销上一次」能摄过去的。
+  ///
+  /// 返回 false 表示版本冲突（记录已被别处修改），此时什么都不写。
+  Future<bool> linkRefundAndResolve({
+    required LedgerTransaction before,
+    required int originalTransactionId,
+    required int amountCents,
+    required ReviewSessionRecord session,
   });
 
   /// 保存详情页的修改：备注，以及（可选的）用途变更。

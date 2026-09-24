@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
+import 'package:younum/core/time/statistics_time.dart';
 import 'package:younum/data/db/sqflite_ledger_store.dart';
 import 'package:younum/data/db/younum_schema.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
@@ -686,6 +687,128 @@ void main() {
       final db = await openRaw();
       expect(await countOf(db, 'allocation'), 1, reason: '原分配必须还在');
       expect(await countOf(db, 'refund_link'), 1, reason: '退款关联必须还在');
+    });
+
+    test('收到退款：一次写入改性质并建关联，同一笔不能关联两次', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+      await repository.confirm(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        categoryId: SeedCategoryIds.food,
+      );
+
+      final refundId = await store.insertTransaction(
+        (await store.transactionById(current.id))!.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 某笔消费',
+          amountCents: 1000,
+          nature: TransactionNature.refund,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-link-1',
+        ),
+      );
+
+      final outcome = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: current.id,
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      final db = await openRaw();
+      final refundRow = (await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[refundId],
+      )).single;
+      expect(refundRow['nature'], 'REFUND');
+      expect(refundRow['review_status'], 'RESOLVED');
+      expect(refundRow['exclude_reason'], isNull, reason: '退款不该留着排除原因');
+
+      final link = (await db.query('refund_link')).single;
+      expect(link['refund_transaction_id'], refundId);
+      expect(link['original_transaction_id'], current.id);
+      expect(link['amount_cents'], 1000);
+      expect(await countOf(db, 'allocation'), 1, reason: '退款自己不该留下分配');
+
+      // 同一笔退款再来一次：必须被拒，而且不能多出一条连接。
+      final again = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: current.id,
+      );
+      expect(again, isA<ReviewRejected>());
+      expect(await countOf(db, 'refund_link'), 1);
+    });
+
+    test('跨月退款：原消费在上个月也能关联并落库', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+      final august = YearMonth(DemoLedgerSeed.month.year, 8);
+
+      // 上个月的一笔已分类消费 —— 它的分配在另一个月里。
+      final augustId = await store.insertTransaction(
+        (await store.transactionById(current.id))!.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          occurredAtMs: StatisticsTime.epochMsFor(august.year, 8, 20, 12),
+          merchant: '上个月的消费',
+          sourceTransactionId: 'aug-cross-month-1',
+        ),
+      );
+      expect(
+        await repository.confirm(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          month: august,
+          transactionId: augustId,
+          categoryId: SeedCategoryIds.food,
+        ),
+        isA<ReviewSucceeded>(),
+      );
+
+      final refundId = await store.insertTransaction(
+        (await store.transactionById(current.id))!.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 上个月的消费',
+          amountCents: 1000,
+          nature: TransactionNature.refund,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-cross-month-1',
+        ),
+      );
+
+      final outcome = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: augustId,
+      );
+      expect(
+        outcome,
+        isA<ReviewSucceeded>(),
+        reason: '指南 3.5.4：跨月退款要能关联到上个月的消费，$outcome',
+      );
+
+      final db = await openRaw();
+      final link = (await db.query('refund_link')).single;
+      expect(link['original_transaction_id'], augustId);
+      final augustRow = (await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[augustId],
+      )).single;
+      expect(augustRow['nature'], 'EXPENSE', reason: '原消费的性质不该被改');
     });
   });
 

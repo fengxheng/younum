@@ -312,6 +312,45 @@ final class InMemoryLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<bool> linkRefundAndResolve({
+    required LedgerTransaction before,
+    required int originalTransactionId,
+    required int amountCents,
+    required ReviewSessionRecord session,
+  }) async {
+    _throwIfFailing();
+    final current = _transactions[before.id];
+    if (current == null || current.version != before.version) return false;
+    if (_transactions[originalTransactionId] == null) {
+      throw StateError('找不到要关联的原消费');
+    }
+    for (final existing in _refundLinks) {
+      if (existing.refundTransactionId == before.id) {
+        throw StateError('这笔退款已经关联过一笔消费，不能重复关联');
+      }
+    }
+
+    // 已经是退款了，旧的原因与分配都不该留着。
+    _transactions[before.id] = current.copyWith(
+      nature: TransactionNature.refund,
+      reviewStatus: ReviewStatus.resolved,
+      clearExcludeReason: true,
+      version: current.version + 1,
+    );
+    _allocations.remove(before.id);
+    _refundLinks.add(
+      RefundLink(
+        id: _nextRefundLinkId++,
+        refundTransactionId: before.id,
+        originalTransactionId: originalTransactionId,
+        amountCents: amountCents,
+      ),
+    );
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    return true;
+  }
+
+  @override
   Future<bool> saveDetails({
     required LedgerTransaction before,
     required String? note,

@@ -776,6 +776,63 @@ final class LedgerRepository {
   // 退款关联
   // ---------------------------------------------------------------------------
 
+  /// 建立退款与原消费的关联，并**同时**把它标成退款、置为处理完成。
+  ///
+  /// 与 [linkRefund] 的区别：那个只建连接（阶段 2 的能力，用户从原消费那边
+  /// 手动挂退款时用），这个走的是用户真实会遇到的路径 —— 一导入进来就有一笔
+  /// 「退款」，用户要把它指回原来那笔消费。这种情形下性质和连接必须一次写完，
+  /// 见 `RefundRules.validateLink` 的注释。
+  ///
+  /// 校验全在 [RefundRules] 里，与单元测试共用同一份实现。
+  Future<ReviewOutcome> linkRefundAndResolve({
+    required int ledgerId,
+    required YearMonth month,
+    required int refundTransactionId,
+    required int originalTransactionId,
+  }) async {
+    final refund = await _store.transactionById(refundTransactionId);
+    if (refund == null) return const ReviewRejected('找不到这笔退款记录');
+    final original = await _store.transactionById(originalTransactionId);
+    if (original == null) return const ReviewRejected('找不到要关联的原消费记录');
+
+    // 跨月退款时退款月与原消费月不同，数据集要同时覆盖两个月（指南 3.5.4）。
+    final dataset = await _store.dataset(
+      ledgerId: ledgerId,
+      months: <YearMonth>{refund.month, original.month},
+    );
+
+    final error = RefundRules.validateLink(
+      dataset: dataset,
+      refundTransactionId: refundTransactionId,
+      originalTransactionId: originalTransactionId,
+      amountCents: refund.amountCents,
+    );
+    if (error != null) return ReviewRejected(error.message);
+
+    // 拆分过的原消费必须指定「退款抵扣到哪些用途」（指南 3.5.5）。
+    // 那个界面还没做，所以这里明确拒绝 —— 而不是建一条抵扣不到具体用途的连接，
+    // 那种连接会让拆分后的分摊金额悄悄算错。
+    if (dataset.allocationsOf(originalTransactionId).length > 1) {
+      return const ReviewRejected(
+        '这笔原消费是拆分过的，退款要指定抵扣到哪些用途 —— 这一步还没做，可以先选别的原消费',
+      );
+    }
+
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final nextRecord = _withoutEntry(snapshot.record, refundTransactionId);
+
+    return _run(
+      () => _store.linkRefundAndResolve(
+        before: refund,
+        originalTransactionId: originalTransactionId,
+        amountCents: refund.amountCents,
+        session: nextRecord,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
   /// 建立退款与原消费的关联。
   ///
   /// 规则全部来自 [RefundRules]，与单元测试共用同一份实现。

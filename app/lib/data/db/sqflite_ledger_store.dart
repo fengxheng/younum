@@ -443,6 +443,51 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<bool> linkRefundAndResolve({
+    required LedgerTransaction before,
+    required int originalTransactionId,
+    required int amountCents,
+    required ReviewSessionRecord session,
+  }) async {
+    final db = await _db;
+    var conflicted = false;
+    await db.transaction((txn) async {
+      final updated = await txn.rawUpdate(
+        '''
+        UPDATE txn
+        SET nature = ?, review_status = ?, exclude_reason = NULL,
+            version = version + 1
+        WHERE id = ? AND version = ?
+        ''',
+        <Object?>[
+          TransactionNature.refund.storageValue,
+          ReviewStatus.resolved.storageValue,
+          before.id,
+          before.version,
+        ],
+      );
+      if (updated != 1) {
+        conflicted = true;
+        return;
+      }
+      await txn.delete(
+        'allocation',
+        where: 'transaction_id = ?',
+        whereArgs: <Object?>[before.id],
+      );
+      // 「同一笔退款只能关联一次」由唯一索引兑底；上层已经先校验过，
+      // 这里只是最后一道。
+      await txn.insert('refund_link', <String, Object?>{
+        'refund_transaction_id': before.id,
+        'original_transaction_id': originalTransactionId,
+        'amount_cents': amountCents,
+      });
+      await _writeSession(txn, session);
+    });
+    return !conflicted;
+  }
+
+  @override
   Future<bool> saveDetails({
     required LedgerTransaction before,
     required String? note,

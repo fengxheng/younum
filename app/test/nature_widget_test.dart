@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
+import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/components/screen_scaffold.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
@@ -148,4 +149,60 @@ void main() {
     expect((await reload()).reviewStatus, ReviewStatus.pending);
     expect(find.byType(TransactionNatureScreen), findsOneWidget);
   });
+
+  testWidgets('收到退款：先选原消费才让提交，提交后落下退款关联', (WidgetTester tester) async {
+    await openNature(tester);
+
+    await tester.tap(inNature(find.text('收到退款')));
+    await tester.pumpAndSettle();
+
+    // 还没选原消费：按钮是灰的，并且说清为什么必须选。
+    expect(inNature(find.textContaining('退款要关联到原消费')), findsOneWidget);
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    expect(
+      (await reload()).nature,
+      TransactionNature.expense,
+      reason: '没选原消费就不该写库 —— 退款抵扣不到东西就等于没记',
+    );
+
+    // 候选是「这个月的消费，除了这笔本身」。
+    await tester.tap(inNature(find.text('选择原消费')));
+    await tester.pumpAndSettle();
+
+    final sheet = find.byType(BottomSheet);
+    expect(sheet, findsOneWidget);
+    expect(
+      find.descendant(of: sheet, matching: find.textContaining('MANNER COFFEE')),
+      findsNothing,
+      reason: '这笔自己不能当自己的原消费，不该出现在候选里',
+    );
+
+    await tester.tap(
+      find.descendant(of: sheet, matching: find.byType(YounumPressable)).first,
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+
+    final updated = await reload();
+    expect(updated.nature, TransactionNature.refund);
+    expect(updated.reviewStatus, ReviewStatus.resolved);
+    expect(
+      find.byType(TransactionNatureScreen),
+      findsNothing,
+      reason: '处理完就该回到整理页，而不是停在这一页',
+    );
+
+    // 关键：性质和关联是一次写完的，不会只改性质不建连接。
+    final dataset = await store.dataset(
+      ledgerId: ledgerId,
+      months: {DemoLedgerSeed.month},
+    );
+    final link = dataset.refundLinks.single;
+    expect(link.refundTransactionId, firstCardId);
+    expect(link.originalTransactionId, isNot(firstCardId));
+  });
 }
+
