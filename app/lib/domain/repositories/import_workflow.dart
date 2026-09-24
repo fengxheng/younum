@@ -152,6 +152,7 @@ extension ImportWorkflow on LedgerRepository {
     required Uint8List bytes,
     required String sourceNamespace,
     String? sourceAccount,
+    String? sourceUri,
     TextEncoding? encoding,
   }) async {
     if (bytes.isEmpty) {
@@ -320,6 +321,7 @@ extension ImportWorkflow on LedgerRepository {
       delimiter: CsvParser.detectDelimiter(decoded.text),
       stage: ImportStage.reviewRequired,
       startedAtMs: nowMs(),
+      sourceUri: sourceUri,
       rangeStartMs: rangeStart,
       rangeEndMs: rangeEnd,
       totalRows: table.rows.length,

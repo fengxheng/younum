@@ -66,6 +66,12 @@ void main() {
     return rows.first['n']! as int;
   }
 
+  /// 某个表的列名。用来证明迁移真的加上了列，而不只是版本号变了。
+  Future<List<String>> columnNamesOf(Database db, String table) async {
+    final rows = await db.rawQuery('PRAGMA table_info($table)');
+    return <String>[for (final row in rows) row['name']! as String];
+  }
+
   group('结构与版本', () {
     test('建库后版本号等于当前结构版本', () async {
       final db = await openRaw();
@@ -517,7 +523,7 @@ void main() {
   });
 
   group('结构迁移', () {
-    test('v1 库升到 v2：既有数据一条不少', () async {
+    test('v1 库升到当前版本：既有数据一条不少', () async {
       // 先手工造一个「老版本」的库：只建 v1 的表，版本号写着 1。
       //
       // ⚠️ 必须用**另一个**路径。setUp 里已经按当前版本建好了 databasePath，
@@ -613,6 +619,9 @@ void main() {
       expect(await countOf(db, 'import_batch'), 0);
       expect(await countOf(db, 'import_row'), 0);
       expect(await countOf(db, 'transaction_origin'), 0);
+
+      // 迁移链是跑完整条，不是只跑一步：v1 升上来也该有 v3 加的列。
+      expect(await columnNamesOf(db, 'import_batch'), contains('source_uri'));
 
       // 老数据一条不少。
       //
@@ -763,6 +772,119 @@ void main() {
       );
     });
   });
+  group('结构迁移 v2 → v3', () {
+    test('v2 库里的导入批次不会因为加列而丢', () async {
+      // 造一个 v2 的库：v1 的 DDL + v2 的导入三表，版本号写着 2。
+      final legacyPath = '$databasePath.v2';
+      addTearDown(() => databaseFactory.deleteDatabase(legacyPath));
+      final legacy = await databaseFactory.openDatabase(
+        legacyPath,
+        options: OpenDatabaseOptions(
+          version: 2,
+          onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+          onCreate: (db, _) async {
+            for (final statement in <String>[
+              ...younumSchemaV1,
+              ...younumSchemaV2,
+            ]) {
+              await db.execute(statement);
+            }
+          },
+        ),
+      );
+
+      await legacy.insert('ledger', <String, Object?>{
+        'id': DemoLedgerSeed.realLedgerId,
+        'name': '我的账本',
+        'is_demo': 0,
+        'created_at_ms': 1000,
+        'currency': 'CNY',
+        'time_zone': 'Asia/Shanghai',
+      });
+      // v2 的批次表还没有 source_uri 这一列。
+      expect(
+        await columnNamesOf(legacy, 'import_batch'),
+        isNot(contains('source_uri')),
+        reason: '前提：这确实是一份 v2 的库',
+      );
+      await legacy.insert('import_batch', <String, Object?>{
+        'ledger_id': DemoLedgerSeed.realLedgerId,
+        'source_namespace': 'wechat',
+        'file_name': '2026-09.csv',
+        'file_hash': 'abc',
+        'file_size_bytes': 1024,
+        'encoding': 'UTF-8',
+        'delimiter': ',',
+        'stage': 'COMMITTED',
+        'total_rows': 10,
+        'new_count': 8,
+        'amount_cents': 12345,
+        'started_at_ms': 5000,
+        'committed_at_ms': 6000,
+      });
+      await legacy.insert('import_row', <String, Object?>{
+        'batch_id': 1,
+        'row_number': 3,
+        'merchant': '老王牛肉面',
+        'amount_cents': 2800,
+        'direction': 'EXPENSE',
+        'status': 'IMPORTED',
+        'included': 1,
+      });
+
+      expect(await legacy.getVersion(), 2);
+      await legacy.close();
+
+      final upgraded = SqfliteLedgerStore(databasePath: legacyPath);
+      await upgraded.initialize();
+      addTearDown(upgraded.close);
+
+      final db = await openRaw(legacyPath);
+      expect(await db.getVersion(), younumSchemaVersion);
+      expect(await columnNamesOf(db, 'import_batch'), contains('source_uri'));
+
+      // 老批次原封不动，新列是 NULL。
+      final batches = await db.query('import_batch');
+      expect(batches, hasLength(1));
+      expect(batches.first['file_name'], '2026-09.csv');
+      expect(batches.first['new_count'], 8);
+      expect(batches.first['amount_cents'], 12345);
+      expect(
+        batches.first['source_uri'],
+        isNull,
+        reason: '老批次本来就没记过来源 URI，不能假装它能重新解析',
+      );
+      expect(await countOf(db, 'import_row'), 1);
+
+      // 升级后新批次能正常写入并读回来。
+      final store = upgraded;
+      final batchId = await store.insertImportBatch(
+        batch: ImportBatch(
+          id: ImportBatch.idUnassigned,
+          ledgerId: DemoLedgerSeed.realLedgerId,
+          sourceNamespace: 'alipay',
+          fileName: '2026-10.csv',
+          fileHash: 'def',
+          fileSizeBytes: 2048,
+          encoding: 'GBK',
+          delimiter: ',',
+          stage: ImportStage.reviewRequired,
+          startedAtMs: 7000,
+          sourceUri: 'content://downloads/42',
+        ),
+        rows: const <ImportRow>[],
+      );
+
+      final loaded = await store.importBatches(
+        ledgerId: DemoLedgerSeed.realLedgerId,
+      );
+      final stored = loaded.firstWhere((batch) => batch.id == batchId);
+      expect(stored.sourceUri, 'content://downloads/42');
+      expect(stored.encoding, 'GBK');
+      expect(loaded, hasLength(2), reason: '老批次还在');
+    });
+  });
+
   group('导入的暂存、提交与撤回', () {
     const real = DemoLedgerSeed.realLedgerId;
     final billedMonth = YearMonth(2026, 9);

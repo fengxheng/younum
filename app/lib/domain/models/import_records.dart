@@ -91,6 +91,7 @@ final class ImportBatch {
     required this.delimiter,
     required this.stage,
     required this.startedAtMs,
+    this.sourceUri,
     this.rangeStartMs,
     this.rangeEndMs,
     this.totalRows = 0,
@@ -127,6 +128,12 @@ final class ImportBatch {
 
   final int startedAtMs;
 
+  /// 系统给的来源文件 URI（`content://`）。
+  ///
+  /// 导入历史里「重新解析」靠它。可能为 null：v3 之前的批次没记过，
+  /// 或者 provider 不支持持久化授权（那时界面要引导用户重新选择）。
+  final String? sourceUri;
+
   /// 账单覆盖的时间范围（毫秒）。文件里没有可用日期时为 null。
   final int? rangeStartMs;
   final int? rangeEndMs;
@@ -158,6 +165,7 @@ final class ImportBatch {
   ImportBatch copyWith({
     int? id,
     ImportStage? stage,
+    String? sourceUri,
     int? rangeStartMs,
     int? rangeEndMs,
     int? totalRows,
@@ -179,6 +187,7 @@ final class ImportBatch {
     delimiter: delimiter,
     stage: stage ?? this.stage,
     startedAtMs: startedAtMs,
+    sourceUri: sourceUri ?? this.sourceUri,
     rangeStartMs: rangeStartMs ?? this.rangeStartMs,
     rangeEndMs: rangeEndMs ?? this.rangeEndMs,
     totalRows: totalRows ?? this.totalRows,

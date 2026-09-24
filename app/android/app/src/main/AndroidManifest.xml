@@ -48,5 +48,16 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!--
+            API 30 起的包可见性限制：不声明这一条的话，
+            resolveActivity(ACTION_OPEN_DOCUMENT) 会返回 null，
+            明明系统里有文件选择器，界面却会把「选择文件」判为不可用。
+            声明它只是为了能查询，没有申请任何文件访问权限。
+        -->
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT"/>
+            <category android:name="android.intent.category.OPENABLE"/>
+            <data android:mimeType="*/*"/>
+        </intent>
     </queries>
 </manifest>

@@ -547,3 +547,33 @@ debug 模式下 Dart 是 JIT 解释执行、断言全开、没有 AOT 优化，
 
 判据改成上面这一条之后，负号只在两种情况下起作用：
 方向列缺位时用来推断，以及识别「收入却是负数」这种真矛盾。
+
+## 34. 文件选择手写平台通道，不引插件、不用 registerForActivityResult
+
+指南 4.2 只要求一个能力：让用户用**系统选择器**选一份文件，然后读它的
+`content://` URI。为此引一个第三方文件选择插件，就多一份要跟着
+Flutter/AGP 升级维护的原生代码；而本机 Android 工具链本来就很脆
+（`sdkmanager.bat` 崩、NDK 靠锁定版本）。所以直接写在 `MainActivity` 里。
+
+**为什么用 `startActivityForResult` 而不是 `registerForActivityResult`**：
+后者是 `ComponentActivity` 的 API，而 `FlutterActivity` 继承的是
+`android.app.Activity`（从引擎 jar 里核实过，不是猜的），拿不到。
+换成 `FlutterFragmentActivity` 就能拿到，但那要引入 androidx.fragment。
+为一个文件选择动原生依赖不值得。代价是一个已弃用的 API 与一个共享的
+`onActivityResult` 回调，所以请求码刻意取了一个不常见的值，避免与插件碰撞。
+
+**包可见性是个真陷阱**：API 30 起，不在清单里声明 `<queries>` 的话，
+`resolveActivity(ACTION_OPEN_DOCUMENT)` 会返回 null —— 明明系统里有
+文件选择器，界面却会把「选择文件」判为不可用。已声明；同时真正能不能开
+以捕获 `ActivityNotFoundException` 为准，不只依赖这个探测。
+
+**元信息查不到不算失败**：`ContentResolver.query` 对没有 provider 的 URI
+（例如 `file://`）会直接抛。最初写法让这个异常把整个读取带崩了。
+现在文件名退回 URI 末段、大小交给「边读边挡上限」，读字节才是正事。
+
+**顺手挡住的坑**：同时只允许一个选择请求。第二个请求直接拒绝，而不是
+覆盖第一个的回调 —— 覆盖会让第一个 Future 永远不完成，界面卡在加载中。
+
+**未验证**：用户真的在系统选择器里点一份微信账单。那一步需要人手点，
+自动化点不可靠。所以真机验证的是「读出来的字节无损、能直接解析」，
+而「用户点选」在 IMPLEMENTATION_STATUS 里如实列为未验证。

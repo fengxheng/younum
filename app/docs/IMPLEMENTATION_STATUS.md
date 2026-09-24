@@ -343,12 +343,15 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 表头识别、字段映射、行标准化、两级去重 | `lib/domain/rules/import_rules.dart` | 单元测试 31 个 |
 | 结构与模型（`ImportStage` 九态、批次、行、来源绑定） | `lib/domain/models/import_records.dart` | 静态检查 + 真机 |
 | 暂存 / 提交 / 撤回的编排（含跨批次复用与引用计数） | `lib/domain/repositories/import_workflow.dart` | 单元测试 18 个 + 真机 3 个 |
+| 系统文件选择器（自写平台通道，不用插件） | `lib/data/files/system_file_source.dart` + `MainActivity.kt` | 单元测试 17 个 + 真机 5 个 |
 | v1 → v2 迁移：新增导入三张表 | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
+| v2 → v3 迁移：批次记住来源 URI | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试 | `flutter test` | **224 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **27 passed** |
+| 单元测试 | `flutter test` | **241 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **28 passed** |
+| 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 
 真机上的 v1 → v2 用例是这样做的：先手工造一个只建 v1 结构、版本号写着 1、
 并且**已经存有账单数据**（账本、分类、交易、分配、整理会话、月范围确认）的库，
@@ -358,19 +361,21 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 **仍然阻塞在阶段 3 后续的功能**
 
-* 平台适配器的完整字段集（当前是通用 CSV）、字段映射界面、系统文件选择器（SAF）、
-  界面接线。数据的暂存/提交/撤回已经能跑通，缺的是「让用户点得到」。
-  真机上已经验证过的两条关键性质：**暂存时不进正式账**、
-  **撤回只删不再被引用的交易且不动用户已分过类的交易**。
-* 还缺 `category_icon_asset` 表（阶段 4 用）。
+* **界面接线**：数据的暂存/提交/撤回与文件选择都已能跑通，缺的是
+  「让用户点得到」。现在 `features/import_flow/` 的页面还在读样例数据，
+  按钮点了没用 —— 这是当前最明显的一个缺口。
+* **字段映射界面**：规则层已能判断「表头认不出来」，但没有让用户手工
+  映射的页面；目前遇到这种文件只能告诉用户不行。
+* 平台适配器的完整字段集（当前是通用 CSV）、XLSX（未选型）。
 * 导入失败与 `COMMITTING` 中途崩溃：`ImportStage.isInFlight` 已经能识别出
   「上次写到一半」的批次，但还没有启动时扫描并恢复的逻辑。
-* 没有任何真实微信 / 支付宝账单样本，平台适配器只在**仿造导出格式**的
-  测试数据上验过；真文件的兼容性仍需实际样本确认。
-* XLSX 解析库未选型，需先做真机内存与兼容性验证再锁定依赖。
+* **真实账单样本：仍然一次都没试过。** 平台适配器只在仿造导出格式的
+  测试数据上验过；「用户点选一份真实微信账单能否导入」也**未验证**
+  （那一步需要人手点系统选择器，自动化点不可靠）。
+  这是整个阶段 3 最大的不确定性。
 * Photo Picker、WorkManager、通知权限未接入；
-  SAF 会用 `ActivityResultContracts.OpenDocument` 手写平台通道接入
-  （不引新依赖，避免动现在这套脆弱的 Android 工具链）。
+  SAF 已经用 `ACTION_OPEN_DOCUMENT` 自写平台通道接入（见 DECISIONS 第 34 节），
+  **没有申请任何全盘文件访问权限**。
 
 **明确未验证**
 
