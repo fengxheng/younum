@@ -110,6 +110,90 @@ class _NoExpense extends StatelessWidget {
   }
 }
 
+/// 「部分账单」的原因与下一步。
+///
+/// 两种原因完全不同，混成一句话用户就不知道该点哪里：
+///
+/// * **还有记录没整理完** → 给进度和「继续整理」；
+/// * **整理完了、只是没确认范围完整** → 给一个确认入口。
+///   指南 3.4 要求 `coverageConfirmed` 只能由用户**显式**给出，
+///   不能因为数据里恰好有月初和月底的记录就自动判定 ——
+///   所以必须有一个能点的地方。原先只有整理完成页有这个开关，
+///   只想看账、不走完整理流程的用户会一直看到「部分账单」却找不到出口。
+class _PartialMonthPanel extends StatelessWidget {
+  const _PartialMonthPanel({required this.overview, required this.session});
+
+  final MonthOverview overview;
+  final ReviewSession session;
+
+  /// 确认前先问一句。
+  ///
+  /// 这是一个**关于数据完整性的断言**：说出口之后，日均、环比、分类变化
+  /// 都会按完整自然月展示。带副作用的断言不能一按就生效。
+  Future<void> _confirmCoverage(BuildContext context) async {
+    final month = overview.month;
+    final agreed = await showConfirmSheet(
+      context: context,
+      title: '确认${month.shortLabel}账单范围完整？',
+      description:
+          '确认后这个月按完整自然月展示：日均消费除以当月天数，'
+          '环比与分类变化也会出现（前提是上个月也已确认）。\n\n'
+          '请确认你已经导入这个月月初到月末的全部记录。',
+      confirmLabel: '确认范围完整',
+      cancelLabel: '再看看',
+    );
+    if (!agreed || !context.mounted) return;
+
+    await session.confirmCoverage(true);
+    if (!context.mounted) return;
+    showYounumToast(
+      context,
+      session.coverageConfirmed
+          ? '已确认${month.shortLabel}账单范围完整'
+          : session.lastFailure ?? '确认没有保存成功，可以重试',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final month = overview.month;
+    final progress = overview.progress;
+
+    if (overview.hasPendingReview) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          YounumNotice(
+            '${month.shortLabel}还有 '
+            '${progress.pendingCount + progress.deferredCount} 笔没有整理完，'
+            '上面的金额只统计了已归类的部分。',
+          ),
+          PrimaryAction(
+            label: '继续整理',
+            trailingArrow: true,
+            onPressed: () => context.selectTab(1),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        YounumNotice(
+          '你还没有确认 ${month.month} 月账单范围完整。上面的金额只代表已导入的部分，'
+          '不能直接与完整自然月比较。',
+        ),
+        PrimaryAction(
+          label: '我确认${month.shortLabel}账单范围完整',
+          style: YounumActionStyle.secondary,
+          onPressed: () => _confirmCoverage(context),
+        ),
+      ],
+    );
+  }
+}
+
 // -----------------------------------------------------------------------------
 // report —— 月度消费概况
 // -----------------------------------------------------------------------------
@@ -228,10 +312,7 @@ class ReportScreen extends StatelessWidget {
             ),
           ),
           if (!overview.progress.isCompleteMonth)
-            YounumNotice(
-              '你还没有确认 ${month.month} 月账单范围完整。上面的金额只代表已导入的部分，'
-              '不能直接与完整自然月比较。',
-            ),
+            _PartialMonthPanel(overview: overview, session: session),
           if (summary.issues.isNotEmpty)
             YounumNotice('有几笔记录的数据需要核对：${summary.issues.join('；')}'),
           YounumPanel(

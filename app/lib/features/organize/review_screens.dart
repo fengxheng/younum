@@ -723,8 +723,12 @@ class _ReviewCompleteScreenState extends State<ReviewCompleteScreen> {
             ),
           ),
           // 范围完整性由用户确认，不自动判定。
+          //
+          // 月份必须取自会话，不能写死：用户可以切到别的月份再来完成页，
+          // 写死「9 月」会让这句确认词与实际确认的月份对不上。
           YounumCheckRow(
-            label: '我确认 9 月账单范围完整（含月初到月末的全部记录）',
+            label: '我确认${session.month?.shortLabel ?? '当月'}账单范围完整'
+                '（含月初到月末的全部记录）',
             value: session.coverageConfirmed,
             onChanged: session.confirmCoverage,
           ),
