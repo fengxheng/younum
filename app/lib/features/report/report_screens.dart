@@ -505,7 +505,9 @@ class TrendsScreen extends StatelessWidget {
                     '¥${Money.format((insights.monthOverMonthDeltaCents ?? 0).abs(), grouped: true)}',
                   )
                 else
-                  const YounumBadge('暂无可比月份', tone: YounumBadgeTone.onDark),
+                  // 这里是浅色面板，不能用 onDark 色调：那套配色是给
+                  // 首页的深色面板用的，浅底浅字会直接看不见。
+                  const YounumBadge('暂无可比月份'),
                 _TrendChart(points: window, peak: report.trendPeakCents),
               ],
             ),
@@ -531,7 +533,7 @@ class TrendsScreen extends StatelessWidget {
                   label: '消费最少的一天',
                   value: insights.lowestSpendingDay == null
                       ? '—'
-                      : '${month.month}月${insights.lowestSpendingDay!.day}日 · '
+                      : '${month.month}月${insights.lowestSpendingDay!.day}日 '
                           '¥${Money.format(insights.lowestSpendingDay!.expenseCents, grouped: true)}',
                 ),
               ],
