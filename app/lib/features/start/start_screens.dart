@@ -236,6 +236,21 @@ class _OnboardingSlide extends StatelessWidget {
   }
 }
 
+/// 插画里旋转卡片的水平内缩量。
+///
+/// **不能任取小值。** 旋转会把包围盒撑宽：`w·|cosθ| + h·|sinθ|`。
+/// 卡片是 `Positioned` 定位、绕中心旋转的，所以撑宽部分平均落在两侧：
+///
+/// * 152×172 转 -14° → 189dp，两侧各多 18.6dp；
+/// * 176×172 转 -14°（第 2 屏那张加宽的）→ 212dp，两侧各多 18.2dp；
+/// * 152×172 转 +11° → 182dp，两侧各多 15.0dp。
+///
+/// 超出插画容器的部分会被硬裁（`Stack` 与纵向滚动视图都会裁），
+/// 看起来就是**圆角被切掉一块** —— 真机上第 1、2 屏都出现过。
+/// 取值与原型一致（原型的 `.mini-receipt` 是 `left: 20px` / `right: 21px`）。
+/// 改卡片尺寸或旋转角度时必须按上面的公式重算。
+const double _artCardInset = 20;
+
 /// 三屏插画共用的底座：轨道圆圈 + 右下角的圆形浮标。
 class _ArtFrame extends StatelessWidget {
   const _ArtFrame({required this.badge, required this.children});
@@ -297,7 +312,7 @@ class _WelcomeArt extends StatelessWidget {
       badge: Icons.check,
       children: <Widget>[
         Positioned(
-          left: 10,
+          left: _artCardInset,
           top: 26,
           child: Transform.rotate(
             angle: -14 * 3.141592653589793 / 180,
@@ -315,7 +330,7 @@ class _WelcomeArt extends StatelessWidget {
           ),
         ),
         Positioned(
-          right: 12,
+          right: _artCardInset,
           top: 34,
           child: Transform.rotate(
             angle: 11 * 3.141592653589793 / 180,
@@ -357,7 +372,7 @@ class _OrganizeArt extends StatelessWidget {
       badge: Icons.check,
       children: <Widget>[
         Positioned(
-          left: 10,
+          left: _artCardInset,
           top: 26,
           child: Transform.rotate(
             angle: -14 * 3.141592653589793 / 180,
@@ -385,7 +400,7 @@ class _OrganizeArt extends StatelessWidget {
           ),
         ),
         Positioned(
-          right: 12,
+          right: _artCardInset,
           top: 34,
           child: Transform.rotate(
             angle: 11 * 3.141592653589793 / 180,

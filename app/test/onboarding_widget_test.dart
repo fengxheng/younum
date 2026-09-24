@@ -79,6 +79,69 @@ void main() {
   const title2 = '导入一个月，\n一笔一张整理。';
   const title3 = '看见花费，\n也看见生活。';
 
+  /// 断言这一屏里旋转后的卡片完全落在页面宽度内。
+  ///
+  /// 为什么值得单写一条：旋转会把包围盒撑宽（152×172 转 -14° 后宽 189dp，
+  /// 超出量平均落在两侧），超出插画容器的部分会被硬裁 ——
+  /// 看起来就是**圆角被切掉一块**。真机上第 1、2 屏都出现过这个问题，
+  /// 而截图比对全靠人眼，容易漏。
+  ///
+  /// 等价说法：卡片连旋转在内的四个角，不能跑到页面外面去。
+  void expectArtInsidePage(WidgetTester tester, String where) {
+    final Rect page = tester.getRect(find.byType(PageView));
+    // 只取**真的转过**的：页面里还有两个框架内部的单位矩阵 `Transform`
+    // （包住整屏），不过滤的话它们会被当成卡片重复检查。
+    final Finder cards = find.descendant(
+      of: find.byType(PageView),
+      matching: find.byWidgetPredicate(
+        (Widget widget) =>
+            widget is Transform && !widget.transform.isIdentity(),
+      ),
+    );
+    final int count = cards.evaluate().length;
+    expect(count, greaterThan(0), reason: '$where：这一屏应当有旋转的卡片');
+
+    for (var i = 0; i < count; i++) {
+      final Finder card = find
+          .descendant(of: cards.at(i), matching: find.byType(Container))
+          .first;
+      final RenderBox box = tester.renderObject<RenderBox>(card);
+      final Size size = box.size;
+      final List<Offset> corners = <Offset>[
+        Offset.zero,
+        Offset(size.width, 0),
+        Offset(0, size.height),
+        Offset(size.width, size.height),
+      ].map(box.localToGlobal).toList();
+
+      for (final Offset corner in corners) {
+        expect(
+          corner.dx,
+          greaterThanOrEqualTo(page.left - 0.01),
+          reason: '$where：第 ${i + 1} 张卡左边越出页面，圆角会被裁',
+        );
+        expect(
+          corner.dx,
+          lessThanOrEqualTo(page.right + 0.01),
+          reason: '$where：第 ${i + 1} 张卡右边越出页面，圆角会被裁',
+        );
+      }
+    }
+  }
+
+  testWidgets('三屏插画里的旋转卡片都不越出页面（圆角不会被裁）', (WidgetTester tester) async {
+    await pumpApp(tester);
+    expectArtInsidePage(tester, '第 1 屏');
+
+    await tester.tap(find.text('下一步'));
+    await tester.pumpAndSettle();
+    expectArtInsidePage(tester, '第 2 屏');
+
+    await tester.tap(find.text('下一步'));
+    await tester.pumpAndSettle();
+    expectArtInsidePage(tester, '第 3 屏');
+  });
+
   testWidgets('三屏都在，不是只有第一屏', (WidgetTester tester) async {
     await pumpApp(tester);
 
