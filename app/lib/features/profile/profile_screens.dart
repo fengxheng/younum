@@ -29,6 +29,7 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final theme = ThemeScope.of(context);
+    final session = ReviewSessionScope.of(context);
 
     return YounumScreen(
       bottomBar: const AppBottomBar(),
@@ -70,7 +71,7 @@ class ProfileScreen extends StatelessWidget {
                       Text('认真生活的你', style: text.listPrimary),
                       const SizedBox(height: 5),
                       YounumCaptionText(
-                        '已经陪你回顾了 ${SampleData.recordedMonthCount} 个月',
+                        '已经陪你回顾了 ${session.recordedMonths.length} 个月',
                       ),
                     ],
                   ),
@@ -554,13 +555,18 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
               children: <Widget>[
                 YounumLineInfo(
                   label: '本地消费记录',
-                  value: '${session.totalCount} 笔',
+                  value: '${session.report?.dataset.transactions.length ?? 0} 笔',
+                ),
+                const YounumLineInfo(
+                  // 导入批次表（import_batch）属于阶段 3，现在还没有数据可数。
+                  // 这里如实留空，不用样例数字充数。
+                  label: '导入批次',
+                  value: '—',
                 ),
                 YounumLineInfo(
-                  label: '导入批次',
-                  value: '${SampleData.importBatches.length} 份',
+                  label: '有记录的月份',
+                  value: '${session.recordedMonths.length} 个月',
                 ),
-                const YounumLineInfo(label: '月度消费回顾', value: '1 份'),
               ],
             ),
           ),
