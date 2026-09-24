@@ -1,0 +1,727 @@
+/// 账本仓库：业务编排的唯一入口。
+///
+/// 分层与实现指南 2.2 一致：界面 → 仓库 → 存储。
+/// 仓库负责**事务边界与业务规则**，存储只负责读写行；规则函数在
+/// `lib/domain/rules/` 里，界面与仓库共用同一份实现，因此
+/// 「单元测试里验证的公式」和「界面上跑出来的数字」不会分叉。
+library;
+
+import '../models/allocation.dart';
+import '../models/category.dart';
+import '../models/ledger.dart';
+import '../models/ledger_dataset.dart';
+import '../models/ledger_transaction.dart';
+import '../models/review_session_record.dart';
+import '../models/year_month.dart';
+import '../rules/allocation_rules.dart';
+import '../rules/month_overview.dart';
+import '../rules/refund_rules.dart';
+import 'ledger_store.dart';
+
+/// 一次整理会话的完整快照：队列 + 本月概况。
+///
+/// 界面只需要这一个对象就能画出整理页与首页，不必分别去查三次。
+final class ReviewSnapshot {
+  const ReviewSnapshot({
+    required this.record,
+    required this.dataset,
+    required this.isDemoLedger,
+    required this.coverageConfirmed,
+    required this.lastActionLabel,
+  });
+
+  final ReviewSessionRecord record;
+
+  /// 本月数据集（含跨月引用到本月的退款）。
+  final LedgerDataset dataset;
+
+  final bool isDemoLedger;
+
+  final bool coverageConfirmed;
+
+  /// 最近一次可撤销操作的描述，用于按钮朗读。
+  final String? lastActionLabel;
+
+  /// 主队列，按持久化的稳定顺序。
+  List<LedgerTransaction> get mainQueue => _resolve(record.mainQueue);
+
+  /// 稍后队列。
+  List<LedgerTransaction> get deferred => _resolve(record.deferredQueue);
+
+  LedgerTransaction? get current {
+    final queue = mainQueue;
+    return queue.isEmpty ? null : queue.first;
+  }
+
+  bool get canUndo => lastActionLabel != null;
+
+  /// 已完成整理的笔数（指南 3.3：跳过不计完成数）。
+  int get resolvedCount => dataset.transactions
+      .where((transaction) =>
+          transaction.month == record.month &&
+          transaction.reviewStatus == ReviewStatus.resolved)
+      .length;
+
+  int get totalCount => resolvedCount + mainQueue.length + deferred.length;
+
+  double get progress => totalCount == 0 ? 0 : resolvedCount / totalCount;
+
+  /// 本月金额与分类概况。
+  MonthOverview get overview => MonthOverview.compute(
+        month: record.month,
+        dataset: dataset,
+        coverageConfirmed: coverageConfirmed,
+        isDemoLedger: isDemoLedger,
+      );
+
+  /// 把队列里的 ID 还原成交易对象。
+  ///
+  /// 找不到的记录直接跳过：宁可少一张卡片，也不能整页崩掉。
+  List<LedgerTransaction> _resolve(List<int> ids) => <LedgerTransaction>[
+        for (final id in ids) ?dataset.transaction(id),
+      ];
+
+  @override
+  String toString() =>
+      'ReviewSnapshot(${record.month}, $resolvedCount/$totalCount)';
+}
+
+/// 整理操作的结果。
+sealed class ReviewOutcome {
+  const ReviewOutcome();
+}
+
+/// 成功。
+final class ReviewSucceeded extends ReviewOutcome {
+  const ReviewSucceeded(this.snapshot);
+
+  final ReviewSnapshot snapshot;
+}
+
+/// 被业务规则拒绝（例如未选分类）。
+final class ReviewRejected extends ReviewOutcome {
+  const ReviewRejected(this.message);
+
+  final String message;
+}
+
+/// 版本冲突：目标记录在操作之后又被改过，不能覆盖新数据。
+final class ReviewConflict extends ReviewOutcome {
+  const ReviewConflict(this.message);
+
+  final String message;
+}
+
+/// 存储失败。用户输入必须保留，界面不能假装成功。
+final class ReviewFailed extends ReviewOutcome {
+  const ReviewFailed(this.error);
+
+  final Object error;
+}
+
+/// 账本仓库。
+final class LedgerRepository {
+  LedgerRepository(this._store, {DateTime Function()? clock})
+      : _clock = clock ?? DateTime.now;
+
+  final LedgerStore _store;
+  final DateTime Function() _clock;
+
+  LedgerStore get store => _store;
+
+  /// 建表并写入初始账本与分类。幂等。
+  Future<void> initialize() => _store.initialize();
+
+  /// 按「真实 / 演示」取账本。
+  Future<Ledger> ledgerFor({required bool isDemo}) async {
+    final ledgers = await _store.ledgers();
+    for (final ledger in ledgers) {
+      if (ledger.isDemo == isDemo) return ledger;
+    }
+    throw StateError('账本未初始化：isDemo=$isDemo');
+  }
+
+  Future<List<Category>> categories({required int ledgerId}) =>
+      _store.categories(ledgerId: ledgerId);
+
+  /// 打开应用时应该先看哪个月。
+  ///
+  /// 规则：**有记录就取最新记录所在的月份**，没有记录就用当前自然月。
+  ///
+  /// 为什么不是「永远用当前月」：演示账本里的样例账单固定在 2026 年 9 月，
+  /// 如果按设备当前月份去查，下个月打开演示账本就会变成一片空白，
+  /// 看起来像数据丢了。按数据本身选月份对两种情况都成立。
+  Future<YearMonth> preferredMonth({required int ledgerId}) async =>
+      (await preferredMonthState(ledgerId: ledgerId)).month;
+
+  /// 同 [preferredMonth]，并告知这本账本里**到底有没有记录**。
+  ///
+  /// 首页要在「没有账单」与「有账单」两种形态之间切换，这个判断不能靠
+  /// 「是不是演示账本」近似 —— 真实账本导入之前确实一笔都没有。
+  Future<({YearMonth month, bool hasRecords})> preferredMonthState({
+    required int ledgerId,
+  }) async {
+    final dataset = await _store.dataset(ledgerId: ledgerId);
+    YearMonth? newest;
+    for (final transaction in dataset.transactions) {
+      final month = transaction.month;
+      if (newest == null || month > newest) newest = month;
+    }
+    return (
+      month: newest ?? YearMonth.fromDateTime(_clock()),
+      hasRecords: dataset.transactions.isNotEmpty,
+    );
+  }
+
+  /// 清空账本数据（「清除本地数据」用），并重新写入初始的演示账单。
+  ///
+  /// 保留主题偏好与引导状态（指南 8.3）。
+  Future<void> clearAllData() async {
+    await _store.clearAll();
+  }
+
+  Future<LedgerDataset> dataset({
+    required int ledgerId,
+    Set<YearMonth>? months,
+  }) =>
+      _store.dataset(ledgerId: ledgerId, months: months);
+
+  /// 某月的金额与分类概况。
+  Future<MonthOverview> monthOverview({
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    final ledger = await _ledgerById(ledgerId);
+    final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
+    final confirmed =
+        await _store.coverageConfirmed(ledgerId: ledgerId, month: month);
+    return MonthOverview.compute(
+      month: month,
+      dataset: dataset,
+      coverageConfirmed: confirmed,
+      isDemoLedger: ledger.isDemo,
+    );
+  }
+
+  /// 多个月份的概况（趋势图用）。一次取数，逐月计算。
+  Future<List<MonthOverview>> monthOverviews({
+    required int ledgerId,
+    required Iterable<YearMonth> months,
+  }) async {
+    final ledger = await _ledgerById(ledgerId);
+    final wanted = months.toList();
+    final dataset =
+        await _store.dataset(ledgerId: ledgerId, months: wanted.toSet());
+    final result = <MonthOverview>[];
+    for (final month in wanted) {
+      result.add(
+        MonthOverview.compute(
+          month: month,
+          dataset: dataset,
+          coverageConfirmed:
+              await _store.coverageConfirmed(ledgerId: ledgerId, month: month),
+          isDemoLedger: ledger.isDemo,
+        ),
+      );
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 整理会话
+  // ---------------------------------------------------------------------------
+
+  /// 加载（必要时创建）整理会话。
+  ///
+  /// 会把会话与数据库**对齐**：已经被别处处理掉的记录从队列移除，
+  /// 期间新出现的待整理记录追加进来。这样「导入后继续整理」不需要额外流程。
+  Future<ReviewSnapshot> loadSnapshot({
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    final ledger = await _ledgerById(ledgerId);
+    final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
+    final stored = await _store.loadReviewSession(ledgerId: ledgerId, month: month);
+
+    final reconciled = _reconcile(
+      ledgerId: ledgerId,
+      month: month,
+      dataset: dataset,
+      stored: stored,
+    );
+
+    if (reconciled.changed) {
+      await _store.saveReviewSession(record: reconciled.record);
+    }
+
+    final action = await _store.latestAvailableAction(ledgerId: ledgerId, month: month);
+    final confirmed =
+        await _store.coverageConfirmed(ledgerId: ledgerId, month: month);
+
+    return ReviewSnapshot(
+      record: reconciled.record,
+      dataset: dataset,
+      isDemoLedger: ledger.isDemo,
+      coverageConfirmed: confirmed,
+      lastActionLabel: action?.label,
+    );
+  }
+
+  /// 确认当前记录的归类。
+  Future<ReviewOutcome> confirm({
+    required int ledgerId,
+    required YearMonth month,
+    required int transactionId,
+    required int categoryId,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final transaction = snapshot.dataset.transaction(transactionId);
+    if (transaction == null) {
+      return ReviewRejected('找不到这条记录，可能已被删除');
+    }
+
+    // 消费必须完成「有效分配」才算处理完成（指南 3.3）。
+    final ruleError = AllocationRules.validate(
+      originalCents: transaction.amountCents,
+      items: AllocationRules.singleCategory(categoryId, transaction.amountCents),
+    );
+    if (ruleError != null) return ReviewRejected(ruleError.message);
+
+    final nextRecord = _withoutEntry(snapshot.record, transactionId);
+    final undo = UndoRecord(
+      type: ReviewActionType.resolve,
+      label: '确认 ${transaction.merchant}',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        UndoTarget(
+          transactionId: transactionId,
+          beforeVersion: transaction.version,
+          beforeStatus: transaction.reviewStatus,
+          beforeNature: transaction.nature,
+          beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
+        ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    return _run(
+      () => _store.resolveTransaction(
+        before: transaction,
+        categoryId: categoryId,
+        session: nextRecord,
+        undo: undo,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
+  /// 稍后处理。不增加完成数。
+  Future<ReviewOutcome> defer({
+    required int ledgerId,
+    required YearMonth month,
+    required int transactionId,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final transaction = snapshot.dataset.transaction(transactionId);
+    if (transaction == null) {
+      return ReviewRejected('找不到这条记录，可能已被删除');
+    }
+
+    final nextRecord = _withBucket(
+      _withoutEntry(snapshot.record, transactionId),
+      transactionId,
+      ReviewBucket.deferred,
+    );
+    final undo = UndoRecord(
+      type: ReviewActionType.defer,
+      label: '稍后处理 ${transaction.merchant}',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        UndoTarget(
+          transactionId: transactionId,
+          beforeVersion: transaction.version,
+          beforeStatus: transaction.reviewStatus,
+          beforeNature: transaction.nature,
+          beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
+        ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    return _run(
+      () => _store.deferTransaction(
+        before: transaction,
+        session: nextRecord,
+        undo: undo,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
+  /// 把稍后队列放回主队列。
+  Future<ReviewOutcome> reopenDeferred({
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final deferred = snapshot.deferred;
+    if (deferred.isEmpty) return const ReviewRejected('稍后队列里没有记录');
+
+    final entries = <ReviewQueueEntry>[
+      ...snapshot.record.entries
+          .where((entry) => entry.bucket == ReviewBucket.main),
+      for (final transaction in deferred)
+        ReviewQueueEntry(
+          transactionId: transaction.id,
+          bucket: ReviewBucket.main,
+        ),
+    ];
+    final nextRecord = snapshot.record.copyWith(
+      entries: entries,
+      updatedAtMs: _nowMs(),
+      currentTransactionId: entries.isEmpty ? null : entries.first.transactionId,
+      clearCurrent: entries.isEmpty,
+    );
+
+    final undo = UndoRecord(
+      type: ReviewActionType.reopenDeferred,
+      label: '重新整理稍后记录',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        for (final transaction in deferred)
+          UndoTarget(
+            transactionId: transaction.id,
+            beforeVersion: transaction.version,
+            beforeStatus: transaction.reviewStatus,
+            beforeNature: transaction.nature,
+          ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    try {
+      final ok = await _store.reopenDeferred(
+        transactions: deferred,
+        session: nextRecord,
+        undo: undo,
+      );
+      if (!ok) {
+        return const ReviewConflict('稍后记录刚刚被改过，请重试');
+      }
+    } catch (error) {
+      return ReviewFailed(error);
+    }
+    return ReviewSucceeded(
+      await loadSnapshot(ledgerId: ledgerId, month: month),
+    );
+  }
+
+  /// 撤销最近一次可撤销操作。
+  Future<ReviewOutcome> undo({
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    final action = await _store.latestAvailableAction(
+      ledgerId: ledgerId,
+      month: month,
+    );
+    if (action == null) {
+      return const ReviewRejected('没有可以撤销的操作了');
+    }
+
+    // 有关联退款时不能直接撤销原消费（指南 3.5.6 / 3.5.7）。
+    //
+    // 否则会出现一个静默的错误：原消费被撤销、不再计入月度统计，但退款关联
+    // 仍然指着它 —— 于是那笔退款会去抵扣一笔已经不存在的消费，
+    // 月度净额凭空变小，而且没有任何地方提示。
+    //
+    // 正确做法是先解除退款关联（退款恢复待核对），再撤销原消费。
+    final dataset = await _store.dataset(ledgerId: ledgerId, months: {month});
+    for (final target in action.targets) {
+      if (dataset.refundsOf(target.transactionId).isEmpty) continue;
+      return const ReviewRejected(
+        '这笔记录还有关联的退款，请先解除退款关联再撤销',
+      );
+    }
+
+    final restored = ReviewSessionRecord(
+      ledgerId: ledgerId,
+      month: month,
+      entries: action.beforeEntries,
+      updatedAtMs: _nowMs(),
+      currentTransactionId: action.beforeEntries.isEmpty
+          ? null
+          : action.beforeEntries.first.transactionId,
+    );
+
+    try {
+      final ok = await _store.applyUndo(action: action, session: restored);
+      if (!ok) {
+        // 目标记录在操作之后又被改过：标记失效，说明原因，不覆盖新数据。
+        await _store.invalidateAction(action.id!);
+        return ReviewConflict(
+          '「${action.label}」之后这条记录又被修改过，撤销会覆盖更新的数据，已停止',
+        );
+      }
+    } catch (error) {
+      return ReviewFailed(error);
+    }
+    return ReviewSucceeded(
+      await loadSnapshot(ledgerId: ledgerId, month: month),
+    );
+  }
+
+  /// 记录用户对当月账单范围完整性的确认。
+  ///
+  /// 这个值**只能**由用户显式确认，不能因为数据里恰好有月初和月底的记录就
+  /// 自动判定完整（指南 3.4）。
+  Future<void> setCoverageConfirmed({
+    required int ledgerId,
+    required YearMonth month,
+    required bool value,
+  }) =>
+      _store.setCoverageConfirmed(ledgerId: ledgerId, month: month, value: value);
+
+  // ---------------------------------------------------------------------------
+  // 退款关联
+  // ---------------------------------------------------------------------------
+
+  /// 建立退款与原消费的关联。
+  ///
+  /// 规则全部来自 [RefundRules]，与单元测试共用同一份实现。
+  /// 阶段 2 先把能力与约束做实；界面在阶段 4 接入。
+  Future<ReviewOutcome> linkRefund({
+    required int ledgerId,
+    required YearMonth month,
+    required int refundTransactionId,
+    required int originalTransactionId,
+    required int amountCents,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
+  }) async {
+    final original = await _store.transactionById(originalTransactionId);
+    if (original == null) {
+      return const ReviewRejected('找不到要关联的原消费记录');
+    }
+    final refund = await _store.transactionById(refundTransactionId);
+    if (refund == null) {
+      return const ReviewRejected('找不到这笔退款记录');
+    }
+
+    // 校验用的数据集要同时覆盖**退款所在的月份**和**原消费所在的月份**：
+    // 跨月退款时这两者不同，只取一个会找不到另一笔。
+    final dataset = await _store.dataset(
+      ledgerId: ledgerId,
+      months: {original.month, refund.month},
+    );
+
+    final error = allocations.isEmpty
+        ? RefundRules.validateLink(
+            dataset: dataset,
+            refundTransactionId: refundTransactionId,
+            originalTransactionId: originalTransactionId,
+            amountCents: amountCents,
+          )
+        : RefundRules.validateRefundAllocations(
+            dataset: dataset,
+            refundTransactionId: refundTransactionId,
+            originalTransactionId: originalTransactionId,
+            refundAmountCents: amountCents,
+            drafts: allocations,
+          );
+    if (error != null) return ReviewRejected(error.message);
+
+    try {
+      await _store.insertRefundLink(
+        refundTransactionId: refundTransactionId,
+        originalTransactionId: originalTransactionId,
+        amountCents: amountCents,
+        allocations: allocations,
+      );
+    } catch (error) {
+      // 唯一约束（同一退款只能关联一次）在这里被挡下。
+      return ReviewFailed(error);
+    }
+    return ReviewSucceeded(await loadSnapshot(ledgerId: ledgerId, month: month));
+  }
+
+  // ---------------------------------------------------------------------------
+  // 内部
+  // ---------------------------------------------------------------------------
+
+  Future<ReviewOutcome> _run(
+    Future<bool> Function() write, {
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    try {
+      final ok = await write();
+      if (!ok) {
+        return const ReviewConflict('这条记录刚刚被改过，请重试');
+      }
+    } catch (error) {
+      return ReviewFailed(error);
+    }
+    return ReviewSucceeded(
+      await loadSnapshot(ledgerId: ledgerId, month: month),
+    );
+  }
+
+  Future<Ledger> _ledgerById(int ledgerId) async {
+    final ledgers = await _store.ledgers();
+    for (final ledger in ledgers) {
+      if (ledger.id == ledgerId) return ledger;
+    }
+    throw StateError('找不到账本：$ledgerId');
+  }
+
+  int _nowMs() => _clock().millisecondsSinceEpoch;
+
+  List<AllocationDraft> _draftsOf(LedgerDataset dataset, int transactionId) =>
+      <AllocationDraft>[
+        for (final allocation in dataset.allocationsOf(transactionId))
+          AllocationDraft(
+            categoryId: allocation.categoryId,
+            amountCents: allocation.amountCents,
+          ),
+      ];
+
+  ReviewSessionRecord _withoutEntry(ReviewSessionRecord record, int transactionId) =>
+      record.copyWith(
+        entries: <ReviewQueueEntry>[
+          for (final entry in record.entries)
+            if (entry.transactionId != transactionId) entry,
+        ],
+      );
+
+  /// 把某笔挪到指定队列的末尾。
+  ReviewSessionRecord _withBucket(
+    ReviewSessionRecord record,
+    int transactionId,
+    ReviewBucket bucket,
+  ) =>
+      record.copyWith(
+        entries: <ReviewQueueEntry>[
+          ...record.entries,
+          ReviewQueueEntry(transactionId: transactionId, bucket: bucket),
+        ],
+        currentTransactionId: _firstMainId(record.entries, transactionId),
+      );
+
+  int? _firstMainId(List<ReviewQueueEntry> entries, int removedId) {
+    for (final entry in entries) {
+      if (entry.transactionId == removedId) continue;
+      if (entry.bucket == ReviewBucket.main) return entry.transactionId;
+    }
+    return null;
+  }
+
+  /// 把会话与数据库对齐。
+  _ReconcileResult _reconcile({
+    required int ledgerId,
+    required YearMonth month,
+    required LedgerDataset dataset,
+    required ReviewSessionRecord? stored,
+  }) {
+    final pending = <LedgerTransaction>[];
+    final deferred = <LedgerTransaction>[];
+    for (final transaction in dataset.transactions) {
+      if (transaction.month != month) continue;
+      switch (transaction.reviewStatus) {
+        case ReviewStatus.pending:
+          pending.add(transaction);
+        case ReviewStatus.deferred:
+          deferred.add(transaction);
+        case ReviewStatus.resolved:
+          break;
+      }
+    }
+    // 稳定顺序：时间倒序，同一时刻按 ID，避免顺序随查询计划漂移。
+    int byTimeThenId(LedgerTransaction a, LedgerTransaction b) {
+      final byTime = b.occurredAtMs.compareTo(a.occurredAtMs);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    }
+
+    pending.sort(byTimeThenId);
+    deferred.sort(byTimeThenId);
+
+    final wanted = <ReviewQueueEntry>[
+      for (final transaction in pending)
+        ReviewQueueEntry(transactionId: transaction.id, bucket: ReviewBucket.main),
+      for (final transaction in deferred)
+        ReviewQueueEntry(transactionId: transaction.id, bucket: ReviewBucket.deferred),
+    ];
+
+    if (stored == null) {
+      return _ReconcileResult(
+        record: ReviewSessionRecord(
+          ledgerId: ledgerId,
+          month: month,
+          entries: wanted,
+          updatedAtMs: _nowMs(),
+          currentTransactionId: wanted.isEmpty ? null : wanted.first.transactionId,
+        ),
+        changed: true,
+      );
+    }
+
+    // 保留用户已经调整过的顺序：先按存储的顺序取仍然有效的项，
+    // 再把新出现的记录按稳定顺序补到对应队列末尾。
+    final allowed = <int, ReviewBucket>{
+      for (final entry in wanted) entry.transactionId: entry.bucket,
+    };
+    final kept = <ReviewQueueEntry>[];
+    final seen = <int>{};
+    for (final entry in stored.entries) {
+      final bucket = allowed[entry.transactionId];
+      if (bucket == null) continue;
+      if (!seen.add(entry.transactionId)) continue;
+      kept.add(ReviewQueueEntry(transactionId: entry.transactionId, bucket: bucket));
+    }
+    final additions = <ReviewQueueEntry>[
+      for (final entry in wanted)
+        if (!seen.contains(entry.transactionId)) entry,
+    ];
+    final merged = <ReviewQueueEntry>[...kept, ...additions];
+
+    final changed = merged.length != stored.entries.length ||
+        !_sameOrder(merged, stored.entries);
+
+    return _ReconcileResult(
+      record: changed
+          ? stored.copyWith(
+              entries: merged,
+              updatedAtMs: _nowMs(),
+              currentTransactionId: merged.isEmpty
+                  ? null
+                  : merged.first.transactionId,
+              clearCurrent: merged.isEmpty,
+            )
+          : stored,
+      changed: changed,
+    );
+  }
+
+  bool _sameOrder(List<ReviewQueueEntry> a, List<ReviewQueueEntry> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index].transactionId != b[index].transactionId) return false;
+      if (a[index].bucket != b[index].bucket) return false;
+    }
+    return true;
+  }
+}
+
+final class _ReconcileResult {
+  const _ReconcileResult({required this.record, required this.changed});
+
+  final ReviewSessionRecord record;
+  final bool changed;
+}

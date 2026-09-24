@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    实现指南 8.3：与「仅本地使用」的承诺保持一致。
+    首版不提供可恢复的加密备份格式，因此本地账单、分类图片与主题偏好
+    既不上传云端备份，也不通过设备迁移转移。
+    用户如需迁移数据，走应用内的「导出」入口并自行保存。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

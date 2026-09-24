@@ -1,0 +1,33 @@
+name: younum
+description: "有数：本地账单整理与月度回顾（设计稿的可运行实现）。"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.4
+
+# 依赖边界（实现指南 2.2）：
+# * 账单存在本地 SQLite，用 Android 系统自带的 SQLite（sqflite 走系统 API，
+#   不需要编译原生库），因此不引入 NDK / CMake 环节；
+# * 除 sqflite / shared_preferences 外不引第三方 UI 或状态管理库。
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  shared_preferences: ^2.5.5
+  sqflite: ^2.4.4
+  # 只用来拼数据库文件路径；sqflite 本身就依赖它，这里显式声明。
+  path: ^1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # 数据库的约束与迁移必须跑在**真的 Android SQLite** 上才有意义，
+  # 所以这层用真机集成测试，而不是在 Windows 虚拟机上假装一个 SQLite。
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

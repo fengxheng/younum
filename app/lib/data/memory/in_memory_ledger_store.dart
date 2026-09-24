@@ -1,0 +1,381 @@
+/// 内存版账本存储。
+///
+/// 用途有两个，都很重要：
+///
+/// 1. **单元测试**。`flutter test` 跑在 Windows 的 Dart 虚拟机上，用 SQLite
+///    需要一个本机并不存在的 `sqlite3.dll`。为了让业务编排（提交、撤销、稍后、
+///    跨月退款）能在秒级测试里反复跑，这里提供一个行为等价的内存后端。
+/// 2. **存储不可用时的兜底**。和主题偏好的处理保持一致：读不到存储不应该崩溃，
+///    功能仍然可用，只是本次会话不落盘。
+///
+/// ⚠️ 它**不**模拟外键与唯一约束的实际强制行为（只在少数地方显式检查），
+/// 所以「约束真的生效」必须由真机集成测试证明，不能靠这里的绿灯。
+library;
+
+import '../../data/seed/demo_ledger_seed.dart';
+import '../../domain/models/allocation.dart';
+import '../../domain/models/category.dart';
+import '../../domain/models/ledger.dart';
+import '../../domain/models/ledger_dataset.dart';
+import '../../domain/models/ledger_transaction.dart';
+import '../../domain/models/review_session_record.dart';
+import '../../domain/models/year_month.dart';
+import '../../domain/repositories/ledger_store.dart';
+
+/// 内存实现的存储。
+final class InMemoryLedgerStore implements LedgerStore {
+  InMemoryLedgerStore();
+
+  final Map<int, Ledger> _ledgers = <int, Ledger>{};
+  final Map<int, Category> _categories = <int, Category>{};
+  final Map<int, LedgerTransaction> _transactions = <int, LedgerTransaction>{};
+  final Map<int, List<Allocation>> _allocations = <int, List<Allocation>>{};
+  final List<RefundLink> _refundLinks = <RefundLink>[];
+  final List<RefundAllocation> _refundAllocations = <RefundAllocation>[];
+  final Map<String, ReviewSessionRecord> _sessions = <String, ReviewSessionRecord>{};
+  final Map<String, bool> _coverage = <String, bool>{};
+  final List<UndoRecord> _actions = <UndoRecord>[];
+
+  int _nextTransactionId = 1000;
+  int _nextAllocationId = 1000;
+  int _nextRefundLinkId = 1;
+  int _nextActionId = 1;
+
+  /// 测试用：下一次写入是否应该失败，用来验证「保存失败时界面状态不变」。
+  Object? failNextWrite;
+
+  @override
+  Future<void> initialize() async {
+    // 幂等：重复调用不会产生重复账本或分类。
+    _ledgers[DemoLedgerSeed.demoLedgerId] = DemoLedgerSeed.demoLedger();
+    _ledgers[DemoLedgerSeed.realLedgerId] = DemoLedgerSeed.realLedger();
+    for (final category in DemoLedgerSeed.categories()) {
+      _categories[category.id] = category;
+    }
+    for (final transaction in DemoLedgerSeed.baselineTransactions()) {
+      _transactions[transaction.id] = transaction;
+    }
+  }
+
+  @override
+  Future<void> clearAll() async {
+    _transactions.clear();
+    _allocations.clear();
+    _refundLinks.clear();
+    _refundAllocations.clear();
+    _sessions.clear();
+    _coverage.clear();
+    _actions.clear();
+    _categories.removeWhere((_, category) => !category.isBuiltin);
+    await initialize();
+  }
+
+  @override
+  Future<List<Ledger>> ledgers() async => _ledgers.values.toList();
+
+  @override
+  Future<List<Category>> categories({required int ledgerId}) async =>
+      _categories.values.toList()
+        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+
+  @override
+  Future<LedgerDataset> dataset({
+    required int ledgerId,
+    Set<YearMonth>? months,
+  }) async {
+    final selected = <LedgerTransaction>[
+      for (final transaction in _transactions.values)
+        if (transaction.ledgerId == ledgerId &&
+            (months == null || months.contains(transaction.month)))
+          transaction,
+    ];
+
+    // 只取给定月份时，还要带上「关联到这些月份消费的退款」——
+    // 跨月退款要算对就必须这样取数。
+    final baseIds = selected.map((transaction) => transaction.id).toSet();
+    final links = months == null
+        ? const <RefundLink>[]
+        : <RefundLink>[
+            for (final link in _refundLinks)
+              if (baseIds.contains(link.originalTransactionId)) link,
+          ];
+
+    final extraTransactions = <LedgerTransaction>[
+      for (final link in links)
+        if (_transactions[link.refundTransactionId] case final refund?)
+          if (!baseIds.contains(refund.id)) refund,
+    ];
+
+    final allTransactions = <LedgerTransaction>[...selected, ...extraTransactions];
+    final linkIds = links.map((link) => link.id).toSet();
+
+    return LedgerDataset(
+      transactions: allTransactions,
+      allocations: <Allocation>[
+        for (final transaction in allTransactions) ...?_allocations[transaction.id],
+      ],
+      refundLinks: links,
+      refundAllocations: <RefundAllocation>[
+        for (final refundAllocation in _refundAllocations)
+          if (linkIds.contains(refundAllocation.refundLinkId)) refundAllocation,
+      ],
+      categories: _categories.values.toList(),
+    );
+  }
+
+  /// 记录一条退款关联。
+  ///
+  /// 同一笔退款只能关联一次 —— 与数据库的唯一约束行为一致。
+  @override
+  Future<int> insertRefundLink({
+    required int refundTransactionId,
+    required int originalTransactionId,
+    required int amountCents,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
+  }) async {
+    _throwIfFailing();
+    for (final existing in _refundLinks) {
+      if (existing.refundTransactionId == refundTransactionId) {
+        throw StateError('这笔退款已经关联过一笔消费，不能重复关联');
+      }
+    }
+    final link = RefundLink(
+      id: _nextRefundLinkId++,
+      refundTransactionId: refundTransactionId,
+      originalTransactionId: originalTransactionId,
+      amountCents: amountCents,
+    );
+    _refundLinks.add(link);
+    for (final draft in allocations) {
+      _refundAllocations.add(
+        RefundAllocation(
+          id: _refundAllocations.length + 1,
+          refundLinkId: link.id,
+          originalAllocationId: draft.originalAllocationId,
+          amountCents: draft.amountCents,
+        ),
+      );
+    }
+    return link.id;
+  }
+
+  @override
+  Future<LedgerTransaction?> transactionById(int transactionId) async =>
+      _transactions[transactionId];
+
+  @override
+  Future<int> insertTransaction(LedgerTransaction transaction) async {
+    final key = transaction.dedupeKey;
+    if (key != null) {
+      for (final existing in _transactions.values) {
+        if (existing.ledgerId == transaction.ledgerId && existing.dedupeKey == key) {
+          throw StateError('同一来源的同一笔交易已经存在，不能重复写入：$key');
+        }
+      }
+    }
+    final id = transaction.id != LedgerTransaction.idUnassigned
+        ? transaction.id
+        : _nextTransactionId++;
+    _transactions[id] = transaction.copyWith(id: id);
+    return id;
+  }
+
+  @override
+  Future<bool> updateTransaction({
+    required LedgerTransaction transaction,
+    required int expectedVersion,
+  }) async {
+    _throwIfFailing();
+    final current = _transactions[transaction.id];
+    if (current == null || current.version != expectedVersion) return false;
+    _transactions[transaction.id] = transaction.copyWith(version: expectedVersion + 1);
+    return true;
+  }
+
+  @override
+  Future<ReviewSessionRecord?> loadReviewSession({
+    required int ledgerId,
+    required YearMonth month,
+  }) async =>
+      _sessions[_sessionKey(ledgerId, month)];
+
+  @override
+  Future<void> saveReviewSession({required ReviewSessionRecord record}) async {
+    _throwIfFailing();
+    _sessions[_sessionKey(record.ledgerId, record.month)] = record;
+  }
+
+  @override
+  Future<bool> coverageConfirmed({
+    required int ledgerId,
+    required YearMonth month,
+  }) async =>
+      _coverage[_sessionKey(ledgerId, month)] ?? false;
+
+  @override
+  Future<void> setCoverageConfirmed({
+    required int ledgerId,
+    required YearMonth month,
+    required bool value,
+  }) async {
+    _throwIfFailing();
+    _coverage[_sessionKey(ledgerId, month)] = value;
+  }
+
+  @override
+  Future<bool> resolveTransaction({
+    required LedgerTransaction before,
+    required int categoryId,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    _throwIfFailing();
+    final current = _transactions[before.id];
+    if (current == null || current.version != before.version) return false;
+
+    _transactions[before.id] = current.copyWith(
+      reviewStatus: ReviewStatus.resolved,
+      version: current.version + 1,
+    );
+    _allocations[before.id] = <Allocation>[
+      Allocation(
+        id: _nextAllocationId++,
+        transactionId: before.id,
+        categoryId: categoryId,
+        amountCents: current.amountCents,
+      ),
+    ];
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    _actions.add(undo.copyWith(id: _nextActionId++));
+    return true;
+  }
+
+  @override
+  Future<bool> deferTransaction({
+    required LedgerTransaction before,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    _throwIfFailing();
+    final current = _transactions[before.id];
+    if (current == null || current.version != before.version) return false;
+
+    _transactions[before.id] = current.copyWith(
+      reviewStatus: ReviewStatus.deferred,
+      version: current.version + 1,
+    );
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    _actions.add(undo.copyWith(id: _nextActionId++));
+    return true;
+  }
+
+  @override
+  Future<void> saveSessionWithUndo({
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    _throwIfFailing();
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    _actions.add(undo.copyWith(id: _nextActionId++));
+  }
+
+  @override
+  Future<bool> reopenDeferred({
+    required List<LedgerTransaction> transactions,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    _throwIfFailing();
+    for (final transaction in transactions) {
+      final current = _transactions[transaction.id];
+      if (current == null || current.version != transaction.version) return false;
+      _transactions[transaction.id] = current.copyWith(
+        reviewStatus: ReviewStatus.pending,
+        version: current.version + 1,
+      );
+    }
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    _actions.add(undo.copyWith(id: _nextActionId++));
+    return true;
+  }
+
+  @override
+  Future<UndoRecord?> latestAvailableAction({
+    required int ledgerId,
+    required YearMonth month,
+  }) async {
+    for (final action in _actions.reversed) {
+      if (action.state != ReviewActionState.available) continue;
+      if (action.ledgerId != ledgerId || action.month != month) continue;
+      return action;
+    }
+    return null;
+  }
+
+  @override
+  Future<bool> applyUndo({
+    required UndoRecord action,
+    required ReviewSessionRecord session,
+  }) async {
+    _throwIfFailing();
+
+    // 先把所有目标校验完再写：任一版本对不上就整体不动，
+    // 等价于 SQL 实现里事务回滚的效果。
+    final restored = <int, LedgerTransaction>{};
+    for (final target in action.targets) {
+      final current = _transactions[target.transactionId];
+      if (current == null) return false;
+      // 操作之后又被改过 —— 不能覆盖新数据（指南 3.3）。
+      if (current.version != target.afterVersion) return false;
+      restored[target.transactionId] = current.copyWith(
+        reviewStatus: target.beforeStatus,
+        nature: target.beforeNature,
+        version: target.beforeVersion + 1,
+      );
+    }
+
+    for (final entry in restored.entries) {
+      _transactions[entry.key] = entry.value;
+      _allocations.remove(entry.key);
+    }
+    for (final target in action.targets) {
+      if (target.beforeAllocations.isEmpty) continue;
+      _allocations[target.transactionId] = <Allocation>[
+        for (final draft in target.beforeAllocations)
+          Allocation(
+            id: _nextAllocationId++,
+            transactionId: target.transactionId,
+            categoryId: draft.categoryId,
+            amountCents: draft.amountCents,
+          ),
+      ];
+    }
+
+    final index = _actions.indexWhere((candidate) => candidate.id == action.id);
+    if (index >= 0) {
+      _actions[index] = _actions[index].copyWith(state: ReviewActionState.used);
+    }
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    return true;
+  }
+
+  @override
+  Future<void> invalidateAction(int actionId) async {
+    final index = _actions.indexWhere((candidate) => candidate.id == actionId);
+    if (index >= 0) {
+      _actions[index] =
+          _actions[index].copyWith(state: ReviewActionState.invalidated);
+    }
+  }
+
+  static String _sessionKey(int ledgerId, YearMonth month) =>
+      '$ledgerId:${month.toIso()}';
+
+  void _throwIfFailing() {
+    final failure = failNextWrite;
+    if (failure != null) {
+      failNextWrite = null;
+      throw failure;
+    }
+  }
+}
