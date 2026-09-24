@@ -65,6 +65,16 @@ class TransactionDetailArgs {
   final String? transactionId;
 }
 
+/// 拆分参数。
+///
+/// 必须带交易 ID：拆分页要展示并修改**具体那一笔**，
+/// 而「当前卡片」在从明细 / 详情页进来时并不是它。
+class SplitArgs {
+  const SplitArgs({required this.transactionId});
+
+  final int transactionId;
+}
+
 /// 明细检索参数。
 ///
 /// 指南 10.3 要求「按分类下钻只显示对应明细」，所以从分类详情进入明细时

@@ -322,12 +322,14 @@ final class LedgerRepository {
     }
 
     // 消费必须完成「有效分配」才算处理完成（指南 3.3）。
+    // 这里只给一项分配，等于「重新归类成本类全额」；拆分走 [split]。
+    final items = AllocationRules.singleCategory(
+      categoryId,
+      transaction.amountCents,
+    );
     final ruleError = AllocationRules.validate(
       originalCents: transaction.amountCents,
-      items: AllocationRules.singleCategory(
-        categoryId,
-        transaction.amountCents,
-      ),
+      items: items,
     );
     if (ruleError != null) return ReviewRejected(ruleError.message);
 
@@ -353,7 +355,71 @@ final class LedgerRepository {
     return _run(
       () => _store.resolveTransaction(
         before: transaction,
-        categoryId: categoryId,
+        items: items,
+        session: nextRecord,
+        undo: undo,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
+  /// 拆分一笔消费：把一笔金额拆到多个用途。
+  ///
+  /// 指南 3.5：不复制原交易（账单笔数不变），每项大于 0，
+  /// 且合计**精确等于**原始金额；同一分类不能重复出现。
+  ///
+  /// 指南 3.5.6：已经有退款关联的消费不能直接改变拆分结构 ——
+  /// 那需要同时调整退款分配并在同一事务里校验。本轮先**明确拒绝**，
+  /// 而不是默默把退款分配留成对不上号的旧值。
+  Future<ReviewOutcome> split({
+    required int ledgerId,
+    required YearMonth month,
+    required int transactionId,
+    required List<AllocationDraft> items,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final transaction = snapshot.dataset.transaction(transactionId);
+    if (transaction == null) {
+      return ReviewRejected('找不到这条记录，可能已被删除');
+    }
+
+    final ruleError = AllocationRules.validate(
+      originalCents: transaction.amountCents,
+      items: items,
+    );
+    if (ruleError != null) return ReviewRejected(ruleError.message);
+
+    final hasRefund = snapshot.dataset.refundLinks.any(
+      (link) => link.originalTransactionId == transactionId,
+    );
+    if (hasRefund) {
+      return ReviewRejected('这笔消费已经有退款关联，先解除关联再拆分');
+    }
+
+    final nextRecord = _withoutEntry(snapshot.record, transactionId);
+    final undo = UndoRecord(
+      type: ReviewActionType.resolve,
+      label: '拆分 ${transaction.merchant}',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        UndoTarget(
+          transactionId: transactionId,
+          beforeVersion: transaction.version,
+          beforeStatus: transaction.reviewStatus,
+          beforeNature: transaction.nature,
+          beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
+        ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    return _run(
+      () => _store.resolveTransaction(
+        before: transaction,
+        items: items,
         session: nextRecord,
         undo: undo,
       ),

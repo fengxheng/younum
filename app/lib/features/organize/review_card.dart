@@ -19,7 +19,7 @@ final class ReviewCard {
   const ReviewCard({
     required this.transaction,
     this.category,
-    this.allocation,
+    this.allocations = const <Allocation>[],
   });
 
   final LedgerTransaction transaction;
@@ -27,8 +27,12 @@ final class ReviewCard {
   /// 已归类的分类。未归类时为 null。
   final Category? category;
 
-  /// 该笔的分配（拆分时可能有多条，[allocation] 是其中一条）。
-  final Allocation? allocation;
+  /// 该笔的**全部**分配。拆分后有多条，也是拆分页回填的依据。
+  final List<Allocation> allocations;
+
+  /// 第一条分配。单分类消费就是它，拆分时只是其中一条。
+  Allocation? get allocation =>
+      allocations.isEmpty ? null : allocations.first;
 
   int get id => transaction.id;
 

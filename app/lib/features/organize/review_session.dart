@@ -17,6 +17,7 @@ library;
 
 import 'package:flutter/widgets.dart';
 
+import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/ledger_transaction.dart';
 import '../../domain/models/year_month.dart';
@@ -297,6 +298,29 @@ class ReviewSession extends ChangeNotifier {
     );
   }
 
+  /// 拆分某笔交易：一笔金额拆到多个用途。
+  ///
+  /// 传交易 ID 而不是「当前卡片」：拆分是从明细 / 详情页进来的，
+  /// 那时当前卡片可能是别的记录。
+  Future<bool> splitTransaction({
+    required int transactionId,
+    required List<AllocationDraft> items,
+  }) async {
+    if (_committing) return false;
+    final ledgerId = _ledgerId;
+    final month = _month;
+    if (ledgerId == null || month == null) return false;
+
+    return _commit(
+      () => repository.split(
+        ledgerId: ledgerId,
+        month: month,
+        transactionId: transactionId,
+        items: items,
+      ),
+    );
+  }
+
   /// 稍后处理。不增加完成数。
   Future<bool> deferCurrent() async {
     if (_committing) return false;
@@ -444,11 +468,10 @@ class ReviewSession extends ChangeNotifier {
     if (dataset == null) return ReviewCard(transaction: transaction);
     final allocations = dataset.allocationsOf(transaction.id);
     if (allocations.isEmpty) return ReviewCard(transaction: transaction);
-    final allocation = allocations.first;
     return ReviewCard(
       transaction: transaction,
-      allocation: allocation,
-      category: _categoryById(allocation.categoryId),
+      allocations: allocations,
+      category: _categoryById(allocations.first.categoryId),
     );
   }
 

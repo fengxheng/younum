@@ -15,6 +15,9 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/money/money.dart';
+import '../../domain/models/allocation.dart';
+import '../../domain/models/category.dart';
+import '../../domain/models/ledger_transaction.dart';
 import 'category_registry.dart';
 import 'review_card.dart';
 import 'review_session.dart';
@@ -151,7 +154,10 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
             subtitle: '一笔金额，多个用途',
             icon: YounumIcons.split,
             trailingWidget: const _Chevron(),
-            onTap: () => context.open(AppRoutes.splitTransaction),
+            onTap: () => context.open(
+              AppRoutes.splitTransaction,
+              arguments: SplitArgs(transactionId: transaction.id),
+            ),
           ),
           YounumListRow(
             title: '设为转账 / 退款',
@@ -201,38 +207,68 @@ class _Chevron extends StatelessWidget {
 // split —— 拆分一笔消费
 // -----------------------------------------------------------------------------
 
-/// 拆分用途。
+/// 拆分一笔消费。
 ///
-/// 硬性校验（指南 3.5.1）：各项金额必须大于 0，且合计**精确等于**原始金额。
-/// 校验不过时确认按钮不可提交。
+/// 硬性校验（指南 3.5）：每项金额大于 0、合计**精确等于**原始金额、
+/// 同一分类不能重复。校验不过时「确认拆分」保持不可点。
+///
+/// 数据全部来自真实交易：原始金额、现有分配（已拆过的照原样回填）、
+/// 可选分类。写库走 `ReviewSession.splitTransaction`，与「重新归类」
+/// 共用同一条带版本校验与撤销日志的写路径。
 class SplitScreen extends StatefulWidget {
-  const SplitScreen({super.key});
+  const SplitScreen({super.key, required this.transactionId});
+
+  final int transactionId;
 
   @override
   State<SplitScreen> createState() => _SplitScreenState();
 }
 
 class _SplitScreenState extends State<SplitScreen> {
-  /// 示例：盒马鲜生 126.80 拆成 买菜 86.80 + 日用品 40.00。
-  static const int _originalCents = 12680;
-  static const List<String> _options = <String>[
-    '餐饮 · 买菜',
-    '购物 · 日用品',
-    '餐饮 · 日常三餐',
-    '健康 · 日常用药',
-  ];
+  /// null 表示还没按真实数据初始化过。
+  ///
+  /// 只能在这里初始化：真实数据要从会话里取，而会话在 `initState` 时
+  /// 还拿不到（`InheritedWidget` 只保证 `didChangeDependencies` 之后可用）。
+  List<_SplitDraft>? _items;
 
-  final List<_SplitDraft> _items = <_SplitDraft>[
-    _SplitDraft(optionIndex: 0, amount: '86.80'),
-    _SplitDraft(optionIndex: 1, amount: '40.00'),
-  ];
+  bool _saving = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _items ??= _initialItems();
+  }
 
   @override
   void dispose() {
-    for (final item in _items) {
+    for (final item in _items ?? const <_SplitDraft>[]) {
       item.controller.dispose();
     }
     super.dispose();
+  }
+
+  /// 默认摆出**现有分配**。
+  ///
+  /// 已经拆过的照原样回填（改一项不用从头再输一遍）；没拆过的就是
+  /// 「现有用途 + 全额」一行，用户在此基础上加一项、再改金额。
+  List<_SplitDraft> _initialItems() {
+    final card = ReviewSessionScope.of(context).cardFor(widget.transactionId);
+    if (card == null) return <_SplitDraft>[];
+    if (card.allocations.isEmpty) {
+      return <_SplitDraft>[
+        _SplitDraft(
+          categoryId: card.category?.id,
+          amountCents: card.amountCents,
+        ),
+      ];
+    }
+    return <_SplitDraft>[
+      for (final allocation in card.allocations)
+        _SplitDraft(
+          categoryId: allocation.categoryId,
+          amountCents: allocation.amountCents,
+        ),
+    ];
   }
 
   /// 解析一项金额；返回 null 表示非法（含超过两位小数）。
@@ -245,7 +281,7 @@ class _SplitScreenState extends State<SplitScreen> {
   /// 已分配合计。出现非法项时返回 null，避免把错误金额算进合计。
   int? get _allocated {
     var total = 0;
-    for (final item in _items) {
+    for (final item in _items ?? const <_SplitDraft>[]) {
       final cents = _centsOf(item);
       if (cents == null) return null;
       total += cents;
@@ -254,17 +290,90 @@ class _SplitScreenState extends State<SplitScreen> {
   }
 
   bool get _allPositive =>
-      _items.isNotEmpty && _items.every((item) => (_centsOf(item) ?? 0) > 0);
+      (_items ?? const <_SplitDraft>[]).isNotEmpty &&
+      _items!.every((item) => (_centsOf(item) ?? 0) > 0);
 
-  /// 只有「全部大于 0」且「合计精确相等」才允许提交。
-  bool get _canSubmit => _allPositive && _allocated == _originalCents;
+  /// 每项都选了用途。没选的那项提交上去只会被服务端挡回来。
+  bool get _allChosen =>
+      (_items ?? const <_SplitDraft>[]).every((item) => item.categoryId != null);
+
+  /// 只有「都选了用途」「全部大于 0」且「合计精确相等」才允许提交。
+  bool get _canSubmit =>
+      _allChosen &&
+      _allPositive &&
+      _allocated == _originalCentsOfCurrent;
+
+  /// 当前这笔的原始金额。数据没准备好时用 0，让按钮处于不可点状态。
+  int get _originalCentsOfCurrent =>
+      ReviewSessionScope.of(context)
+          .cardFor(widget.transactionId)
+          ?.amountCents ??
+      0;
+
+  Future<void> _submit() async {
+    final items = _items;
+    if (items == null || !_canSubmit || _saving) return;
+
+    final drafts = <AllocationDraft>[];
+    for (final item in items) {
+      final categoryId = item.categoryId;
+      final cents = _centsOf(item);
+      if (categoryId == null || cents == null) return;
+      drafts.add(AllocationDraft(categoryId: categoryId, amountCents: cents));
+    }
+
+    final session = ReviewSessionScope.of(context);
+    final navigator = Navigator.of(context);
+    setState(() => _saving = true);
+    final ok = await session.splitTransaction(
+      transactionId: widget.transactionId,
+      items: drafts,
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+    showYounumToast(
+      context,
+      ok
+          ? '拆分已保存，统计时按用途汇总'
+          : session.lastFailure ?? '拆分没有保存成功，可以重试',
+    );
+    if (ok) navigator.maybePop();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final session = ReviewSessionScope.of(context);
+    final card = session.cardFor(widget.transactionId);
+    if (card == null) return const _MissingTransaction();
+
+    // 会话晚到时兜底：此时还没构建过表单，补一次初始化不会丢用户输入。
+    _items ??= _initialItems();
+
+    // 拆分只对消费有意义：收入、转账、退款、排除统计都不参与消费统计。
+    if (card.transaction.nature != TransactionNature.expense) {
+      return YounumScreen(
+        title: '拆分消费',
+        child: YounumEmptyState(
+          icon: YounumIcons.split,
+          title: '这笔不是消费，不能拆分',
+          description: '拆分用于把一笔消费分到多个用途。收入、转账、退款与'
+              '「排除统计」的记录不计入消费统计，因此不需要拆分。',
+        ),
+      );
+    }
+
     final text = YounumText.of(context);
     final colors = YounumColors.of(context);
+    final items = _items!;
+    final originalCents = card.amountCents;
     final allocated = _allocated;
-    final remaining = allocated == null ? null : _originalCents - allocated;
+    final remaining = allocated == null ? null : originalCents - allocated;
+
+    // 可选用途用**全部分类**（含细分用途与自建），按稳定 ID 存。
+    final categories = session.allCategories;
+    final byId = <int, Category>{
+      for (final category in categories) category.id: category,
+    };
 
     return YounumScreen(
       title: '拆分消费',
@@ -273,25 +382,25 @@ class _SplitScreenState extends State<SplitScreen> {
         children: <Widget>[
           Text('一笔花费，多种用途', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gapSm),
-          YounumMutedText('盒马鲜生 · 9月21日 19:05'),
+          YounumMutedText('${card.merchant} · ${card.dateText}'),
           const SizedBox(height: YounumDimens.gap),
-          const YounumPanel(
+          YounumPanel(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                YounumCaptionText('原始金额'),
-                SizedBox(height: 8),
-                AmountText(cents: _originalCents, scale: AmountScale.panel),
+                const YounumCaptionText('原始金额'),
+                const SizedBox(height: 8),
+                AmountText(cents: originalCents, scale: AmountScale.panel),
               ],
             ),
           ),
-          for (var index = 0; index < _items.length; index++) ...<Widget>[
+          for (var index = 0; index < items.length; index++) ...<Widget>[
             YounumFieldLabel(
               '用途${_indexLabel(index)}',
-              trailing: _items.length > 1
+              trailing: items.length > 1
                   ? YounumPressable(
                       onTap: () => setState(() {
-                        _items.removeAt(index).controller.dispose();
+                        items.removeAt(index).controller.dispose();
                       }),
                       semanticLabel: '删除用途${_indexLabel(index)}',
                       borderRadius: BorderRadius.circular(YounumDimens.radiusControlSmall),
@@ -306,15 +415,16 @@ class _SplitScreenState extends State<SplitScreen> {
                   : null,
             ),
             YounumSelectField<int>(
-              options: List<int>.generate(_options.length, (i) => i),
-              labelBuilder: (i) => _options[i],
-              selected: _items[index].optionIndex,
+              options: <int>[for (final category in categories) category.id],
+              labelBuilder: (id) => _labelOf(byId, id),
+              selected: items[index].categoryId,
+              placeholder: '选择用途',
               semanticLabel: '用途${_indexLabel(index)}分类',
-              onSelected: (value) => setState(() => _items[index].optionIndex = value),
+              onSelected: (value) => setState(() => items[index].categoryId = value),
             ),
             const SizedBox(height: YounumDimens.gapSm),
             YounumTextField(
-              controller: _items[index].controller,
+              controller: items[index].controller,
               hintText: '0.00',
               suffixText: '元',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -329,7 +439,7 @@ class _SplitScreenState extends State<SplitScreen> {
             label: '增加一项用途',
             style: YounumActionStyle.secondary,
             onPressed: () => setState(
-              () => _items.add(_SplitDraft(optionIndex: 0, amount: '')),
+              () => items.add(_SplitDraft(categoryId: null, amountCents: 0)),
             ),
           ),
           YounumPanel(
@@ -370,13 +480,8 @@ class _SplitScreenState extends State<SplitScreen> {
             ),
           ),
           PrimaryAction(
-            label: '确认拆分',
-            onPressed: _canSubmit
-                ? () {
-                    showYounumToast(context, '拆分已保存，统计时按用途汇总');
-                    Navigator.of(context).pop();
-                  }
-                : null,
+            label: _saving ? '正在保存…' : '确认拆分',
+            onPressed: _canSubmit && !_saving ? _submit : null,
           ),
           const YounumPillNote(
             '保留原始交易，统计时按拆分后的用途汇总；'
@@ -387,6 +492,17 @@ class _SplitScreenState extends State<SplitScreen> {
     );
   }
 
+  /// 分类展示名。
+  ///
+  /// 子分类要带上母类，否则只看到一个「买菜」不知道它属于哪一类。
+  static String _labelOf(Map<int, Category> byId, int id) {
+    final category = byId[id];
+    if (category == null) return '未知分类';
+    final parentId = category.parentId;
+    final parent = parentId == null ? null : byId[parentId];
+    return parent == null ? category.name : '${parent.name} · ${category.name}';
+  }
+
   /// 中文序号。超过 5 项时回退到数字，避免越界。
   static String _indexLabel(int index) => index < 5
       ? const <String>['一', '二', '三', '四', '五'][index]
@@ -394,11 +510,19 @@ class _SplitScreenState extends State<SplitScreen> {
 }
 
 class _SplitDraft {
-  _SplitDraft({required this.optionIndex, required String amount})
-      : controller = TextEditingController(text: amount);
+  _SplitDraft({this.categoryId, required int amountCents})
+      : controller = TextEditingController(text: _editable(amountCents));
 
-  int optionIndex;
+  /// 选中的分类 ID；null 表示还没选。
+  int? categoryId;
+
   final TextEditingController controller;
+
+  /// 金额的可编辑文本。
+  ///
+  /// 0 分当作「还没填」—— 留空才能露出输入框的 0.00 提示；
+  /// 而且 0 分本来就不合法（每项必须大于 0）。
+  static String _editable(int cents) => cents <= 0 ? '' : Money.format(cents);
 }
 
 // -----------------------------------------------------------------------------

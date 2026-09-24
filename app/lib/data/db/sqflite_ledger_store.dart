@@ -371,7 +371,7 @@ final class SqfliteLedgerStore implements LedgerStore {
   @override
   Future<bool> resolveTransaction({
     required LedgerTransaction before,
-    required int categoryId,
+    required List<AllocationDraft> items,
     required ReviewSessionRecord session,
     required UndoRecord undo,
   }) async {
@@ -393,16 +393,19 @@ final class SqfliteLedgerStore implements LedgerStore {
         conflicted = true;
         return;
       }
+      // 拆分就是「旧分配整体换成一组新分配」，所以先清后写。
       await txn.delete(
         'allocation',
         where: 'transaction_id = ?',
         whereArgs: <Object?>[before.id],
       );
-      await txn.insert('allocation', <String, Object?>{
-        'transaction_id': before.id,
-        'category_id': categoryId,
-        'amount_cents': before.amountCents,
-      });
+      for (final item in items) {
+        await txn.insert('allocation', <String, Object?>{
+          'transaction_id': before.id,
+          'category_id': item.categoryId,
+          'amount_cents': item.amountCents,
+        });
+      }
       await _writeSession(txn, session);
       await _appendAction(txn, session, undo);
     });

@@ -240,7 +240,12 @@ class _YounumAppState extends State<YounumApp> {
               : const TransactionDetailArgs(),
         );
       case AppRoutes.splitTransaction:
-        return (context) => const SplitScreen();
+        final splitArgs = settings.arguments;
+        return (context) => SplitScreen(
+          // 没有参数时给一个不存在的 ID，页面会如实说「这笔记录已经不在了」，
+          // 而不是随手拆了别的记录。
+          transactionId: splitArgs is SplitArgs ? splitArgs.transactionId : 0,
+        );
       case AppRoutes.transactionNature:
         return (context) => const TransactionNatureScreen();
       case AppRoutes.pendingQueue:

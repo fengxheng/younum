@@ -8,6 +8,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:younum/data/db/sqflite_ledger_store.dart';
 import 'package:younum/data/db/younum_schema.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
+import 'package:younum/domain/models/allocation.dart';
 import 'package:younum/domain/models/import_records.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/models/review_session_record.dart';
@@ -400,7 +401,12 @@ void main() {
       // 现在用过期的 before（版本仍是 1）去写。
       final ok = await store.resolveTransaction(
         before: stale,
-        categoryId: SeedCategoryIds.food,
+        items: <AllocationDraft>[
+          AllocationDraft(
+            categoryId: SeedCategoryIds.food,
+            amountCents: stale.amountCents,
+          ),
+        ],
         session: ReviewSessionRecord(
           ledgerId: DemoLedgerSeed.demoLedgerId,
           month: DemoLedgerSeed.month,
@@ -475,6 +481,59 @@ void main() {
         columns: <String>['undo_state'],
       );
       expect(action.first['undo_state'], 'USED');
+    });
+
+    test('拆分把一笔写成多条分配，撤销后回到原来那一条', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+      final originalCents = current.amountCents;
+
+      // 先按单分类归类，再拆成两项 —— 两条路走的是同一个写入口。
+      await repository.confirm(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        categoryId: SeedCategoryIds.food,
+      );
+      final half = originalCents ~/ 2;
+
+      final outcome = await repository.split(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        items: <AllocationDraft>[
+          AllocationDraft(categoryId: SeedCategoryIds.food, amountCents: half),
+          AllocationDraft(
+            categoryId: SeedCategoryIds.shopping,
+            amountCents: originalCents - half,
+          ),
+        ],
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      final db = await openRaw();
+      final rows = await db.query('allocation');
+      expect(rows, hasLength(2), reason: '旧的单条分配必须被替换，而不是叠加');
+      expect(
+        rows.fold<int>(0, (sum, row) => sum + (row['amount_cents']! as int)),
+        originalCents,
+        reason: '指南 3.5：合计精确等于原始金额',
+      );
+
+      // 撤销要把拆分整体还原成原样那一条。
+      final undone = await repository.undo(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      expect(undone, isA<ReviewSucceeded>());
+      final restored = await db.query('allocation');
+      expect(restored, hasLength(1));
+      expect(restored.single['amount_cents'], originalCents);
+      expect(restored.single['category_id'], SeedCategoryIds.food);
     });
 
     test('有关联退款时拒绝撤销原消费，避免退款去抵扣不存在的消费', () async {

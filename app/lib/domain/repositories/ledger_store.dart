@@ -121,10 +121,14 @@ abstract interface class LedgerStore {
   /// 确认归类：在**一个事务**里写入分配、置为已处理、递增版本、
   /// 保存会话顺序、写下可撤销的操作日志。
   ///
+  /// [items] 是这笔交易的全部分配（拆分就是多于一项）。用一组而不是
+  /// 「一个分类」是因为拆分与重新归类本质上是同一件事：
+  /// **把旧的分配整体换成新的**。版本校验、会话与撤销日志只写一次。
+  ///
   /// 返回 false 表示版本冲突（交易已被别处修改），此时什么都不写。
   Future<bool> resolveTransaction({
     required LedgerTransaction before,
-    required int categoryId,
+    required List<AllocationDraft> items,
     required ReviewSessionRecord session,
     required UndoRecord undo,
   });

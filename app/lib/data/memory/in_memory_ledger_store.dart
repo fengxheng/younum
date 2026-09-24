@@ -266,7 +266,7 @@ final class InMemoryLedgerStore implements LedgerStore {
   @override
   Future<bool> resolveTransaction({
     required LedgerTransaction before,
-    required int categoryId,
+    required List<AllocationDraft> items,
     required ReviewSessionRecord session,
     required UndoRecord undo,
   }) async {
@@ -279,12 +279,13 @@ final class InMemoryLedgerStore implements LedgerStore {
       version: current.version + 1,
     );
     _allocations[before.id] = <Allocation>[
-      Allocation(
-        id: _nextAllocationId++,
-        transactionId: before.id,
-        categoryId: categoryId,
-        amountCents: current.amountCents,
-      ),
+      for (final item in items)
+        Allocation(
+          id: _nextAllocationId++,
+          transactionId: before.id,
+          categoryId: item.categoryId,
+          amountCents: item.amountCents,
+        ),
     ];
     _sessions[_sessionKey(session.ledgerId, session.month)] = session;
     _actions.add(undo.copyWith(id: _nextActionId++));
