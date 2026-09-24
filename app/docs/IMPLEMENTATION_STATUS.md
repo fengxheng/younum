@@ -351,8 +351,8 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **324 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **28 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **346 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **30 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
