@@ -443,6 +443,56 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<bool> saveDetails({
+    required LedgerTransaction before,
+    required String? note,
+    required List<AllocationDraft>? items,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    final db = await _db;
+    var conflicted = false;
+    await db.transaction((txn) async {
+      // 用途没变就不动状态，只改备注。
+      final assignments = <String>['note = ?', 'version = version + 1'];
+      final args = <Object?>[note];
+      if (items != null) {
+        assignments.add('review_status = ?');
+        args.add(ReviewStatus.resolved.storageValue);
+      }
+      args
+        ..add(before.id)
+        ..add(before.version);
+
+      final updated = await txn.rawUpdate(
+        'UPDATE txn SET ${assignments.join(', ')} WHERE id = ? AND version = ?',
+        args,
+      );
+      if (updated != 1) {
+        conflicted = true;
+        return;
+      }
+      if (items != null) {
+        await txn.delete(
+          'allocation',
+          where: 'transaction_id = ?',
+          whereArgs: <Object?>[before.id],
+        );
+        for (final item in items) {
+          await txn.insert('allocation', <String, Object?>{
+            'transaction_id': before.id,
+            'category_id': item.categoryId,
+            'amount_cents': item.amountCents,
+          });
+        }
+      }
+      await _writeSession(txn, session);
+      await _appendAction(txn, session, undo);
+    });
+    return !conflicted;
+  }
+
+  @override
   Future<bool> setTransactionNature({
     required LedgerTransaction before,
     required TransactionNature nature,
@@ -748,13 +798,15 @@ final class SqfliteLedgerStore implements LedgerStore {
         await txn.rawUpdate(
           '''
           UPDATE txn
-          SET review_status = ?, nature = ?, exclude_reason = ?, version = ?
+          SET review_status = ?, nature = ?, exclude_reason = ?, note = ?,
+              version = ?
           WHERE id = ?
           ''',
           <Object?>[
             target.beforeStatus.storageValue,
             target.beforeNature.storageValue,
             target.beforeExcludeReason,
+            target.beforeNote,
             target.beforeVersion + 1,
             target.transactionId,
           ],
@@ -1396,6 +1448,7 @@ final class SqfliteLedgerStore implements LedgerStore {
           'status': target.beforeStatus.storageValue,
           'nature': target.beforeNature.storageValue,
           'excludeReason': target.beforeExcludeReason,
+          'note': target.beforeNote,
           'allocations': <Map<String, Object?>>[
             for (final draft in target.beforeAllocations)
               <String, Object?>{
@@ -1446,6 +1499,7 @@ final class SqfliteLedgerStore implements LedgerStore {
     beforeNature: TransactionNature.parse(raw['nature']! as String),
     // 旧日志里没有这个键，缺失就是 null（当时的实现也没有原因）。
     beforeExcludeReason: raw['excludeReason'] as String?,
+    beforeNote: raw['note'] as String?,
     beforeAllocations: <AllocationDraft>[
       for (final draft in (raw['allocations']! as List<Object?>))
         _draftFromJson(draft! as Map<String, Object?>),

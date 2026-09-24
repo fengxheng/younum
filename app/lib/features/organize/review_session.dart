@@ -230,7 +230,14 @@ class ReviewSession extends ChangeNotifier {
   /// 当前选中的分类 ID。未选择、或选中的名字找不到对应分类时为 null。
   int? get selectedCategoryId {
     final name = _selectedCategory;
-    if (name == null) return null;
+    return name == null ? null : categoryIdNamed(name);
+  }
+
+  /// 按**名字**找分类 ID。
+  ///
+  /// 分类选择页返回的是名字（不是 ID），详情页拿到之后要换回 ID 才能写库。
+  /// 重名时取第一个 —— 与 `select()` 的行为一致。
+  int? categoryIdNamed(String name) {
     for (final category in allCategories) {
       if (category.name == name) return category.id;
     }
@@ -317,6 +324,30 @@ class ReviewSession extends ChangeNotifier {
         month: month,
         transactionId: transactionId,
         items: items,
+      ),
+    );
+  }
+
+  /// 保存详情页的修改：备注，以及（可选的）用途变更。
+  ///
+  /// [categoryId] 为 null 表示不改用途。
+  Future<bool> saveDetails({
+    required int transactionId,
+    required String? note,
+    int? categoryId,
+  }) async {
+    if (_committing) return false;
+    final ledgerId = _ledgerId;
+    final month = _month;
+    if (ledgerId == null || month == null) return false;
+
+    return _commit(
+      () => repository.saveDetails(
+        ledgerId: ledgerId,
+        month: month,
+        transactionId: transactionId,
+        note: note,
+        categoryId: categoryId,
       ),
     );
   }

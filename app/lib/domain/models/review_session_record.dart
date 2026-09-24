@@ -183,6 +183,7 @@ final class UndoTarget {
     required this.beforeStatus,
     required this.beforeNature,
     this.beforeExcludeReason,
+    this.beforeNote,
     this.beforeAllocations = const <AllocationDraft>[],
   });
 
@@ -201,6 +202,12 @@ final class UndoTarget {
   /// 「性质是转账、却写着一句为什么不计入统计」的记录 ——
   /// 以后回看时没人知道那句话还算不算数。（真机测试拓到的。）
   final String? beforeExcludeReason;
+
+  /// 操作前的备注。
+  ///
+  /// 同理：备注是用户手写的，撤销必须把它还原回去，
+  /// 不能让「撤销」把备注抹掉。
+  final String? beforeNote;
 
   /// 操作前的分配。首次归类时为空。
   final List<AllocationDraft> beforeAllocations;

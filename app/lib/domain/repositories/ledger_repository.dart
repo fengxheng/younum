@@ -700,6 +700,78 @@ final class LedgerRepository {
         TransactionNature.unknown => '待判断',
       };
 
+  /// 保存详情页的修改：备注，以及（可选的）用途变更。
+  ///
+  /// 两件事一次写完，是因为详情页只有一个「保存修改」：分成两次写会出现
+  /// 「撤销之后用途回来了、备注没回来」这种半截结果。
+  ///
+  /// [categoryId] 为 null 表示不改用途 —— 那就不动记录的处理状态，
+  /// 免得「只写了个备注」把一笔还没归类的消费算成处理完成。
+  Future<ReviewOutcome> saveDetails({
+    required int ledgerId,
+    required YearMonth month,
+    required int transactionId,
+    required String? note,
+    int? categoryId,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final transaction = snapshot.dataset.transaction(transactionId);
+    if (transaction == null) {
+      return ReviewRejected('找不到这条记录，可能已被删除');
+    }
+
+    // 空字符串当作「没有备注」：否则库里会存一堆空白备注。
+    final trimmed = note?.trim();
+    final nextNote = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+
+    List<AllocationDraft>? items;
+    if (categoryId != null) {
+      items = AllocationRules.singleCategory(categoryId, transaction.amountCents);
+      final ruleError = AllocationRules.validate(
+        originalCents: transaction.amountCents,
+        items: items,
+      );
+      if (ruleError != null) return ReviewRejected(ruleError.message);
+    }
+
+    // 改了用途就是「处理完成」，要从待整理队列里出去；只改备注则队列不动。
+    final nextRecord = items == null
+        ? snapshot.record
+        : _withoutEntry(snapshot.record, transactionId);
+
+    final undo = UndoRecord(
+      type: ReviewActionType.resolve,
+      label: '修改 ${transaction.merchant}',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        UndoTarget(
+          transactionId: transactionId,
+          beforeVersion: transaction.version,
+          beforeStatus: transaction.reviewStatus,
+          beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
+          beforeNote: transaction.note,
+          beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
+        ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    return _run(
+      () => _store.saveDetails(
+        before: transaction,
+        note: nextNote,
+        items: items,
+        session: nextRecord,
+        undo: undo,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // 退款关联
   // ---------------------------------------------------------------------------

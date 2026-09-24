@@ -140,6 +140,22 @@ abstract interface class LedgerStore {
     required UndoRecord undo,
   });
 
+  /// 保存详情页的修改：备注，以及（可选的）用途变更。
+  ///
+  /// 两件事必须在**一个事务**里完成，否则撤销只能还原一半 ——
+  /// 用户会看到「撤销之后用途回来了、备注没回来」这种半截结果。
+  ///
+  /// [items] 为 null 表示不改用途（记录状态也不动）；给了分配就同时置为已处理。
+  ///
+  /// 返回 false 表示版本冲突（记录已被别处修改），此时什么都不写。
+  Future<bool> saveDetails({
+    required LedgerTransaction before,
+    required String? note,
+    required List<AllocationDraft>? items,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  });
+
   /// 把一笔记录标成非消费（转账 / 收入 / 退款 / 排除统计），或改回消费。
   ///
   /// 这些性质不需要消费分类（`TransactionNature.resolvesWithoutAllocation`），

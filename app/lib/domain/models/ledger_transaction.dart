@@ -188,6 +188,7 @@ final class LedgerTransaction {
     String? sourceTransactionId,
     String? rawTimeText,
     String? note,
+    bool clearNote = false,
     String? excludeReason,
     bool clearExcludeReason = false,
     int? importBatchId,
@@ -207,7 +208,7 @@ final class LedgerTransaction {
         sourceAccount: sourceAccount ?? this.sourceAccount,
         sourceTransactionId: sourceTransactionId ?? this.sourceTransactionId,
         rawTimeText: rawTimeText ?? this.rawTimeText,
-        note: note ?? this.note,
+        note: clearNote ? null : (note ?? this.note),
         excludeReason:
             clearExcludeReason ? null : (excludeReason ?? this.excludeReason),
         importBatchId: importBatchId ?? this.importBatchId,

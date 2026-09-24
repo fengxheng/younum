@@ -72,13 +72,77 @@ class TransactionDetailScreen extends StatefulWidget {
 }
 
 class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
-  late final TextEditingController _noteController = TextEditingController();
-  String? _category;
+  final TextEditingController _noteController = TextEditingController();
+
+  /// 用户刚选的用途（**名字**，分类选择页返回的就是名字）。
+  String? _pickedCategory;
+
+  /// 进页时的备注与用途，用来判断「改过没有」。
+  bool _initialized = false;
+  String _initialNote = '';
+  String? _initialCategory;
+
+  bool _saving = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+
+    final card = _resolveTransaction(context, widget.args.transactionId);
+    if (card == null) return;
+    // 已有备注要回填 —— 不回填的话，用户改一个错字会把整条备注弄丢。
+    _initialNote = card.transaction.note ?? '';
+    _noteController.text = _initialNote;
+    _initialCategory = card.categoryName;
+  }
 
   @override
   void dispose() {
     _noteController.dispose();
     super.dispose();
+  }
+
+  bool get _categoryChanged =>
+      _pickedCategory != null && _pickedCategory != _initialCategory;
+
+  bool get _dirty =>
+      _categoryChanged || _noteController.text.trim() != _initialNote.trim();
+
+  Future<void> _save(ReviewCard card) async {
+    if (_saving || !_dirty) return;
+
+    final session = ReviewSessionScope.of(context);
+    // 分类选择页给的是名字，写库要 ID。
+    final categoryId = _categoryChanged
+        ? session.categoryIdNamed(_pickedCategory!)
+        : null;
+    if (_categoryChanged && categoryId == null) {
+      showYounumToast(context, '这个用途找不到对应分类，请重新选择');
+      return;
+    }
+
+    final savedNote = _noteController.text;
+    setState(() => _saving = true);
+    final ok = await session.saveDetails(
+      transactionId: card.id,
+      note: savedNote,
+      categoryId: categoryId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      if (ok) {
+        // 存下来之后，当前值就是新的基准，按钮重新变灰。
+        _initialNote = savedNote.trim();
+        _initialCategory = _pickedCategory ?? _initialCategory;
+      }
+    });
+    showYounumToast(
+      context,
+      ok ? '已保存' : session.lastFailure ?? '保存失败，可以重试',
+    );
   }
 
   @override
@@ -88,7 +152,9 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
 
     final text = YounumText.of(context);
     final registry = CategoryRegistryScope.of(context);
-    final displayCategory = _category ?? transaction.categoryName ?? '待确认';
+    final savedCategory = transaction.categoryName;
+    final displayCategory = _pickedCategory ?? savedCategory ?? '待确认';
+    final dirty = _dirty;
 
     return YounumScreen(
       title: '账单详情',
@@ -109,8 +175,10 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
                 Text(transaction.merchant, style: text.listPrimary),
                 const SizedBox(height: YounumDimens.gapSm),
                 YounumBadge(
-                  _category == null ? '待确认用途' : '已归类 · $displayCategory',
-                  tone: _category == null
+                  displayCategory == '待确认'
+                      ? '待确认用途'
+                      : '已归类 · $displayCategory',
+                  tone: displayCategory == '待确认'
                       ? YounumBadgeTone.warm
                       : YounumBadgeTone.primary,
                 ),
@@ -145,7 +213,7 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
                 ),
               );
               if (picked is String && mounted) {
-                setState(() => _category = picked);
+                setState(() => _pickedCategory = picked);
               }
             },
           ),
@@ -174,19 +242,20 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
           YounumTextField(
             controller: _noteController,
             hintText: '例如：午后和朋友喝咖啡',
+            onChanged: (value) => setState(() {}),
           ),
           const SizedBox(height: YounumDimens.gapLg),
           PrimaryAction(
-            label: '保存修改',
-            onPressed: () => showYounumToast(
-              context,
-              '已保存：${_category ?? displayCategory}',
+            label: _saving ? '正在保存…' : '保存修改',
+            onPressed: dirty && !_saving ? () => _save(transaction) : null,
+          ),
+          if (dirty)
+            const YounumPillNote('有还没保存的修改。')
+          else
+            const YounumPillNote(
+              '金额、商户与交易时间来自账单原文，不在这里改 —— '
+              '改了就对不上原始账单了。要排除这一笔，用上面的「不计入」。',
             ),
-          ),
-          const YounumDemoNote(
-            '设计走查：本页按实际交易 ID 展示，未写死的商户。'
-            '保存操作在阶段 2 起写入数据库事务。',
-          ),
         ],
       ),
     );

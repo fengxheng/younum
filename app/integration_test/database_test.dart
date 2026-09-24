@@ -536,6 +536,58 @@ void main() {
       expect(restored.single['category_id'], SeedCategoryIds.food);
     });
 
+    test('详情页保存：备注与用途一次写完，撤销把两者都还原', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+
+      // 先造一个「原来就有备注、也归过类」的状态。
+      var outcome = await repository.saveDetails(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        note: '原来的备注',
+        categoryId: SeedCategoryIds.food,
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      final db = await openRaw();
+      Future<Map<String, Object?>> row() async => (await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[current.id],
+      )).single;
+
+      expect((await row())['note'], '原来的备注');
+      expect(await countOf(db, 'allocation'), 1);
+
+      // 改备注 + 换用途。
+      outcome = await repository.saveDetails(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        note: '改过的备注',
+        categoryId: SeedCategoryIds.shopping,
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+      expect((await row())['note'], '改过的备注');
+      final allocations = await db.query('allocation');
+      expect(allocations, hasLength(1), reason: '换用途是替换，不是叠加');
+      expect(allocations.single['category_id'], SeedCategoryIds.shopping);
+
+      // 撤销：备注与用途都要回来。
+      final undone = await repository.undo(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      expect(undone, isA<ReviewSucceeded>());
+      expect((await row())['note'], '原来的备注', reason: '撤销不能把备注弄丢');
+      expect((await db.query('allocation')).single['category_id'], SeedCategoryIds.food);
+    });
+
     test('改交易性质：离开消费时删掉旧分配，撤销再还回来', () async {
       final repository = _repositoryFor(store);
       final snapshot = await repository.loadSnapshot(
