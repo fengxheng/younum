@@ -21,6 +21,7 @@ import '../models/ledger_transaction.dart';
 import '../rules/csv_parser.dart';
 import '../rules/import_rules.dart';
 import '../rules/text_decoding.dart';
+import '../rules/xlsx_reader.dart';
 import 'ledger_repository.dart';
 import 'ledger_store.dart';
 
@@ -93,6 +94,7 @@ final class ImportPreview {
     required this.batchId,
     required this.fileName,
     required this.encoding,
+    required this.format,
     required this.totalRows,
     required this.freshCount,
     required this.duplicateCount,
@@ -108,8 +110,14 @@ final class ImportPreview {
   final int batchId;
   final String fileName;
 
-  /// 实际采用的编码名，显示在核对页上让用户有机会发现乱码。
+  /// 实际采用的编码名（CSV）或容器格式（XLSX）。
+  ///
+  /// 显示在核对页上让用户有机会发现乱码 —— 编码探测是启发式，
+  /// 不是保证（见 `text_decoding.dart` 的局限说明）。
   final String encoding;
+
+  /// `CSV` 或 `XLSX`。按**内容**判断出来的，不是看后缀名。
+  final String format;
 
   /// 文件里的总行数（含说明行与表头）。
   final int totalRows;
@@ -180,18 +188,48 @@ extension ImportWorkflow on LedgerRepository {
       return const ImportStageRejected('文件是空的');
     }
 
-    // 传了 encoding 就按它解（用户在核对页上手工指定的）；
-    // 不传就探测。
-    final (decoded, decodeError) = TextDecoding.decode(bytes, force: encoding);
-    if (decodeError != null || decoded == null) {
-      return ImportStageRejected(_decodeMessage(decodeError!));
+    // 先看**内容**再决定怎么读，不看后缀名（指南 4.2.3）。
+    //
+    // 两条路最终都产出同一种「行 × 列」表格，所以下面的表头识别、字段映射、
+    // 逐行标准化、去重判断完全共用 —— 下游根本不需要知道文件是哪种格式。
+    final CsvTable table;
+    final String format;
+    final String encodingLabel;
+
+    if (XlsxReader.looksLikeXlsx(bytes)) {
+      final (xlsx, xlsxError) = XlsxReader.read(bytes);
+      if (xlsxError != null) {
+        return ImportStageRejected(xlsxError.message);
+      }
+      table = CsvTable(
+        rows: xlsx!.rows,
+        delimiter: '',
+        hasTrailingNewline: false,
+      );
+      format = 'XLSX';
+      // xlsx 内部固定是 UTF-8 的 XML，不存在「猜编码」这件事。
+      encodingLabel = 'XLSX';
+    } else {
+      // 传了 encoding 就按它解（用户在核对页上手工指定的）；不传就探测。
+      final (decoded, decodeError) = TextDecoding.decode(bytes, force: encoding);
+      if (decodeError != null || decoded == null) {
+        return ImportStageRejected(_decodeMessage(decodeError!));
+      }
+
+      final (csv, csvError) = CsvParser.parse(decoded.text);
+      if (csvError != null) {
+        return ImportStageRejected(_csvMessage(csvError));
+      }
+      if (csv == null || csv.isEmpty) {
+        return ImportStageRejected('这份文件里没有读到任何一行');
+      }
+
+      table = csv;
+      format = 'CSV';
+      encodingLabel = decoded.encoding.label;
     }
 
-    final (table, csvError) = CsvParser.parse(decoded.text);
-    if (csvError != null) {
-      return ImportStageRejected(_csvMessage(csvError));
-    }
-    if (table == null || table.isEmpty) {
+    if (table.isEmpty) {
       return ImportStageRejected('这份文件里没有读到任何一行');
     }
 
@@ -376,8 +414,9 @@ extension ImportWorkflow on LedgerRepository {
       fileName: fileName,
       fileHash: _hashOf(bytes),
       fileSizeBytes: bytes.length,
-      encoding: decoded.encoding.label,
-      delimiter: CsvParser.detectDelimiter(decoded.text),
+      encoding: encodingLabel,
+      // XLSX 没有「分隔符」这个概念。
+      delimiter: table.delimiter,
       stage: ImportStage.reviewRequired,
       startedAtMs: nowMs(),
       sourceUri: sourceUri,
@@ -395,7 +434,8 @@ extension ImportWorkflow on LedgerRepository {
       ImportPreview(
         batchId: batchId,
         fileName: fileName,
-        encoding: decoded.encoding.label,
+        encoding: encodingLabel,
+        format: format,
         totalRows: table.rows.length,
         freshCount: parsed.length,
         duplicateCount: duplicates,
