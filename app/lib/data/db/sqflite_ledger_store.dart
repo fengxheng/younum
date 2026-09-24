@@ -443,6 +443,49 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<bool> setTransactionNature({
+    required LedgerTransaction before,
+    required TransactionNature nature,
+    required String? excludeReason,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    final db = await _db;
+    var conflicted = false;
+    await db.transaction((txn) async {
+      final updated = await txn.rawUpdate(
+        '''
+        UPDATE txn
+        SET nature = ?, exclude_reason = ?, review_status = ?,
+            version = version + 1
+        WHERE id = ? AND version = ?
+        ''',
+        <Object?>[
+          nature.storageValue,
+          excludeReason,
+          ReviewStatus.resolved.storageValue,
+          before.id,
+          before.version,
+        ],
+      );
+      if (updated != 1) {
+        conflicted = true;
+        return;
+      }
+      if (!nature.isExpense) {
+        await txn.delete(
+          'allocation',
+          where: 'transaction_id = ?',
+          whereArgs: <Object?>[before.id],
+        );
+      }
+      await _writeSession(txn, session);
+      await _appendAction(txn, session, undo);
+    });
+    return !conflicted;
+  }
+
+  @override
   Future<bool> reopenDeferred({
     required List<LedgerTransaction> transactions,
     required ReviewSessionRecord session,
@@ -704,12 +747,14 @@ final class SqfliteLedgerStore implements LedgerStore {
       for (final target in action.targets) {
         await txn.rawUpdate(
           '''
-          UPDATE txn SET review_status = ?, nature = ?, version = ?
+          UPDATE txn
+          SET review_status = ?, nature = ?, exclude_reason = ?, version = ?
           WHERE id = ?
           ''',
           <Object?>[
             target.beforeStatus.storageValue,
             target.beforeNature.storageValue,
+            target.beforeExcludeReason,
             target.beforeVersion + 1,
             target.transactionId,
           ],
@@ -1350,6 +1395,7 @@ final class SqfliteLedgerStore implements LedgerStore {
           'version': target.beforeVersion,
           'status': target.beforeStatus.storageValue,
           'nature': target.beforeNature.storageValue,
+          'excludeReason': target.beforeExcludeReason,
           'allocations': <Map<String, Object?>>[
             for (final draft in target.beforeAllocations)
               <String, Object?>{
@@ -1398,6 +1444,8 @@ final class SqfliteLedgerStore implements LedgerStore {
     beforeVersion: raw['version']! as int,
     beforeStatus: ReviewStatus.parse(raw['status']! as String),
     beforeNature: TransactionNature.parse(raw['nature']! as String),
+    // 旧日志里没有这个键，缺失就是 null（当时的实现也没有原因）。
+    beforeExcludeReason: raw['excludeReason'] as String?,
     beforeAllocations: <AllocationDraft>[
       for (final draft in (raw['allocations']! as List<Object?>))
         _draftFromJson(draft! as Map<String, Object?>),

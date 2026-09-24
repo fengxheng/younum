@@ -160,12 +160,15 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
             ),
           ),
           YounumListRow(
-            title: '设为转账 / 退款',
+            title: '设为转账 / 收入 / 不计入',
             subtitle: '从消费统计中单独处理',
             icon: YounumIcons.link,
             trailingWidget: const _Chevron(),
             showDivider: false,
-            onTap: () => context.open(AppRoutes.transactionNature),
+            onTap: () => context.open(
+              AppRoutes.transactionNature,
+              arguments: NatureArgs(transactionId: transaction.id),
+            ),
           ),
           const YounumFieldLabel('给这笔花费加个备注'),
           YounumTextField(
@@ -531,29 +534,53 @@ class _SplitDraft {
 
 /// 交易性质调整。
 class TransactionNatureScreen extends StatefulWidget {
-  const TransactionNatureScreen({super.key});
+  const TransactionNatureScreen({super.key, required this.transactionId});
+
+  final int transactionId;
 
   @override
   State<TransactionNatureScreen> createState() => _TransactionNatureScreenState();
 }
 
 class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
-  static const List<String> _natures = <String>[
-    '普通消费',
-    '账户间转账',
-    '收入',
-    '收到退款',
-    '暂不计入统计',
+  /// 可选的性质。**不含** `refund`：退款要关联到原消费才能算处理完成，
+  /// 那是两笔记录之间的事（还可能跏月），放在原消费那一侧做。
+  static const List<TransactionNature> _choices = <TransactionNature>[
+    TransactionNature.expense,
+    TransactionNature.transfer,
+    TransactionNature.income,
+    TransactionNature.excluded,
   ];
 
-  static const List<String> _originalOptions = <String>[
-    '优衣库 · 9月12日 · ¥299.00',
-    '找不到原消费，保留待核对',
-  ];
+  static const Map<TransactionNature, String> _labels =
+      <TransactionNature, String>{
+    TransactionNature.expense: '普通消费',
+    TransactionNature.transfer: '账户间转账',
+    TransactionNature.income: '收入',
+    TransactionNature.excluded: '暂不计入统计',
+  };
 
-  int _nature = 3;
-  int _original = 0;
+  /// null 表示还没选。
+  ///
+  /// 导入进来的记录大多还是 `unknown`，那时不该替用户预选一个性质 ——
+  /// 预选「普通消费」会让人顺手确认下去，而它其实需要先选用途。
+  TransactionNature? _nature;
+  bool _initialized = false;
+  bool _saving = false;
+
   final TextEditingController _reasonController = TextEditingController();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+    // 已经定过性质的记录（比如退回来重看）要把当前值摆出来。
+    final current = ReviewSessionScope.of(
+      context,
+    ).cardFor(widget.transactionId)?.transaction.nature;
+    if (current != null && _choices.contains(current)) _nature = current;
+  }
 
   @override
   void dispose() {
@@ -561,23 +588,55 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
     super.dispose();
   }
 
-  String get _natureName => _natures[_nature];
-
-  /// 退款必须完成关联，或明确选择排除统计并保留原因后才能处理完成（指南 3.3）。
-  String? get _blockingReason {
-    if (_natureName == '收到退款' && _originalOptions[_original].startsWith('找不到')) {
-      return '退款需要关联到原消费；确实找不到时，请改为「暂不计入统计」并说明原因。';
+  /// 不能提交的原因。
+  ///
+  /// 与仓库层的校验是同一套规则：这里先说清楚，免得用户点了才被拒。
+  String? _blockingReason(ReviewCard card) {
+    final nature = _nature;
+    if (nature == null) return '先选一个交易性质，再确认调整。';
+    if (nature == TransactionNature.excluded &&
+        _reasonController.text.trim().isEmpty) {
+      return '排除统计需要写明原因，否则以后回看时不知道为什么不算。';
     }
-    if (_natureName == '暂不计入统计' && _reasonController.text.trim().isEmpty) {
-      return '排除统计需要保留原因，便于以后回看时理解这笔记录。';
+    if (nature == TransactionNature.expense && card.allocations.isEmpty) {
+      return '作为消费统计就需要一个用途，请先用「修改用途」或「拆分」把它定下来。';
     }
     return null;
+  }
+
+  Future<void> _submit() async {
+    final nature = _nature;
+    if (nature == null || _saving) return;
+
+    final session = ReviewSessionScope.of(context);
+    final navigator = Navigator.of(context);
+    setState(() => _saving = true);
+    final ok = await session.setNature(
+      transactionId: widget.transactionId,
+      nature: nature,
+      excludeReason: nature == TransactionNature.excluded
+          ? _reasonController.text
+          : null,
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+    showYounumToast(
+      context,
+      ok
+          ? '已按「${_labels[nature]}」处理'
+          : session.lastFailure ?? '没有保存成功，可以重试',
+    );
+    if (ok) navigator.maybePop();
   }
 
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
-    final blocking = _blockingReason;
+    final session = ReviewSessionScope.of(context);
+    final card = session.cardFor(widget.transactionId);
+    if (card == null) return const _MissingTransaction();
+
+    final blocking = _blockingReason(card);
 
     return YounumScreen(
       title: '调整交易性质',
@@ -589,25 +648,27 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
           YounumMutedText('确认交易性质，让月报更准确。'),
           const SizedBox(height: YounumDimens.gapLg),
           YounumPanel(
-            child: YounumRadioGroup<int>(
-              options: List<int>.generate(_natures.length, (i) => i),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(card.merchant, style: text.listPrimary),
+                const SizedBox(height: 6),
+                YounumCaptionText(
+                  '${card.dateText} · ¥${Money.format(card.amountCents)}',
+                ),
+              ],
+            ),
+          ),
+          YounumPanel(
+            child: YounumRadioGroup<TransactionNature>(
+              options: _choices,
               selected: _nature,
-              labelBuilder: (index) => _natures[index],
+              labelBuilder: (nature) => _labels[nature] ?? '—',
               groupLabel: '交易性质',
               onSelected: (value) => setState(() => _nature = value),
             ),
           ),
-          if (_natureName == '收到退款') ...<Widget>[
-            const YounumFieldLabel('关联原消费'),
-            YounumSelectField<int>(
-              options: List<int>.generate(_originalOptions.length, (i) => i),
-              labelBuilder: (index) => _originalOptions[index],
-              selected: _original,
-              semanticLabel: '关联原消费',
-              onSelected: (value) => setState(() => _original = value),
-            ),
-          ],
-          if (_natureName == '暂不计入统计') ...<Widget>[
+          if (_nature == TransactionNature.excluded) ...<Widget>[
             const YounumFieldLabel('不计入统计的原因'),
             YounumTextField(
               controller: _reasonController,
@@ -616,7 +677,8 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
             ),
           ],
           const YounumNotice(
-            '退款默认抵扣原消费；跨月退款归回原消费月份，并提示相关月报已更新。',
+            '标成转账或收入后，这笔不再计入消费，也不出现在分类占比里。\n'
+            '收到退款要在原消费那边关联，退款才能抵扣到对应的那一笔。',
           ),
           if (blocking != null)
             Padding(
@@ -627,13 +689,8 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
               ),
             ),
           PrimaryAction(
-            label: '确认调整',
-            onPressed: blocking == null
-                ? () {
-                    showYounumToast(context, '已按「$_natureName」处理');
-                    Navigator.of(context).pop();
-                  }
-                : null,
+            label: _saving ? '正在保存…' : '确认调整',
+            onPressed: blocking == null && !_saving ? _submit : null,
           ),
         ],
       ),

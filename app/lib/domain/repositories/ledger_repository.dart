@@ -345,6 +345,7 @@ final class LedgerRepository {
           beforeVersion: transaction.version,
           beforeStatus: transaction.reviewStatus,
           beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
           beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
         ),
       ],
@@ -409,6 +410,7 @@ final class LedgerRepository {
           beforeVersion: transaction.version,
           beforeStatus: transaction.reviewStatus,
           beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
           beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
         ),
       ],
@@ -456,6 +458,7 @@ final class LedgerRepository {
           beforeVersion: transaction.version,
           beforeStatus: transaction.reviewStatus,
           beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
           beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
         ),
       ],
@@ -514,6 +517,7 @@ final class LedgerRepository {
             beforeVersion: transaction.version,
             beforeStatus: transaction.reviewStatus,
             beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
           ),
       ],
       beforeEntries: snapshot.record.entries,
@@ -601,6 +605,100 @@ final class LedgerRepository {
     month: month,
     value: value,
   );
+
+  /// 改一笔记录的交易性质（指南 3.5）。
+  ///
+  /// 规则：
+  ///
+  /// * **收入 / 转账 / 排除统计**确认后即处理完成，不需要消费分类
+  ///   （[TransactionNature.resolvesWithoutAllocation]，指南 3.3）；
+  /// * **排除统计**必须写明原因 —— 否则以后回看时没人知道为什么不算；
+  /// * **退款**必须已经关联到原消费，否则就变成一笔「没有原消费的退款」，
+  ///   它去抵扣谁都不对；
+  /// * **改回消费**则必须已经有分配：没有用途的消费不算处理完成。
+  Future<ReviewOutcome> setNature({
+    required int ledgerId,
+    required YearMonth month,
+    required int transactionId,
+    required TransactionNature nature,
+    String? excludeReason,
+  }) async {
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+    final transaction = snapshot.dataset.transaction(transactionId);
+    if (transaction == null) {
+      return ReviewRejected('找不到这条记录，可能已被删除');
+    }
+
+    final reason = excludeReason?.trim();
+    switch (nature) {
+      case TransactionNature.excluded:
+        if (reason == null || reason.isEmpty) {
+          return const ReviewRejected('排除统计需要写明原因，否则以后回看时不知道为什么不算');
+        }
+      case TransactionNature.refund:
+        final linked = snapshot.dataset.refundLinks.any(
+          (link) => link.refundTransactionId == transactionId,
+        );
+        if (!linked) {
+          return const ReviewRejected(
+            '退款需要先关联到原消费才能算处理完成；找不到原消费时，请改为「暂不计入统计」并写明原因',
+          );
+        }
+      case TransactionNature.expense:
+        if (snapshot.dataset.allocationsOf(transactionId).isEmpty) {
+          return const ReviewRejected(
+            '作为消费统计就需要一个用途，请先用「修改用途」或「拆分」把它定下来',
+          );
+        }
+      case TransactionNature.income:
+      case TransactionNature.transfer:
+        break;
+      case TransactionNature.unknown:
+        return const ReviewRejected('还没有选择交易性质');
+    }
+
+    final nextRecord = _withoutEntry(snapshot.record, transactionId);
+    final undo = UndoRecord(
+      type: ReviewActionType.resolve,
+      label: '${transaction.merchant} 改为「${_natureLabel(nature)}」',
+      ledgerId: ledgerId,
+      month: month,
+      targets: <UndoTarget>[
+        UndoTarget(
+          transactionId: transactionId,
+          beforeVersion: transaction.version,
+          beforeStatus: transaction.reviewStatus,
+          beforeNature: transaction.nature,
+          beforeExcludeReason: transaction.excludeReason,
+          beforeAllocations: _draftsOf(snapshot.dataset, transactionId),
+        ),
+      ],
+      beforeEntries: snapshot.record.entries,
+      createdAtMs: _nowMs(),
+    );
+
+    return _run(
+      () => _store.setTransactionNature(
+        before: transaction,
+        nature: nature,
+        excludeReason: nature == TransactionNature.excluded ? reason : null,
+        session: nextRecord,
+        undo: undo,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
+  /// 交易性质的中文名。会写进撤销日志，所以是持久化文案。
+  static String _natureLabel(TransactionNature nature) => switch (nature) {
+        TransactionNature.expense => '消费',
+        TransactionNature.income => '收入',
+        TransactionNature.transfer => '转账',
+        TransactionNature.refund => '退款',
+        TransactionNature.excluded => '排除统计',
+        TransactionNature.unknown => '待判断',
+      };
 
   // ---------------------------------------------------------------------------
   // 退款关联

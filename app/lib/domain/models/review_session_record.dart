@@ -182,6 +182,7 @@ final class UndoTarget {
     required this.beforeVersion,
     required this.beforeStatus,
     required this.beforeNature,
+    this.beforeExcludeReason,
     this.beforeAllocations = const <AllocationDraft>[],
   });
 
@@ -193,6 +194,13 @@ final class UndoTarget {
   final ReviewStatus beforeStatus;
 
   final TransactionNature beforeNature;
+
+  /// 操作前的「排除统计原因」。
+  ///
+  /// 必须存下来：撤销时如果只还原性质不还原原因，库里就会留下一条
+  /// 「性质是转账、却写着一句为什么不计入统计」的记录 ——
+  /// 以后回看时没人知道那句话还算不算数。（真机测试拓到的。）
+  final String? beforeExcludeReason;
 
   /// 操作前的分配。首次归类时为空。
   final List<AllocationDraft> beforeAllocations;

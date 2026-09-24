@@ -140,6 +140,24 @@ abstract interface class LedgerStore {
     required UndoRecord undo,
   });
 
+  /// 把一笔记录标成非消费（转账 / 收入 / 退款 / 排除统计），或改回消费。
+  ///
+  /// 这些性质不需要消费分类（`TransactionNature.resolvesWithoutAllocation`），
+  /// 所以不走 [resolveTransaction]；但一样要在**一个事务**里改状态、
+  /// 保存会话顺序、写下可撤销的日志。
+  ///
+  /// 改离「消费」时会把旧的分配删掉：它已经不再是消费，留着只会让以后回看
+  /// 时看不懂。撤销日志里存着原分配，可以原样还原。
+  ///
+  /// 返回 false 表示版本冲突（记录已被别处修改），此时什么都不写。
+  Future<bool> setTransactionNature({
+    required LedgerTransaction before,
+    required TransactionNature nature,
+    required String? excludeReason,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  });
+
   /// 只更新会话（把稍后队列放回主队列）。
   Future<void> saveSessionWithUndo({
     required ReviewSessionRecord session,

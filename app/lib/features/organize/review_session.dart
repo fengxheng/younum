@@ -344,6 +344,28 @@ class ReviewSession extends ChangeNotifier {
     );
   }
 
+  /// 改一笔记录的交易性质（转账 / 收入 / 排除统计 / 改回消费）。
+  Future<bool> setNature({
+    required int transactionId,
+    required TransactionNature nature,
+    String? excludeReason,
+  }) async {
+    if (_committing) return false;
+    final ledgerId = _ledgerId;
+    final month = _month;
+    if (ledgerId == null || month == null) return false;
+
+    return _commit(
+      () => repository.setNature(
+        ledgerId: ledgerId,
+        month: month,
+        transactionId: transactionId,
+        nature: nature,
+        excludeReason: excludeReason,
+      ),
+    );
+  }
+
   /// 撤销最近一次成功的操作，恢复记录与队列位置。
   Future<bool> undo() async {
     if (_committing) return false;

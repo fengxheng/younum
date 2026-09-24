@@ -247,7 +247,10 @@ class _YounumAppState extends State<YounumApp> {
           transactionId: splitArgs is SplitArgs ? splitArgs.transactionId : 0,
         );
       case AppRoutes.transactionNature:
-        return (context) => const TransactionNatureScreen();
+        final natureArgs = settings.arguments;
+        return (context) => TransactionNatureScreen(
+          transactionId: natureArgs is NatureArgs ? natureArgs.transactionId : 0,
+        );
       case AppRoutes.pendingQueue:
         return (context) => const PendingQueueScreen();
       case AppRoutes.reviewComplete:

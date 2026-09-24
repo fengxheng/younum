@@ -536,6 +536,62 @@ void main() {
       expect(restored.single['category_id'], SeedCategoryIds.food);
     });
 
+    test('改交易性质：离开消费时删掉旧分配，撤销再还回来', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+
+      // 先当消费归类，制造一条旧分配。
+      await repository.confirm(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        categoryId: SeedCategoryIds.food,
+      );
+      final db = await openRaw();
+      expect(await countOf(db, 'allocation'), 1);
+
+      final outcome = await repository.setNature(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        nature: TransactionNature.excluded,
+        excludeReason: '朋友还我的钱',
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      Future<Map<String, Object?>> row() async => (await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[current.id],
+      )).single;
+
+      var updated = await row();
+      expect(updated['nature'], 'EXCLUDED');
+      expect(updated['exclude_reason'], '朋友还我的钱');
+      expect(updated['review_status'], 'RESOLVED');
+      expect(await countOf(db, 'allocation'), 0, reason: '离开消费时旧分配要删掉');
+
+      // 撤销要把性质、原因与分配一起还回来。
+      final undone = await repository.undo(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      expect(undone, isA<ReviewSucceeded>());
+
+      updated = await row();
+      expect(updated['nature'], 'EXPENSE');
+      expect(
+        updated['exclude_reason'],
+        isNull,
+        reason: '原因要跟着性质一起还原，否则会留下一条对不上的说明',
+      );
+      expect(await countOf(db, 'allocation'), 1);
+    });
+
     test('有关联退款时拒绝撤销原消费，避免退款去抵扣不存在的消费', () async {
       final repository = _repositoryFor(store);
       final snapshot = await repository.loadSnapshot(

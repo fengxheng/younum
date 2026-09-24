@@ -312,6 +312,32 @@ final class InMemoryLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<bool> setTransactionNature({
+    required LedgerTransaction before,
+    required TransactionNature nature,
+    required String? excludeReason,
+    required ReviewSessionRecord session,
+    required UndoRecord undo,
+  }) async {
+    _throwIfFailing();
+    final current = _transactions[before.id];
+    if (current == null || current.version != before.version) return false;
+
+    _transactions[before.id] = current.copyWith(
+      nature: nature,
+      excludeReason: excludeReason,
+      // 从「排除统计」改成别人时，旧原因必须真的清掉，而不是留着。
+      clearExcludeReason: excludeReason == null,
+      reviewStatus: ReviewStatus.resolved,
+      version: current.version + 1,
+    );
+    if (!nature.isExpense) _allocations.remove(before.id);
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    _actions.add(undo.copyWith(id: _nextActionId++));
+    return true;
+  }
+
+  @override
   Future<void> saveSessionWithUndo({
     required ReviewSessionRecord session,
     required UndoRecord undo,
@@ -374,6 +400,9 @@ final class InMemoryLedgerStore implements LedgerStore {
       restored[target.transactionId] = current.copyWith(
         reviewStatus: target.beforeStatus,
         nature: target.beforeNature,
+        // 原因要跟着性质一起还原：只改性质会留下一条对不上的说明。
+        excludeReason: target.beforeExcludeReason,
+        clearExcludeReason: target.beforeExcludeReason == null,
         version: target.beforeVersion + 1,
       );
     }

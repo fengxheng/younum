@@ -75,6 +75,13 @@ class SplitArgs {
   final int transactionId;
 }
 
+/// 交易性质调整参数。
+class NatureArgs {
+  const NatureArgs({required this.transactionId});
+
+  final int transactionId;
+}
+
 /// 明细检索参数。
 ///
 /// 指南 10.3 要求「按分类下钻只显示对应明细」，所以从分类详情进入明细时
