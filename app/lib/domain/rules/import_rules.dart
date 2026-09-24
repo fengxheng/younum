@@ -139,13 +139,19 @@ final class HeaderGuess {
     required this.platformName,
   });
 
-  /// 表头在文件里的行下标（0 起）。-1 表示没找到。
+  /// 表头在文件里的行下标（0 起）。
+  ///
+  /// -1 表示**一行都没能匹配上任何列名**。注意这不等于「可以直接开始解析」：
+  /// 匹配数不够时也会返回一个真实行号，好让映射界面有东西可以预填，
+  /// 此时用 [isUsable] 判断能不能直接继续。
   final int headerRowIndex;
 
   /// 表头文本，按列顺序。
   final List<String> headers;
 
   /// 字段 → 列下标。
+  ///
+  /// 可能只是**部分**识别结果（配合 [isUsable] == false 使用）。
   final Map<ImportField, int> columns;
 
   /// 识别出的平台名，例如「微信支付」。null 表示通用 CSV。
@@ -284,7 +290,9 @@ abstract final class ImportRules {
       }
     }
 
-    if (bestHits < minHeaderHits) {
+    if (bestHits == 0) {
+      // 一行都没匹配上任何列名：文件里没有任何可用线索，
+      // 返回 -1 而不是随便挑一行当表头。
       return const HeaderGuess(
         headerRowIndex: -1,
         headers: <String>[],
@@ -293,6 +301,11 @@ abstract final class ImportRules {
       );
     }
 
+    // 即使没达到「算作找到了表头」的门槛，也把**部分认出**的那一行带回去。
+    //
+    // 为什么要这样：门槛（[minHeaderHits]）是用来判断「能不能直接开始解析」
+    // 的，而映射界面还需要「表头大概在第几行、哪一列是什么」来预填。
+    // 把这两件事合成一个返回值，用户就得从零开始手工指一遍所有列。
     final headers = table.rows[bestIndex];
     return HeaderGuess(
       headerRowIndex: bestIndex,
@@ -675,6 +688,117 @@ abstract final class ImportRules {
     }
     return DuplicateVerdict.fresh;
   }
+
+  // ---------------------------------------------------------------------------
+  // 人工字段映射
+  // ---------------------------------------------------------------------------
+
+  /// 校验用户手工建立的映射。
+  static MappingCheck checkMapping(
+    ImportFieldMapping mapping, {
+    required int columnCount,
+  }) {
+    final duplicated = <int>{};
+    final seen = <int>{};
+    for (final index in mapping.columns.values) {
+      if (!seen.add(index)) duplicated.add(index);
+    }
+    final outOfRange = <int>{
+      for (final index in mapping.columns.values)
+        if (index < 0 || index >= columnCount) index,
+    };
+    return MappingCheck(
+      missingRequired: <ImportField>{
+        for (final field in ImportField.required)
+          if (!mapping.columns.containsKey(field)) field,
+      },
+      duplicatedColumns: duplicated,
+      outOfRangeColumns: outOfRange,
+    );
+  }
+
+  /// 从用户映射拼出一个可用的表头，好让 [parseRow] 原样复用。
+  ///
+  /// 这样「自动识别」与「手工指定」走的是**同一段解析代码**，
+  /// 不会出现「自动识别能处理引号、手工映射不能」这种分叉。
+  static HeaderGuess headerFromMapping({
+    required ImportFieldMapping mapping,
+    required List<String> headers,
+  }) => HeaderGuess(
+    headerRowIndex: mapping.headerRowIndex,
+    headers: headers,
+    columns: mapping.columns,
+    platformName: null,
+  );
+}
+
+/// 用户手工建立的字段映射。
+///
+/// 表头版本未知时（或者文件干脆没有表头）走这条路：由用户指出「哪个字段在
+/// 哪一列」，而不是程序按固定列下标猜（指南 4.2.7）。
+final class ImportFieldMapping {
+  const ImportFieldMapping({
+    required this.headerRowIndex,
+    required this.columns,
+  });
+
+  /// 表头所在行（0 起）。用户选「这个文件没有表头」时为 -1，
+  /// 表示从第 0 行就是数据。
+  final int headerRowIndex;
+
+  /// 字段 → 列下标。
+  final Map<ImportField, int> columns;
+
+  ImportFieldMapping withColumn(ImportField field, int? column) {
+    final next = Map<ImportField, int>.of(columns);
+    if (column == null) {
+      next.remove(field);
+    } else {
+      next[field] = column;
+    }
+    return ImportFieldMapping(headerRowIndex: headerRowIndex, columns: next);
+  }
+
+  /// 用户勾掉「这份文件有表头」时的映射。
+  ImportFieldMapping get withoutHeaderRow =>
+      ImportFieldMapping(headerRowIndex: -1, columns: columns);
+}
+
+/// 映射校验结果。
+final class MappingCheck {
+  const MappingCheck({
+    required this.missingRequired,
+    required this.duplicatedColumns,
+    required this.outOfRangeColumns,
+  });
+
+  final Set<ImportField> missingRequired;
+
+  /// 同一列被指给了多个字段。
+  final Set<int> duplicatedColumns;
+
+  /// 指向了文件里不存在的列。
+  final Set<int> outOfRangeColumns;
+
+  /// 能不能继续。
+  bool get canContinue =>
+      missingRequired.isEmpty &&
+      duplicatedColumns.isEmpty &&
+      outOfRangeColumns.isEmpty;
+
+  /// 不能继续的原因，可直接展示给用户。
+  ///
+  /// 必须逐条说清，不能只说「映射有误」—— 用户要能照着提示改对。
+  List<String> get messages => <String>[
+    if (missingRequired.isNotEmpty)
+      '还没有指定：${missingRequired.map((field) => field.label).join('、')}',
+    if (duplicatedColumns.isNotEmpty)
+      '同一列被指定给了多个字段（第 '
+          '${duplicatedColumns.map((index) => index + 1).join('、')} 列）',
+    if (outOfRangeColumns.isNotEmpty)
+      '指向了文件里不存在的列（第 '
+          '${outOfRangeColumns.map((index) => index + 1).join('、')} 列）',
+  ];
 }
 
 /// 解析出来的金额与其原始符号。

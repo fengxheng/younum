@@ -441,6 +441,117 @@ void main() {
     });
   });
 
+  group('人工字段映射', () {
+    // 一份表头全部认不出来的账单：列名不在别名表里。
+    const customBill =
+        '''日期戳,摘要,数额,方向Z
+'''
+        '''2026-09-23 14:26:00,老王牛肉面,28.00,支
+'''
+        '''2026-09-24 09:02:11,地铁公司,5.00,支
+'''; // ignore: missing_whitespace_between_adjacent_strings
+
+    test('表头认不出来时要求人工映射，并给出预览与已认出的列', () async {
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: 'custom.csv',
+        bytes: _bytes(customBill),
+        sourceNamespace: 'manual',
+      );
+
+      expect(result, isA<ImportMappingRequired>());
+      final mapping = result as ImportMappingRequired;
+      expect(mapping.previewRows.first, <String>[
+        '日期戳',
+        '摘要',
+        '数额',
+        '方向Z',
+      ], reason: '映射界面要能指出哪一行是表头，所以预览必须包含表头行');
+      expect(mapping.previewRows.length, greaterThanOrEqualTo(2));
+      expect(mapping.columnCount, 4);
+      expect(
+        mapping.guessedHeaderRowIndex,
+        -1,
+        reason: '一行都没匹配上，不随便挑一行当表头；界面默认用第 0 行',
+      );
+      expect(
+        mapping.missingFields,
+        containsAll(<ImportField>[
+          ImportField.occurredAt,
+          ImportField.amount,
+          ImportField.merchant,
+        ]),
+      );
+      expect(await repository.importBatches(ledgerId: real), isEmpty);
+    });
+
+    test('映射齐全后走同一段解析代码，结果与自动识别一致', () async {
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: 'custom.csv',
+        bytes: _bytes(customBill),
+        sourceNamespace: 'manual',
+        mapping: const ImportFieldMapping(
+          headerRowIndex: 0,
+          columns: <ImportField, int>{
+            ImportField.occurredAt: 0,
+            ImportField.merchant: 1,
+            ImportField.amount: 2,
+            ImportField.direction: 3,
+          },
+        ),
+      );
+
+      expect(result, isA<ImportStaged>(), reason: '$result');
+      final staged = result as ImportStaged;
+      expect(staged.preview.freshCount, 2);
+      expect(staged.preview.freshCents, 2800 + 500);
+
+      final rows = await repository.importRows(batchId: staged.preview.batchId);
+      expect(rows, hasLength(2), reason: '表头那一行不该进暂存区');
+      expect(rows.first.merchant, '老王牛肉面');
+      expect(rows.first.amountCents, 2800);
+      expect(rows.first.direction, ImportDirection.expense);
+    });
+
+    test('映射还是不全时不落库，并把原因带回去', () async {
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: 'custom.csv',
+        bytes: _bytes(customBill),
+        sourceNamespace: 'manual',
+        mapping: const ImportFieldMapping(
+          headerRowIndex: 0,
+          columns: <ImportField, int>{ImportField.amount: 2},
+        ),
+      );
+
+      expect(result, isA<ImportMappingRequired>());
+      final mapping = result as ImportMappingRequired;
+      expect(mapping.issues, isNotEmpty);
+      expect(mapping.issues.single, contains('交易对方'));
+      expect(mapping.guessedHeaderRowIndex, 0, reason: '用户选过的表头行要带回去，不能又回到默认值');
+      expect(await repository.importBatches(ledgerId: real), isEmpty);
+    });
+
+    test('自动识别得出的列会用来预填映射界面', () async {
+      // 英文表头能认出大部分，但缺少「交易对方」这个必填项。
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: 'semi.csv',
+        bytes: _bytes('Date,Amount\n2026-09-23,28.00\n'),
+        sourceNamespace: 'manual',
+      );
+
+      expect(result, isA<ImportMappingRequired>());
+      expect(
+        (result as ImportMappingRequired).guessedColumns[ImportField.amount],
+        1,
+        reason: '已经认出来的列不该让用户再选一遍',
+      );
+    });
+  });
+
   group('导入与整理的关系', () {
     test('导入进来的交易会出现在待整理队列里', () async {
       final staged = await stage();

@@ -211,6 +211,15 @@ final class ImportBatch {
       'ImportBatch($id, $fileName, ${stage.storageValue}, +$newCount)';
 }
 
+/// 「疑似重复」的标记前缀。
+///
+/// 疑似重复的行不单列一个状态，因为那要改 `import_row.status` 的 CHECK
+/// 约束（多一次迁移），而它在数据库里本来就等于「仍然是新增、只是得让用户
+/// 看一眼」。所以标记写在 `issue` 里，用这个常量作为唯一来源 ——
+/// 两边各写一份字符串迟早会不一致，而一旦不一致，重复分组界面上
+/// 就会凭空少几组，用户以为自己处理完了。
+const String suspectedDuplicateIssuePrefix = '疑似重复';
+
 /// 一行的处理结果。
 enum ImportRowStatus {
   /// 新增，会写入正式交易。

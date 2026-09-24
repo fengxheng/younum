@@ -454,6 +454,77 @@ void main() {
     });
   });
 
+  group('人工字段映射', () {
+    test('必填项齐全、列不重复就可以继续', () {
+      const mapping = ImportFieldMapping(
+        headerRowIndex: 0,
+        columns: <ImportField, int>{
+          ImportField.occurredAt: 0,
+          ImportField.merchant: 1,
+          ImportField.amount: 2,
+        },
+      );
+
+      final check = ImportRules.checkMapping(mapping, columnCount: 3);
+      expect(check.canContinue, isTrue);
+      expect(check.messages, isEmpty);
+    });
+
+    test('缺必填项时逐条说清缺什么', () {
+      const mapping = ImportFieldMapping(
+        headerRowIndex: 0,
+        columns: <ImportField, int>{ImportField.amount: 2},
+      );
+
+      final check = ImportRules.checkMapping(mapping, columnCount: 3);
+      expect(check.canContinue, isFalse);
+      expect(check.missingRequired, contains(ImportField.merchant));
+      expect(check.messages.single, contains('交易对方'));
+    });
+
+    test('同一列被指给两个字段时挡住', () {
+      // 同一列既当金额又当商户，解析出来的东西一定是错的，
+      // 但错误会藏在「看起来导入成功了」里。
+      const mapping = ImportFieldMapping(
+        headerRowIndex: 0,
+        columns: <ImportField, int>{
+          ImportField.occurredAt: 0,
+          ImportField.merchant: 1,
+          ImportField.amount: 1,
+        },
+      );
+
+      final check = ImportRules.checkMapping(mapping, columnCount: 3);
+      expect(check.canContinue, isFalse);
+      expect(check.duplicatedColumns, <int>{1});
+      expect(check.messages.single, contains('同一列'));
+    });
+
+    test('指向不存在的列时挡住', () {
+      const mapping = ImportFieldMapping(
+        headerRowIndex: 0,
+        columns: <ImportField, int>{
+          ImportField.occurredAt: 0,
+          ImportField.merchant: 1,
+          ImportField.amount: 9,
+        },
+      );
+
+      final check = ImportRules.checkMapping(mapping, columnCount: 3);
+      expect(check.canContinue, isFalse);
+      expect(check.messages.single, contains('不存在'));
+    });
+
+    test('withColumn 能指定与取消', () {
+      const mapping = ImportFieldMapping(
+        headerRowIndex: 0,
+        columns: <ImportField, int>{ImportField.amount: 2},
+      );
+      expect(mapping.withColumn(ImportField.merchant, 1).columns, hasLength(2));
+      expect(mapping.withColumn(ImportField.amount, null).columns, isEmpty);
+    });
+  });
+
   group('金额与存储的约定', () {
     test('解析出来的金额永远非负，符号不进入金额本身', () {
       for (final raw in <String>['¥28.00', '-28.00', '+28.00', '28.00元']) {

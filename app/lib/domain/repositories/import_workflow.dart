@@ -40,23 +40,43 @@ final class ImportStaged extends ImportStageResult {
 ///
 /// 这里刻意**不落库**：还不知道怎么映射，就没有「这一行是什么」可言，
 /// 存一堆看不懂的行只会让用户以为导入已经进行了一半。
+///
+/// 用户做好映射之后，带着 [ImportFieldMapping] 再调一次 `stageImport` 即可 ——
+/// 走的仍然是同一段解析代码。
 final class ImportMappingRequired extends ImportStageResult {
   const ImportMappingRequired({
-    required this.headers,
-    required this.missingFields,
-    required this.sampleRows,
+    required this.previewRows,
     required this.totalRows,
+    required this.columnCount,
+    this.guessedHeaderRowIndex = -1,
+    this.guessedColumns = const <ImportField, int>{},
+    this.missingFields = const <ImportField>{},
+    this.issues = const <String>[],
   });
 
-  final List<String> headers;
+  /// 文件开头几行的**原文**，供映射界面预览。
+  ///
+  /// 为什么给原文而不是「识别结果」：识别失败正是走到这一步的原因。
+  /// 用户需要看到真实的前几行，才能指出哪一行是表头、哪一列是什么。
+  final List<List<String>> previewRows;
 
-  /// 缺的必填列。
+  /// 文件里的总行数。
+  final int totalRows;
+
+  /// 文件里的最大列数，映射界面据此列出可选项。
+  final int columnCount;
+
+  /// 猜到的表头行号（0 起）。-1 表示一行都没能匹配上，界面默认用第 0 行。
+  final int guessedHeaderRowIndex;
+
+  /// 已经认出来的列，用来**预填**，减少用户要点的次数。
+  final Map<ImportField, int> guessedColumns;
+
+  /// 还缺哪些必填字段。
   final Set<ImportField> missingFields;
 
-  /// 前几行原文，给映射界面做预览。指南要求至少 3 行。
-  final List<List<String>> sampleRows;
-
-  final int totalRows;
+  /// 上一次映射为什么还不能继续（用户改过一次还是不行时用）。
+  final List<String> issues;
 }
 
 /// 连文件都没读进来。
@@ -154,6 +174,7 @@ extension ImportWorkflow on LedgerRepository {
     String? sourceAccount,
     String? sourceUri,
     TextEncoding? encoding,
+    ImportFieldMapping? mapping,
   }) async {
     if (bytes.isEmpty) {
       return const ImportStageRejected('文件是空的');
@@ -174,13 +195,49 @@ extension ImportWorkflow on LedgerRepository {
       return ImportStageRejected('这份文件里没有读到任何一行');
     }
 
-    final header = ImportRules.detectHeader(table);
-    if (header.needsManualMapping) {
+    final guess = ImportRules.detectHeader(table);
+
+    /// 取文件里的某一行；行号越界时给空表，调用方不必自己判断边界。
+    List<String> rowAt(int index) => index >= 0 && index < table.rows.length
+        ? table.rows[index]
+        : const <String>[];
+
+    // 用户手工指定了映射就直接用它；否则用自动识别到的。
+    // 两者之后走的是**同一段解析代码**，不会出现「手工映射少了某个处理」。
+    final HeaderGuess header;
+    if (mapping == null) {
+      header = guess;
+    } else {
+      final check = ImportRules.checkMapping(
+        mapping,
+        columnCount: table.maxColumns,
+      );
+      if (!check.canContinue) {
+        // 还差东西就不落库，把原因带回去让用户接着改。
+        return ImportMappingRequired(
+          previewRows: _previewRows(table),
+          totalRows: table.rows.length,
+          columnCount: table.maxColumns,
+          guessedHeaderRowIndex: mapping.headerRowIndex,
+          guessedColumns: mapping.columns,
+          missingFields: check.missingRequired,
+          issues: check.messages,
+        );
+      }
+      header = ImportRules.headerFromMapping(
+        mapping: mapping,
+        headers: rowAt(mapping.headerRowIndex),
+      );
+    }
+
+    if (mapping == null && header.needsManualMapping) {
       return ImportMappingRequired(
-        headers: header.headers,
-        missingFields: header.missingRequired,
-        sampleRows: _sampleRows(table, header),
+        previewRows: _previewRows(table),
         totalRows: table.rows.length,
+        columnCount: table.maxColumns,
+        guessedHeaderRowIndex: header.headerRowIndex,
+        guessedColumns: header.columns,
+        missingFields: header.missingRequired,
       );
     }
 
@@ -267,7 +324,9 @@ extension ImportWorkflow on LedgerRepository {
               issue = '这份账单里已经导入过';
             case DuplicateVerdict.suspected:
               suspected++;
-              issue = '疑似重复：商户、时间、金额与别处一致，请确认是否同一笔';
+              issue =
+                  '$suspectedDuplicateIssuePrefix：商户、时间、金额与别处一致，'
+                  '请确认是否同一笔';
             case DuplicateVerdict.fresh:
               break;
           }
@@ -495,16 +554,18 @@ extension ImportWorkflow on LedgerRepository {
         ImportDirection.unknown || null => TransactionNature.unknown,
       };
 
-  List<List<String>> _sampleRows(CsvTable table, HeaderGuess header) {
-    final start = header.headerRowIndex < 0 ? 0 : header.headerRowIndex + 1;
-    final samples = <List<String>>[];
-    for (var index = start; index < table.rows.length; index++) {
-      if (samples.length >= 3) break;
-      final row = table.rows[index];
+  /// 文件开头几行的原文，供映射界面预览。
+  ///
+  /// 刻意把**表头那一行也包括进来**：映射界面上要能指出「哪一行是表头」，
+  /// 只给数据行就没得指了。
+  List<List<String>> _previewRows(CsvTable table, {int limit = 4}) {
+    final rows = <List<String>>[];
+    for (final row in table.rows) {
+      if (rows.length >= limit) break;
       if (row.every((cell) => cell.trim().isEmpty)) continue;
-      samples.add(row);
+      rows.add(row);
     }
-    return samples;
+    return rows;
   }
 
   String _decodeMessage(DecodeError error) => switch (error) {
