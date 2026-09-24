@@ -5,7 +5,9 @@ import 'core/preferences/app_state_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
 import 'data/db/sqflite_ledger_store.dart';
+import 'data/files/system_file_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
+import 'domain/repositories/ledger_file_source.dart';
 import 'domain/repositories/ledger_repository.dart';
 import 'domain/repositories/ledger_store.dart';
 
@@ -49,11 +51,19 @@ Future<void> main() async {
   final themeController = await ThemeController.restore(themeStore);
   final appStateController = await AppStateController.restore(appStateStore);
 
+  // 选账单文件的能力。
+  //
+  // 桌面与测试环境没有这条通道，[SystemFileSource.isAvailable] 会返回 false，
+  // 界面据此把入口显灰 —— 而不是让用户点了才发现不行。
+  // 这里不预判平台：判断留在实现里，注入点保持一个。
+  final LedgerFileSource fileSource = SystemFileSource();
+
   runApp(
     YounumApp(
       themeController: themeController,
       appStateController: appStateController,
       ledgerRepository: repository,
+      ledgerFileSource: fileSource,
     ),
   );
 }

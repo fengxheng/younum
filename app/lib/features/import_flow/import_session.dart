@@ -94,13 +94,30 @@ final class ImportSession extends ChangeNotifier {
   ImportSession({
     required this.repository,
     required this.fileSource,
-    required this.ledgerId,
+    required int ledgerId,
     this.sourceNamespace = 'manual',
-  });
+  }) : _initialLedgerId = ledgerId;
 
   final LedgerRepository repository;
   final LedgerFileSource fileSource;
-  final int ledgerId;
+
+  final int _initialLedgerId;
+  late int _ledgerId = _initialLedgerId;
+
+  /// 当前导入到哪个账本。
+  int get ledgerId => _ledgerId;
+
+  /// 切换账本。
+  ///
+  /// 演示账本与真实账本的数据互不可见，所以换账本时这次导入的上下文
+  /// 整个不成立了 —— 一定要先 [reset]，否则会拿着一份「暂存在另一个
+  /// 账本里」的批次去提交。
+  void useLedger(int ledgerId) {
+    if (_ledgerId == ledgerId) return;
+    reset();
+    _ledgerId = ledgerId;
+    notifyListeners();
+  }
 
   /// 来源命名空间。手工导入的文件归到 `manual`。
   ///
@@ -180,6 +197,13 @@ final class ImportSession extends ChangeNotifier {
   int get decidedGroupCount => duplicateGroups
       .where((group) => _duplicateDecisions.containsKey(group.key))
       .length;
+
+  /// 某一组是不是已经有取舍了。
+  ///
+  /// 界面靠它判断「下一组该跳到哪里」，而不用自己再维护一份镜像状态 ——
+  /// 两份状态一旦不同步，就会出现「明明处理完了还说没处理完」。
+  bool isGroupDecided(ImportDuplicateGroup group) =>
+      _duplicateDecisions.containsKey(group.key);
 
   /// 最终会写入正式账的行。
   ///
@@ -395,6 +419,13 @@ final class ImportSession extends ChangeNotifier {
   Future<ImportRevert?> revert(int batchId) async {
     try {
       final revert = await repository.revertImport(batchId: batchId);
+      // 这份文件不再需要读取授权了，及时还给系统 ——
+      // 一直占着会让用户以为应用还能访问那个目录。
+      final uri = _history
+          .where((batch) => batch.id == batchId)
+          .map((batch) => batch.sourceUri)
+          .firstOrNull;
+      if (uri != null) await fileSource.release(uri);
       await loadHistory();
       if (_committed?.batch.id == batchId) {
         _setPhase(ImportPhase.reverted);
@@ -404,6 +435,16 @@ final class ImportSession extends ChangeNotifier {
       return revert;
     } on Object catch (error) {
       _fail('撤回时出错了：$error');
+      return null;
+    }
+  }
+
+  /// 撤回前先算一遍会发生什么（指南 4.4：撤回前展示真实影响）。
+  Future<ImportRevert?> previewRevert(int batchId) async {
+    try {
+      return await repository.previewRevert(batchId: batchId);
+    } on Object catch (error) {
+      _fail('算不出这次撤回的影响：$error');
       return null;
     }
   }

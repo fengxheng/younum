@@ -11,6 +11,7 @@ import '../../core/designsystem/younum_colors.dart';
 import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
+import 'import_session.dart';
 
 // -----------------------------------------------------------------------------
 // import —— 选择账单来源
@@ -110,12 +111,12 @@ class _RowChevron extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ExcludeSemantics(
-        child: Icon(
-          YounumIcons.chevronRight,
-          size: YounumDimens.iconMd,
-          color: YounumColors.of(context).mutedColor,
-        ),
-      );
+    child: Icon(
+      YounumIcons.chevronRight,
+      size: YounumDimens.iconMd,
+      color: YounumColors.of(context).mutedColor,
+    ),
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -165,10 +166,12 @@ class _ExportGuideScreenState extends State<ExportGuideScreen> {
           YounumMutedText('在支付平台获取账单文件，再回来导入。'),
           const SizedBox(height: YounumDimens.gapXl),
           for (var index = 0; index < _steps.length; index++)
-            _GuideStep(index: index, title: _steps[index][0], description: _steps[index][1]),
-          const YounumNotice(
-            '具体入口随平台版本变化，以平台当前界面为准。请勿向任何人提供支付密码。',
-          ),
+            _GuideStep(
+              index: index,
+              title: _steps[index][0],
+              description: _steps[index][1],
+            ),
+          const YounumNotice('具体入口随平台版本变化，以平台当前界面为准。请勿向任何人提供支付密码。'),
           PrimaryAction(
             label: '已经准备好了，去导入',
             onPressed: () => context.open(AppRoutes.upload),
@@ -203,9 +206,15 @@ class _GuideStep extends StatelessWidget {
             child: Container(
               width: 28,
               height: 28,
-              decoration: BoxDecoration(color: colors.softColor, shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: colors.softColor,
+                shape: BoxShape.circle,
+              ),
               alignment: Alignment.center,
-              child: Text('0${index + 1}', style: text.micro.copyWith(color: colors.primaryColor)),
+              child: Text(
+                '0${index + 1}',
+                style: text.micro.copyWith(color: colors.primaryColor),
+              ),
             ),
           ),
           const SizedBox(width: 14),
@@ -233,6 +242,14 @@ class _GuideStep extends StatelessWidget {
 ///
 /// ⚠️ 这一步**尚未**接入系统文件选择器（阶段 3 才做）。因此按钮文案如实说明
 /// 「只演示后续流程」，不伪装成已经读到了真实文件（指南 1.3 / 12）。
+/// 选择账单文件。
+///
+/// 这一页是导入流程真正的入口。它不是「点一下就假成功」：点「选择账单文件」
+/// 会打开**系统文件选择器**（`ImportSession.pickAndStage`），拿到字节之后
+/// 立刻解析，然后由 [ParsingScreen] 接手展示进度并往前走。
+///
+/// 已经解析好一份账单时（例如用户从核对页返回），这一页改为展示**真实**的
+/// 文件信息与统计，并给一个「继续核对」的入口，而不是让用户再选一次。
 class UploadScreen extends StatefulWidget {
   const UploadScreen({super.key});
 
@@ -241,22 +258,27 @@ class UploadScreen extends StatefulWidget {
 }
 
 class _UploadScreenState extends State<UploadScreen> {
-  static const List<String> _months = <String>[
-    '2026年9月',
-    '2026年8月',
-    '2026年7月',
-  ];
-
-  int _month = 0;
-  bool _filePicked = false;
+  /// 用户确认过「账单只用于本地统计」。
+  ///
+  /// 默认勾上：这是一个告知性的确认，不是一个需要用户费心才能通过的门槛。
   bool _consent = true;
 
-  bool get _canContinue => _filePicked && _consent;
+  Future<void> _pick() async {
+    final session = ImportSessionScope.read(context);
+    if (!session.canPick) return;
+
+    // 先切到解析页再开始读文件：读取与解析都在后台做（指南 4.2.9），
+    // 用户不该在这一页干等；解析页会在有结论之后自己往下走。
+    context.open(AppRoutes.parsing);
+    await session.pickAndStage();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final session = ImportSessionScope.of(context);
     final text = YounumText.of(context);
     final colors = YounumColors.of(context);
+    final staged = session.preview;
 
     return YounumScreen(
       title: '选择账单文件',
@@ -267,15 +289,7 @@ class _UploadScreenState extends State<UploadScreen> {
           const SizedBox(height: YounumDimens.gapSm),
           YounumMutedText('一次支持一个文件，可多次追加导入。'),
           const SizedBox(height: YounumDimens.gapLg),
-          const YounumFieldLabel('账单月份'),
-          YounumSelectField<int>(
-            options: List<int>.generate(_months.length, (index) => index),
-            labelBuilder: (index) => _months[index],
-            selected: _month,
-            semanticLabel: '账单月份',
-            onSelected: (index) => setState(() => _month = index),
-          ),
-          const SizedBox(height: YounumDimens.gapLg),
+
           Container(
             decoration: BoxDecoration(
               color: colors.softColor,
@@ -296,33 +310,46 @@ class _UploadScreenState extends State<UploadScreen> {
                   const SizedBox(height: YounumDimens.gap),
                   Text('把账单带到这里', style: text.sectionTitle),
                   const SizedBox(height: 4),
-                  YounumMutedText('CSV / XLSX · 最大 20 MB'),
+                  YounumMutedText('CSV · 最大 64 MB'),
                   const SizedBox(height: YounumDimens.gap),
                   PrimaryAction(
                     label: '选择账单文件',
                     style: YounumActionStyle.secondary,
-                    onPressed: () => setState(() => _filePicked = true),
+                    onPressed: _consent && session.canPick ? _pick : null,
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: YounumDimens.gap),
-          if (_filePicked)
+
+          if (staged != null) ...<Widget>[
+            const SizedBox(height: YounumDimens.gap),
             YounumPanel(
               child: Row(
                 children: <Widget>[
                   ExcludeSemantics(
-                    child: Icon(YounumIcons.cards, size: YounumDimens.iconLg, color: colors.inkColor),
+                    child: Icon(
+                      YounumIcons.cards,
+                      size: YounumDimens.iconLg,
+                      color: colors.inkColor,
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        const Text('微信支付账单_202609.csv'),
+                        Text(
+                          session.fileName ?? '账单文件',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                         const SizedBox(height: 4),
-                        YounumCaptionText('示例文件 · 32 KB'),
+                        YounumCaptionText(
+                          '${staged.encoding} 编码 · '
+                          '读到 ${staged.totalRows} 行 · '
+                          '可导入 ${staged.freshCount} 笔',
+                        ),
                       ],
                     ),
                   ),
@@ -336,20 +363,31 @@ class _UploadScreenState extends State<UploadScreen> {
                 ],
               ),
             ),
+            const SizedBox(height: YounumDimens.gap),
+            PrimaryAction(
+              label: staged.needsReview ? '去核对这笔账单' : '去核对',
+              trailingArrow: true,
+              onPressed: () => context.open(AppRoutes.checkImport),
+            ),
+          ],
+
+          if (session.phase == ImportPhase.failed) ...<Widget>[
+            const SizedBox(height: YounumDimens.gap),
+            YounumNotice(
+              session.errorNeedsReselect
+                  ? '${session.errorMessage}\n\n这份文件本身还在，重新选一次就好。'
+                  : (session.errorMessage ?? '这份账单没读进来'),
+            ),
+          ],
+
           YounumCheckRow(
             label: '我已了解账单将用于本月整理和消费统计',
             value: _consent,
             onChanged: (value) => setState(() => _consent = value),
           ),
-          PrimaryAction(
-            label: '识别账单',
-            trailingArrow: true,
-            onPressed: _canContinue ? () => context.open(AppRoutes.parsing) : null,
-          ),
-          const YounumPillNote(
-            '当前阶段尚未接入系统文件选择器与真实解析：\n'
-            '点「选择账单文件」只标记示例文件，点「识别账单」只演示后续流程。',
-          ),
+          // 不给「点了没反应的按钮」：文件选择与解析都已经接上真实实现，
+          // 失败时上面那块提示会说清原因与下一步。
+          const YounumPillNote('账单只在你的手机上解析与保存，不会上传。'),
         ],
       ),
     );

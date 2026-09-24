@@ -899,8 +899,8 @@ final class SqfliteLedgerStore implements LedgerStore {
         limit: 1,
       );
       if (rows.isEmpty) return;
-      final committed =
-          ImportStage.parse(rows.first['stage']! as String).isCommitted;
+      final committed = ImportStage.parse(rows.first['stage']! as String)
+          .isCommitted;
       final reverted = rows.first['reverted_at_ms'] != null;
       if (committed && !reverted) {
         // 提交过的批次不能这样删掉：交易会失去来源记录，
@@ -992,8 +992,8 @@ final class SqfliteLedgerStore implements LedgerStore {
       if (batches.isEmpty) {
         throw StateError('批次 $batchId 不存在');
       }
-      final committed =
-          ImportStage.parse(batches.first['stage']! as String).isCommitted;
+      final committed = ImportStage.parse(batches.first['stage']! as String)
+          .isCommitted;
       final reverted = batches.first['reverted_at_ms'] != null;
       // 已撤回的批次可以再提交一次：那是用户主动退回后又想装回来。
       if (committed && !reverted) {
@@ -1062,6 +1062,7 @@ final class SqfliteLedgerStore implements LedgerStore {
   Future<ImportRevert> revertImport({
     required int batchId,
     required int nowMs,
+    bool dryRun = false,
   }) async {
     final db = await _db;
     return db.transaction<ImportRevert>((txn) async {
@@ -1116,13 +1117,23 @@ final class SqfliteLedgerStore implements LedgerStore {
           continue;
         }
 
+        deleted.add(transactionId);
+        if (dryRun) continue;
         // allocation 那边有 ON DELETE CASCADE，但只可能是空的（上面已经挡过）。
         await txn.delete(
           'txn',
           where: 'id = ?',
           whereArgs: <Object?>[transactionId],
         );
-        deleted.add(transactionId);
+      }
+
+      // dry run 到此为止：只回答「会发生什么」，不改任何东西。
+      if (dryRun) {
+        return ImportRevert(
+          deletedTransactionIds: deleted,
+          sharedTransactionIds: shared,
+          editedTransactionIds: edited,
+        );
       }
 
       await txn.delete(

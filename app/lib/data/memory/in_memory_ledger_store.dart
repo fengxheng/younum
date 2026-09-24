@@ -555,6 +555,7 @@ final class InMemoryLedgerStore implements LedgerStore {
   Future<ImportRevert> revertImport({
     required int batchId,
     required int nowMs,
+    bool dryRun = false,
   }) async {
     _throwIfFailing();
     final batch = _importBatches[batchId];
@@ -587,9 +588,19 @@ final class InMemoryLedgerStore implements LedgerStore {
         edited.add(transactionId);
         continue;
       }
+      deleted.add(transactionId);
+      if (dryRun) continue;
       _transactions.remove(transactionId);
       _allocations.remove(transactionId);
-      deleted.add(transactionId);
+    }
+
+    // dry run 到此为止：只回答「会发生什么」，不改任何东西。
+    if (dryRun) {
+      return ImportRevert(
+        deletedTransactionIds: deleted,
+        sharedTransactionIds: shared,
+        editedTransactionIds: edited,
+      );
     }
 
     _origins.removeWhere((_, origin) => origin.batchId == batchId);

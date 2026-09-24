@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_routes.dart';
+import '../../core/components/amount_text.dart';
 import '../../core/components/buttons.dart';
 import '../../core/components/fields.dart';
 import '../../core/components/list_row.dart';
@@ -13,8 +14,11 @@ import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/preferences/app_state_store.dart';
 import '../../core/preferences/theme_controller.dart';
+import '../../core/time/statistics_time.dart';
 import '../../core/time/younum_clock.dart';
-import '../../data/sample/sample_data.dart';
+import '../../domain/models/import_records.dart';
+import '../../domain/models/year_month.dart';
+import '../import_flow/import_session.dart';
 import '../organize/review_session.dart';
 
 // -----------------------------------------------------------------------------
@@ -144,7 +148,9 @@ class ProfileScreen extends StatelessWidget {
                   YounumPressable(
                     onTap: () => context.open(AppRoutes.designReview),
                     semanticLabel: '打开设计状态走查',
-                    borderRadius: BorderRadius.circular(YounumDimens.radiusControlSmall),
+                    borderRadius: BorderRadius.circular(
+                      YounumDimens.radiusControlSmall,
+                    ),
                     child: Container(
                       constraints: const BoxConstraints(minHeight: 44),
                       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -172,14 +178,34 @@ class ProfileScreen extends StatelessWidget {
 
 /// 导入记录。
 ///
-/// 撤回前必须计算并展示真实影响（独占记录数、仍被引用的记录数、关联退款、
-/// 受影响月份），不能只说「确定撤回吗」（指南 4.4）。
-class ImportHistoryScreen extends StatelessWidget {
+/// 每一行都是数据库里真实存在的批次。撤回前先算一遍**真实影响**
+/// （独占记录、仍被别的批次引用、用户已经整理过的），
+/// 只说「确定撤回吗」是在让用户闭着眼睛做决定（指南 4.4）。
+class ImportHistoryScreen extends StatefulWidget {
   const ImportHistoryScreen({super.key});
 
   @override
+  State<ImportHistoryScreen> createState() => _ImportHistoryScreenState();
+}
+
+class _ImportHistoryScreenState extends State<ImportHistoryScreen> {
+  bool _loaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loaded) return;
+    _loaded = true;
+    // 读真实批次。这一页可能是从别处（首页、我的）直接进来的，
+    // 不能假设导入会话里已经有历史。
+    ImportSessionScope.read(context).loadHistory();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final session = ImportSessionScope.of(context);
     final text = YounumText.of(context);
+    final batches = session.history;
 
     return YounumScreen(
       title: '导入记录',
@@ -189,94 +215,175 @@ class ImportHistoryScreen extends StatelessWidget {
           Text('每份账单，都有来处', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gapSm),
           YounumMutedText('重新导入同一文件时，会自动检查重复。'),
-          const YounumSectionHeader(title: '2026年9月'),
-          for (var index = 0; index < SampleData.importBatches.length; index++)
-            YounumPanel(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: Text(
-                          SampleData.importBatches[index].name,
-                          style: text.listPrimary,
-                        ),
-                      ),
-                      const YounumBadge('已导入'),
-                    ],
-                  ),
-                  const SizedBox(height: YounumDimens.gapSm),
-                  YounumMutedText(
-                    '${SampleData.importBatches[index].newCount} 笔新增消费'
-                    '${SampleData.importBatches[index].excludedDuplicateCount == 0 ? '' : ' · ${SampleData.importBatches[index].excludedDuplicateCount} 笔重复已排除'}',
-                  ),
-                  const SizedBox(height: 4),
-                  YounumCaptionText(
-                    '${SampleData.importBatches[index].importedAtText} · '
-                    '${SampleData.importBatches[index].fileSizeText}',
-                  ),
-                  const YounumDivider(),
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: Text(
-                          SampleData.importBatches[index].amountText,
-                          style: text.amountInline,
-                        ),
-                      ),
-                      YounumPressable(
-                        onTap: () => _withdraw(context, index),
-                        semanticLabel: '撤回${SampleData.importBatches[index].name}',
-                        borderRadius: BorderRadius.circular(YounumDimens.radiusControlSmall),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                          child: Text(
-                            '撤回导入',
-                            style: text.label.copyWith(
-                              color: YounumColors.of(context).primaryColor,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+          const SizedBox(height: YounumDimens.gap),
+
+          if (batches.isEmpty)
+            YounumEmptyState(
+              title: '还没有导入过账单',
+              description: '导入一份账单之后，这里会记下来源、笔数与金额。',
+              action: PrimaryAction(
+                label: '导入账单',
+                trailingArrow: true,
+                onPressed: () => context.open(AppRoutes.billImport),
               ),
-            ),
-          PrimaryAction(
-            label: '查看异常记录',
-            style: YounumActionStyle.secondary,
-            onPressed: () => context.open(AppRoutes.importError),
-          ),
+            )
+          else
+            for (final batch in batches) ...<Widget>[
+              _BatchPanel(batch: batch, onRevert: () => _revert(batch)),
+              const SizedBox(height: YounumDimens.gapSm),
+            ],
+
           const SizedBox(height: YounumDimens.gap),
           PrimaryAction(
             label: '导入新账单',
             onPressed: () => context.open(AppRoutes.billImport),
-          ),
-          const YounumDemoNote(
-            '设计走查：撤回会展示真实影响范围。'
-            '按来源引用关系删除（而不是按单个 batchId 批量删）在阶段 3 接入。',
           ),
         ],
       ),
     );
   }
 
-  Future<void> _withdraw(BuildContext context, int index) async {
-    final batch = SampleData.importBatches[index];
+  Future<void> _revert(ImportBatch batch) async {
+    final session = ImportSessionScope.read(context);
+
+    // 先算一遍：删几笔、留几笔、为什么留。算不出来就不让撤。
+    final impact = await session.previewRevert(batch.id);
+    if (!mounted || impact == null) return;
+
+    final lines = <String>[
+      if (impact.deletedCount > 0) '移除 ${impact.deletedCount} 笔这次导入的记录',
+      if (impact.sharedTransactionIds.isNotEmpty)
+        '保留 ${impact.sharedTransactionIds.length} 笔 —— 另一份账单也需要它们',
+      if (impact.editedTransactionIds.isNotEmpty)
+        '保留 ${impact.editedTransactionIds.length} 笔 —— 你已经给它们分过类',
+      if (impact.deletedCount == 0 &&
+          impact.sharedTransactionIds.isEmpty &&
+          impact.editedTransactionIds.isEmpty)
+        '这次导入的记录在账本里已经找不到了',
+    ];
+
     final confirmed = await showConfirmSheet(
       context: context,
-      title: '撤回「${batch.name}」？',
-      description: '将移除 ${batch.newCount} 笔仅来自这份账单的记录，'
-          '并重算 2026年9月 的消费概况。'
-          '如果某些记录还被另一份账单引用，它们会被保留。'
-          '此操作不删除其它文件的数据。',
+      title: '撤回「${batch.fileName}」？',
+      description: '${lines.join('；')}。\n受影响月份的统计会重新算一遍。',
       confirmLabel: '撤回这次导入',
       cancelLabel: '保留数据',
     );
-    if (!context.mounted || !confirmed) return;
-    showYounumToast(context, '已撤回「${batch.name}」');
+    if (!mounted || !confirmed) return;
+
+    final result = await session.revert(batch.id);
+    if (!mounted || result == null) return;
+    showYounumToast(
+      context,
+      result.deletedCount == 0
+          ? '已撤回，没有记录需要移除'
+          : '已撤回，移除 ${result.deletedCount} 笔'
+                '${result.keptCount > 0 ? '，保留 ${result.keptCount} 笔' : ''}',
+    );
+  }
+}
+
+/// 一个导入批次的卡片。
+class _BatchPanel extends StatelessWidget {
+  const _BatchPanel({required this.batch, required this.onRevert});
+
+  final ImportBatch batch;
+  final VoidCallback onRevert;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = YounumText.of(context);
+    final colors = YounumColors.of(context);
+    final reverted = batch.isReverted;
+
+    return YounumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  batch.fileName,
+                  style: text.listPrimary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              YounumBadge(
+                reverted ? '已撤回' : '已导入',
+                tone: reverted ? YounumBadgeTone.warm : YounumBadgeTone.primary,
+              ),
+            ],
+          ),
+          const SizedBox(height: YounumDimens.gapSm),
+          YounumMutedText(
+            <String>[
+              '${batch.newCount} 笔新增',
+              if (batch.duplicateCount > 0) '${batch.duplicateCount} 笔重复已排除',
+              if (batch.invalidCount > 0) '${batch.invalidCount} 行没读进来',
+            ].join(' · '),
+          ),
+          const SizedBox(height: 4),
+          YounumCaptionText(
+            <String>[
+              if (batch.committedAtMs != null)
+                StatisticsTime.formatShort(batch.committedAtMs!),
+              batch.encoding,
+              _monthText(),
+            ].join(' · '),
+          ),
+          const YounumDivider(),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: AmountText(
+                  cents: batch.amountCents,
+                  scale: AmountScale.inline,
+                ),
+              ),
+              if (batch.canRevert)
+                YounumPressable(
+                  onTap: onRevert,
+                  semanticLabel: '撤回${batch.fileName}',
+                  borderRadius: BorderRadius.circular(
+                    YounumDimens.radiusControlSmall,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 10,
+                    ),
+                    child: Text(
+                      '撤回导入',
+                      style: text.label.copyWith(color: colors.primaryColor),
+                    ),
+                  ),
+                )
+              else
+                YounumCaptionText(reverted ? '已撤回' : '无可撤回记录'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 账单覆盖的月份。
+  ///
+  /// 来源文件已经不可追溯时如实说「月份未知」，
+  /// 不拿导入时间去假装账单月份 —— 那会让用户以为账单就是这个月的。
+  String _monthText() {
+    final start = batch.rangeStartMs;
+    final end = batch.rangeEndMs;
+    if (start == null || end == null) return '账单月份未知';
+    final first = StatisticsTime.toLocal(start);
+    final last = StatisticsTime.toLocal(end);
+    if (first.year == last.year && first.month == last.month) {
+      return YearMonth(first.year, first.month).label;
+    }
+    return '${YearMonth(first.year, first.month).shortLabel} – '
+        '${YearMonth(last.year, last.month).shortLabel}';
   }
 }
 
@@ -299,9 +406,7 @@ class PrivacyScreen extends StatelessWidget {
         children: <Widget>[
           Text('你的生活，\n由你掌握。', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gapSm),
-          YounumMutedText(
-            '默认本地保存。App 没有申请互联网权限，账单不会离开这台设备。',
-          ),
+          YounumMutedText('默认本地保存。App 没有申请互联网权限，账单不会离开这台设备。'),
           const SizedBox(height: YounumDimens.gap),
           YounumPanel(
             tone: YounumPanelTone.soft,
@@ -318,15 +423,11 @@ class PrivacyScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('仅用于账单整理', style: text.sectionTitle),
-                    ),
+                    Expanded(child: Text('仅用于账单整理', style: text.sectionTitle)),
                   ],
                 ),
                 const SizedBox(height: YounumDimens.gapSm),
-                const YounumMutedText(
-                  '不索取支付密码，不访问你的支付账户。仅处理你主动选择的文件。',
-                ),
+                const YounumMutedText('不索取支付密码，不访问你的支付账户。仅处理你主动选择的文件。'),
               ],
             ),
           ),
@@ -340,10 +441,8 @@ class PrivacyScreen extends StatelessWidget {
           PrimaryAction(
             label: '导出我的数据',
             style: YounumActionStyle.secondary,
-            onPressed: () => showYounumToast(
-              context,
-              'CSV 导出将在阶段 5 接入；导出的 CSV 不等同于完整备份',
-            ),
+            onPressed: () =>
+                showYounumToast(context, 'CSV 导出将在阶段 5 接入；导出的 CSV 不等同于完整备份'),
           ),
           const SizedBox(height: YounumDimens.gap),
           PrimaryAction(
@@ -380,11 +479,7 @@ class _ReminderScreenState extends State<ReminderScreen> {
     '每月 10 日 · 整理上月',
   ];
 
-  static const List<String> _hours = <String>[
-    '20:00',
-    '12:00',
-    '09:00',
-  ];
+  static const List<String> _hours = <String>['20:00', '12:00', '09:00'];
 
   /// 默认关闭（指南 8.2）。
   bool _enabled = false;
@@ -418,9 +513,7 @@ class _ReminderScreenState extends State<ReminderScreen> {
               children: <Widget>[
                 YounumSwitchRow(
                   label: '每月提醒我整理账单',
-                  description: _enabled
-                      ? '到时会提醒你整理上一个月的账单。'
-                      : '关闭时不会有任何通知。',
+                  description: _enabled ? '到时会提醒你整理上一个月的账单。' : '关闭时不会有任何通知。',
                   value: _enabled,
                   onChanged: (value) => setState(() => _enabled = value),
                 ),
@@ -436,7 +529,10 @@ class _ReminderScreenState extends State<ReminderScreen> {
                   const SizedBox(height: YounumDimens.gap),
                   const YounumFieldLabel('提醒时间'),
                   YounumSelectField<int>(
-                    options: List<int>.generate(_hours.length, (index) => index),
+                    options: List<int>.generate(
+                      _hours.length,
+                      (index) => index,
+                    ),
                     labelBuilder: (index) => _hours[index],
                     selected: _hour,
                     semanticLabel: '提醒时间',
@@ -448,9 +544,7 @@ class _ReminderScreenState extends State<ReminderScreen> {
                     '${_hourValue.toString().padLeft(2, '0')}:00'
                     '（还有 ${daysUntil(next)} 天）',
                   ),
-                  YounumMutedText(
-                    '按自然日历计算，不是固定 30 天；系统省电策略可能造成合理延迟。',
-                  ),
+                  YounumMutedText('按自然日历计算，不是固定 30 天；系统省电策略可能造成合理延迟。'),
                 ],
               ],
             ),
@@ -465,9 +559,7 @@ class _ReminderScreenState extends State<ReminderScreen> {
             onPressed: () => showYounumToast(
               context,
               _enabled
-                  ? (_permissionGranted
-                      ? '提醒设置已保存'
-                      : '设置已保存，但通知权限未开启，暂时收不到提醒')
+                  ? (_permissionGranted ? '提醒设置已保存' : '设置已保存，但通知权限未开启，暂时收不到提醒')
                   : '已关闭提醒',
             ),
           ),
@@ -520,7 +612,8 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
     final confirmed = await showConfirmSheet(
       context: context,
       title: '清除本地数据？',
-      description: '会移除：真实与演示账本、导入暂存文件、导出缓存、'
+      description:
+          '会移除：真实与演示账本、导入暂存文件、导出缓存、'
           '个人分类及其图标图片、整理操作日志，并取消已设置的提醒。\n\n'
           '会保留：主题配色偏好、已看过的引导状态。',
       confirmLabel: '确认清除',
@@ -555,7 +648,8 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
               children: <Widget>[
                 YounumLineInfo(
                   label: '本地消费记录',
-                  value: '${session.report?.dataset.transactions.length ?? 0} 笔',
+                  value:
+                      '${session.report?.dataset.transactions.length ?? 0} 笔',
                 ),
                 const YounumLineInfo(
                   // 导入批次表（import_batch）属于阶段 3，现在还没有数据可数。
@@ -647,10 +741,7 @@ class OfflineStatusScreen extends StatelessWidget {
             '整理进度保存在这台设备上。清除 App 数据前，请先导出需要保留的内容。'
             '系统的云备份与设备迁移已按「仅本地」的承诺关闭。',
           ),
-          PrimaryAction(
-            label: '继续整理',
-            onPressed: () => context.selectTab(1),
-          ),
+          PrimaryAction(label: '继续整理', onPressed: () => context.selectTab(1)),
           const SizedBox(height: YounumDimens.gap),
           PrimaryAction(
             label: '返回本月首页',

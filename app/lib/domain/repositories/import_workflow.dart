@@ -519,6 +519,14 @@ extension ImportWorkflow on LedgerRepository {
   Future<ImportRevert> revertImport({required int batchId}) =>
       store.revertImport(batchId: batchId, nowMs: nowMs());
 
+  /// 撤回前先算一遍会发生什么，什么都不改。
+  ///
+  /// 指南 4.4 要求「撤回前计算并展示真实影响」。这里的预览与
+  /// [revertImport] 走的是同一段判定代码（只是 dryRun），所以**不会出现**
+  /// 「弹窗说会删 3 笔、实际删了 5 笔」这种事。
+  Future<ImportRevert> previewRevert({required int batchId}) =>
+      store.revertImport(batchId: batchId, nowMs: nowMs(), dryRun: true);
+
   /// 某账本的导入历史。
   Future<List<ImportBatch>> importBatches({required int ledgerId}) =>
       store.importBatches(ledgerId: ledgerId);

@@ -253,7 +253,15 @@ abstract interface class LedgerStore {
   /// * 用户没改过它（version == 1，整理状态还是 PENDING）。
   ///
   /// 后两条同样重要：撤回的是「这次导入」，不是用户在导入之后做的工作。
-  Future<ImportRevert> revertImport({required int batchId, required int nowMs});
+  ///
+  /// [dryRun] 为真时**只算不做**，返回「如果现在撤回会发生什么」。
+  /// 指南 4.4 要求撤回前展示真实影响，而这份影响必须与真正执行时的结果
+  /// 一致 —— 所以预览与执行走的是同一段判定代码，不是两份。
+  Future<ImportRevert> revertImport({
+    required int batchId,
+    required int nowMs,
+    bool dryRun = false,
+  });
 }
 
 /// 撤回结果。

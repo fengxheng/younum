@@ -415,6 +415,98 @@ void main() {
       );
     });
 
+    test('撤回预览什么也不改', () async {
+      final staged = await stage();
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      final before = await repository.dataset(ledgerId: real);
+
+      final preview = await repository.previewRevert(
+        batchId: staged.preview.batchId,
+      );
+
+      expect(preview.deletedCount, 3, reason: '预览要算出真正会发生什么');
+      final after = await repository.dataset(ledgerId: real);
+      expect(after.transactions, hasLength(before.transactions.length));
+      final batch = await repository.importBatch(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      expect(batch!.isReverted, isFalse, reason: '预览不能把批次标成已撤回');
+    });
+
+    test('撤回预览与真正撤回的结果完全一致', () async {
+      // 指南 4.4 要求撤回前展示真实影响，而展示的数字必须就是执行的结果。
+      // 两者走同一段判定代码，这条用例就是锁住这一点。
+      final staged = await stage();
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      final dataset = await repository.dataset(ledgerId: real);
+      final classified = dataset.transactions.firstWhere(
+        (transaction) => transaction.merchant == '老王牛肉面',
+      );
+      await repository.confirm(
+        ledgerId: real,
+        month: month,
+        transactionId: classified.id,
+        categoryId: SeedCategoryIds.food,
+      );
+
+      final preview = await repository.previewRevert(
+        batchId: staged.preview.batchId,
+      );
+      final actual = await repository.revertImport(
+        batchId: staged.preview.batchId,
+      );
+
+      List<int> sorted(Iterable<int> ids) => ids.toList()..sort();
+      expect(
+        sorted(actual.deletedTransactionIds),
+        sorted(preview.deletedTransactionIds),
+      );
+      expect(
+        sorted(actual.sharedTransactionIds),
+        sorted(preview.sharedTransactionIds),
+      );
+      expect(
+        sorted(actual.editedTransactionIds),
+        sorted(preview.editedTransactionIds),
+      );
+      expect(preview.editedTransactionIds, <int>[classified.id]);
+    });
+
+    test('预览能看出哪些交易被别的批次共享', () async {
+      final first = await stage(text: _bill, file: 'wechat.csv');
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: first.preview.batchId,
+      );
+
+      final second = await stage(text: _bill, file: 'again.csv');
+      final rows = await repository.importRows(batchId: second.preview.batchId);
+      final duplicate = rows.firstWhere(
+        (row) => row.status == ImportRowStatus.duplicate,
+      );
+      await repository.updateImportRows(<ImportRow>[
+        duplicate.copyWith(included: true, status: ImportRowStatus.newRow),
+      ]);
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: second.preview.batchId,
+      );
+
+      final preview = await repository.previewRevert(
+        batchId: first.preview.batchId,
+      );
+
+      expect(preview.deletedCount, 2);
+      expect(preview.sharedTransactionIds, hasLength(1));
+    });
+
     test('已提交的批次不能当成暂存区直接丢弃', () async {
       final staged = await stage();
       await repository.commitImport(

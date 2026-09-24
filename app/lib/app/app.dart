@@ -3,8 +3,10 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../core/preferences/app_state_store.dart';
 import '../core/preferences/theme_controller.dart';
+import '../domain/repositories/ledger_file_source.dart';
 import '../domain/repositories/ledger_repository.dart';
 import '../features/import_flow/import_screens.dart';
+import '../features/import_flow/import_session.dart';
 import '../features/import_flow/parse_screens.dart';
 import '../features/organize/cards_screen.dart';
 import '../features/organize/category_registry.dart';
@@ -26,6 +28,7 @@ import 'route_args.dart';
 /// * [AppStateScope] —— 引导状态与真实 / 演示账本隔离；
 /// * [TabScope] —— 四个一级标签的选中态；
 /// * [ReviewSessionScope] —— 整理会话，切标签后进度不丢；
+/// * [ImportSessionScope] —— 导入会话，跨「选文件 → 解析 → 映射 → 核对」几页；
 /// * [CategoryRegistryScope] —— 分类图标的唯一来源。
 class YounumApp extends StatefulWidget {
   const YounumApp({
@@ -33,6 +36,7 @@ class YounumApp extends StatefulWidget {
     required this.themeController,
     required this.appStateController,
     required this.ledgerRepository,
+    required this.ledgerFileSource,
   });
 
   final ThemeController themeController;
@@ -41,14 +45,26 @@ class YounumApp extends StatefulWidget {
   /// 账本数据仓库。真实 / 演示账本的隔离由它保证。
   final LedgerRepository ledgerRepository;
 
+  /// 选账单文件的能力。
+  ///
+  /// 桌面与测试环境传 [UnsupportedFileSource]：界面据此把入口显灰，
+  /// 而不是留一个点了没反应的按钮。
+  final LedgerFileSource ledgerFileSource;
+
   @override
   State<YounumApp> createState() => _YounumAppState();
 }
 
 class _YounumAppState extends State<YounumApp> {
   final TabSelection _tabs = TabSelection();
-  late final ReviewSession _review =
-      ReviewSession(repository: widget.ledgerRepository);
+  late final ReviewSession _review = ReviewSession(
+    repository: widget.ledgerRepository,
+  );
+  late final ImportSession _import = ImportSession(
+    repository: widget.ledgerRepository,
+    fileSource: widget.ledgerFileSource,
+    ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
+  );
   late final CategoryRegistry _registry = CategoryRegistry(
     initial: <String, CategoryIconConfig>{
       // 演示账本预置两个自定义分类，让「我的分类」有内容可看。
@@ -69,15 +85,27 @@ class _YounumAppState extends State<YounumApp> {
   /// 进入 / 退出演示账本时整体重载会话。
   ///
   /// 两个账本的数据互不可见，不能把上一本的队列留在界面上（指南 1.3）。
+  /// 导入会话同样要换账本 —— 否则在演示账本里选的账单会被暂存到真实账本里。
   void _syncLedgerMode() {
-    _review.useLedger(isDemo: widget.appStateController.isDemoLedger);
+    final isDemo = widget.appStateController.isDemoLedger;
+    _review.useLedger(isDemo: isDemo);
+    // 换账本意味着这次导入的上下文整个变了，直接回到起点。
+    _import.reset();
+    _import.useLedger(_ledgerIdFor(isDemo));
   }
+
+  /// 演示账本与真实账本的 ID。
+  ///
+  /// 与 `DemoLedgerSeed` 保持一致；这里不直接导入那个文件是为了不让
+  /// 应用根部依赖种子数据。
+  static int _ledgerIdFor(bool isDemo) => isDemo ? 1 : 2;
 
   @override
   void dispose() {
     widget.appStateController.removeListener(_syncLedgerMode);
     _tabs.dispose();
     _review.dispose();
+    _import.dispose();
     _registry.dispose();
     super.dispose();
   }
@@ -85,9 +113,10 @@ class _YounumAppState extends State<YounumApp> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge(
-        <Listenable>[widget.themeController, widget.appStateController],
-      ),
+      listenable: Listenable.merge(<Listenable>[
+        widget.themeController,
+        widget.appStateController,
+      ]),
       builder: (context, _) {
         return ThemeScope(
           controller: widget.themeController,
@@ -97,34 +126,38 @@ class _YounumAppState extends State<YounumApp> {
               selection: _tabs,
               child: ReviewSessionScope(
                 session: _review,
-                child: CategoryRegistryScope(
-                  registry: _registry,
-                  child: MaterialApp(
-                    title: '有数',
-                    debugShowCheckedModeBanner: false,
-                    // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
-                    theme: widget.themeController.themeData,
-                    themeMode: ThemeMode.light,
-                    locale: const Locale('zh', 'CN'),
-                    supportedLocales: const <Locale>[Locale('zh', 'CN')],
-                    localizationsDelegates: const <LocalizationsDelegate<Object>>[
-                      GlobalMaterialLocalizations.delegate,
-                      GlobalWidgetsLocalizations.delegate,
-                      GlobalCupertinoLocalizations.delegate,
-                    ],
-                    initialRoute: widget.appStateController.onboardingSeen
-                        ? AppRoutes.root
-                        : AppRoutes.welcome,
-                    onGenerateRoute: _onGenerateRoute,
-                    builder: (context, child) {
-                      // 限制文字缩放上限，避免堆叠卡片这类固定高度容器在大字体下溢出。
-                      // 下限不压低，用户调大字号的能力不被剥夺（指南 6.3）。
-                      return MediaQuery.withClampedTextScaling(
-                        minScaleFactor: 0.85,
-                        maxScaleFactor: 1.6,
-                        child: child ?? const SizedBox.shrink(),
-                      );
-                    },
+                child: ImportSessionScope(
+                  session: _import,
+                  child: CategoryRegistryScope(
+                    registry: _registry,
+                    child: MaterialApp(
+                      title: '有数',
+                      debugShowCheckedModeBanner: false,
+                      // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
+                      theme: widget.themeController.themeData,
+                      themeMode: ThemeMode.light,
+                      locale: const Locale('zh', 'CN'),
+                      supportedLocales: const <Locale>[Locale('zh', 'CN')],
+                      localizationsDelegates:
+                          const <LocalizationsDelegate<Object>>[
+                            GlobalMaterialLocalizations.delegate,
+                            GlobalWidgetsLocalizations.delegate,
+                            GlobalCupertinoLocalizations.delegate,
+                          ],
+                      initialRoute: widget.appStateController.onboardingSeen
+                          ? AppRoutes.root
+                          : AppRoutes.welcome,
+                      onGenerateRoute: _onGenerateRoute,
+                      builder: (context, child) {
+                        // 限制文字缩放上限，避免堆叠卡片这类固定高度容器在大字体下溢出。
+                        // 下限不压低，用户调大字号的能力不被剥夺（指南 6.3）。
+                        return MediaQuery.withClampedTextScaling(
+                          minScaleFactor: 0.85,
+                          maxScaleFactor: 1.6,
+                          child: child ?? const SizedBox.shrink(),
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -182,26 +215,26 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.allCategories:
         final args = settings.arguments;
         return (context) => AllCategoriesScreen(
-              args: args is CategoryPickArgs
-                  ? args
-                  : const CategoryPickArgs(purpose: CategoryPickPurpose.card),
-            );
+          args: args is CategoryPickArgs
+              ? args
+              : const CategoryPickArgs(purpose: CategoryPickPurpose.card),
+        );
       case AppRoutes.categoryManage:
         return (context) => const CategoryManageScreen();
       case AppRoutes.categoryEditor:
         final args = settings.arguments;
         return (context) => CategoryEditorScreen(
-              args: args is CategoryEditorArgs
-                  ? args
-                  : const CategoryEditorArgs(categoryName: null),
-            );
+          args: args is CategoryEditorArgs
+              ? args
+              : const CategoryEditorArgs(categoryName: null),
+        );
       case AppRoutes.transactionDetail:
         final args = settings.arguments;
         return (context) => TransactionDetailScreen(
-              args: args is TransactionDetailArgs
-                  ? args
-                  : const TransactionDetailArgs(),
-            );
+          args: args is TransactionDetailArgs
+              ? args
+              : const TransactionDetailArgs(),
+        );
       case AppRoutes.splitTransaction:
         return (context) => const SplitScreen();
       case AppRoutes.transactionNature:
@@ -216,17 +249,15 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.breakdown:
         final args = settings.arguments;
         return (context) => BreakdownScreen(
-              args: args is BreakdownArgs ? args : const BreakdownArgs(),
-            );
+          args: args is BreakdownArgs ? args : const BreakdownArgs(),
+        );
       case AppRoutes.trends:
         return (context) => const TrendsScreen();
       case AppRoutes.transactions:
         final args = settings.arguments;
         return (context) => TransactionsScreen(
-              args: args is TransactionsArgs
-                  ? args
-                  : const TransactionsArgs(),
-            );
+          args: args is TransactionsArgs ? args : const TransactionsArgs(),
+        );
       case AppRoutes.share:
         return (context) => const ShareScreen();
       case AppRoutes.months:

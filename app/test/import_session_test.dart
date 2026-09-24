@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
 import 'package:younum/domain/models/import_records.dart';
+import 'package:younum/domain/models/year_month.dart';
 import 'package:younum/domain/repositories/import_workflow.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
@@ -52,6 +53,7 @@ void main() {
   late ImportSession session;
 
   const real = DemoLedgerSeed.realLedgerId;
+  final september = YearMonth(2026, 9);
 
   setUp(() async {
     store = InMemoryLedgerStore();
@@ -369,6 +371,42 @@ void main() {
         hasLength(3),
         reason: '已提交之后 canCommit 为假，再点不该再写一遍',
       );
+    });
+
+    test('撤回前能查到真实影响，且查询本身不改动任何东西', () async {
+      await pickAndSettle();
+      await session.commit();
+      final batchId = session.committed!.batch.id;
+
+      final impact = await session.previewRevert(batchId);
+
+      expect(impact!.deletedCount, 3);
+      expect(impact.sharedTransactionIds, isEmpty);
+      expect(impact.editedTransactionIds, isEmpty);
+      expect(
+        (await repository.dataset(ledgerId: real)).transactions,
+        hasLength(3),
+        reason: '预览必须什么也不改',
+      );
+    });
+
+    test('已经分过类的交易会被预览标成「保留」', () async {
+      await pickAndSettle();
+      await session.commit();
+      final batchId = session.committed!.batch.id;
+      final dataset = await repository.dataset(ledgerId: real);
+      await repository.confirm(
+        ledgerId: real,
+        month: september,
+        transactionId: dataset.transactions.first.id,
+        categoryId: SeedCategoryIds.food,
+      );
+
+      final impact = await session.previewRevert(batchId);
+
+      expect(impact!.deletedCount, 2);
+      expect(impact.editedTransactionIds, hasLength(1));
+      expect(impact.keptCount, 1, reason: '界面上的说明就是拿这三个数字拼出来的');
     });
 
     test('撤回后交易消失，批次留在历史里', () async {
