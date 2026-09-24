@@ -334,14 +334,38 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 * **导出**（PNG / CSV）未接入文件写入，点按后如实提示。
 * 主题页里的预览金额用的是样例数字（仅预览用）。
 
-**阻塞在阶段 3 及以后的功能**
+**阶段 3（导入）已落地的部分**
 
-* 还需要 5 张表：`import_batch`、`import_row`、`transaction_origin`、
-  `category_icon_asset`，以及导入暂存区。
-* 导入状态机（SELECTED → … → COMMITTED）、幂等性、进程恢复未开始。
-* 迁移框架已就绪且有测试，但目前只有 v1，**还没有一步真实迁移**；
-  阶段 4 补 `category_icon_asset` 时会写下第一步 v1 → v2，
-  那时需要补一个「带数据的跨版升级不丢数据」的真机用例。
+| 内容 | 位置 | 验证 |
+| --- | --- | --- |
+| CSV 解析（RFC 4180、分隔符探测、未闭合引号报行号） | `lib/domain/rules/csv_parser.dart` | 单元测试 22 个 |
+| 编码探测（BOM → UTF-8 严格 → GBK 对比） | `lib/domain/rules/text_decoding.dart` | 单元测试 14 个 |
+| 表头识别、字段映射、行标准化、两级去重 | `lib/domain/rules/import_rules.dart` | 单元测试 31 个 |
+| 结构与模型（`ImportStage` 九态、批次、行、来源绑定） | `lib/domain/models/import_records.dart` | 静态检查 + 真机 |
+| v1 → v2 迁移：新增导入三张表 | `lib/data/db/younum_migrations.dart` | **真机验证不丢数据** |
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 单元测试 | `flutter test` | **206 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **24 passed** |
+
+真机上的 v1 → v2 用例是这样做的：先手工造一个只建 v1 结构、版本号写着 1、
+并且**已经存有账单数据**（账本、分类、交易、分配、整理会话、月范围确认）的库，
+再按正常路径打开让升级链跑起来，然后逐项核对老数据是否原封不动 ——
+包括 `dedupe_key`（历史数据里没有它，后续导入就会把旧记录当成新的重复入账）
+与 `coverage_confirmed`（用户确认过的「本月范围完整」）。
+
+**仍然阻塞在阶段 3 后续的功能**
+
+* 平台适配器的完整字段集（当前是通用 CSV）、字段映射界面、导入事务与撤回、
+  幂等性与 `COMMITTING` 崩溃恢复、系统文件选择器（SAF）、界面接线。
+* 还缺 `category_icon_asset` 表（阶段 4 用）。
+* 没有任何真实微信 / 支付宝账单样本，平台适配器只在**仿造导出格式**的
+  测试数据上验过；真文件的兼容性仍需实际样本确认。
+* XLSX 解析库未选型，需先做真机内存与兼容性验证再锁定依赖。
+* Photo Picker、WorkManager、通知权限未接入；
+  SAF 会用 `ActivityResultContracts.OpenDocument` 手写平台通道接入
+  （不引新依赖，避免动现在这套脆弱的 Android 工具链）。
 
 **明确未验证**
 
@@ -385,7 +409,11 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 2. **在月报页补上「确认本月范围完整」的入口**。
    现在只能从整理完成页确认，没有它就看不了环比与分类变化 ——
    这是用户视角下最明显的一个缺口。
-3. **阶段 3：导入**。建 `import_batch` / `import_row` / `transaction_origin`，
-   先做通用 CSV → 字段映射 → 核对 → 提交；没有它，真实账本永远是空的。
+3. **阶段 3：导入（进行中）**。
+   已完成：CSV 解析、编码探测、`import_batch` / `import_row` /
+   `transaction_origin` 三张表与 v1→v2 迁移、表头识别与字段映射、
+   逐行标准化、两级去重判定。
+   还缺：平台适配器的完整字段集、导入事务与撤回、系统文件选择器（SAF）、
+   界面接线。没有这一步，真实账本永远是空的。
 4. **阶段 5 剩余**：导出 PNG / CSV（含防公式注入），导入记录页接真实批次。
 

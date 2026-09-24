@@ -46,12 +46,14 @@ void main() {
   });
 
   /// 直接开一条原始连接，用来执行测试专用的 SQL。
-  Future<Database> openRaw() => databaseFactory.openDatabase(
-        databasePath,
-        options: OpenDatabaseOptions(
-          onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
-        ),
-      );
+  ///
+  /// [path] 缺省用 setUp 建好的那一份；迁移用例需要指向自己造的老库。
+  Future<Database> openRaw([String? path]) => databaseFactory.openDatabase(
+    path ?? databasePath,
+    options: OpenDatabaseOptions(
+      onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+    ),
+  );
 
   /// 统计某个表的行数。
   Future<int> countOf(Database db, String table) async {
@@ -188,7 +190,11 @@ void main() {
       });
       expect(await countOf(db, 'allocation'), 1);
 
-      await db.delete('txn', where: 'id = ?', whereArgs: <Object?>[transactionId]);
+      await db.delete(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[transactionId],
+      );
       expect(await countOf(db, 'allocation'), 0);
     });
   });
@@ -295,10 +301,7 @@ void main() {
         'updated_at_ms': 1,
       };
       await db.insert('review_session', values);
-      await expectLater(
-        db.insert('review_session', values),
-        throwsA(anything),
-      );
+      await expectLater(db.insert('review_session', values), throwsA(anything));
     });
   });
 
@@ -456,8 +459,10 @@ void main() {
       expect(undone, isA<ReviewSucceeded>());
       expect(await countOf(db, 'allocation'), 0);
       expect(await countOf(db, 'review_queue_item'), 6);
-      final action =
-          await db.query('review_action', columns: <String>['undo_state']);
+      final action = await db.query(
+        'review_action',
+        columns: <String>['undo_state'],
+      );
       expect(action.first['undo_state'], 'USED');
     });
 
@@ -503,6 +508,254 @@ void main() {
       final db = await openRaw();
       expect(await countOf(db, 'allocation'), 1, reason: '原分配必须还在');
       expect(await countOf(db, 'refund_link'), 1, reason: '退款关联必须还在');
+    });
+  });
+
+  group('结构迁移', () {
+    test('v1 库升到 v2：既有数据一条不少', () async {
+      // 先手工造一个「老版本」的库：只建 v1 的表，版本号写着 1。
+      //
+      // ⚠️ 必须用**另一个**路径。setUp 里已经按当前版本建好了 databasePath，
+      // 在那儿再按 version: 1 打开会被当成降级直接报错。
+      final legacyPath = '$databasePath.v1';
+      addTearDown(() => databaseFactory.deleteDatabase(legacyPath));
+      final legacy = await databaseFactory.openDatabase(
+        legacyPath,
+        options: OpenDatabaseOptions(
+          version: 1,
+          onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+          onCreate: (db, _) async {
+            for (final statement in younumSchemaV1) {
+              await db.execute(statement);
+            }
+          },
+        ),
+      );
+
+      // 往老库里塞一份「用户存有账单」的状态：账本、分类、交易、分配、
+      // 整理进度、月范围确认都放上，迁移后再逐项核对。
+      await legacy.insert('ledger', <String, Object?>{
+        'id': DemoLedgerSeed.realLedgerId,
+        'name': '我的账本',
+        'is_demo': 0,
+        'created_at_ms': 1000,
+        'currency': 'CNY',
+        'time_zone': 'Asia/Shanghai',
+      });
+      await legacy.insert('category', <String, Object?>{
+        'id': SeedCategoryIds.food,
+        'parent_id': null,
+        'name': '餐饮',
+        'icon_type': 'BUILTIN',
+        'icon_key': 'food',
+        'sort_order': 0,
+        'is_builtin': 1,
+        'archived': 0,
+      });
+      await legacy.insert('txn', <String, Object?>{
+        // 刻意用一个大号码：演示账单占掉了 1..6，
+        // 用 1 的话会被 initialize() 的 OR IGNORE 忽略掉，
+        // 让「数据还在吗」这个断言变得看运气。
+        'id': 9001,
+        'ledger_id': DemoLedgerSeed.realLedgerId,
+        'occurred_at_ms': 5000,
+        'time_zone': 'Asia/Shanghai',
+        'amount_cents': 2800,
+        'merchant': '老王牛肉面',
+        'nature': 'EXPENSE',
+        'review_status': 'RESOLVED',
+        'source_namespace': 'wechat',
+        'source_account': '零钱',
+        'source_transaction_id': '4200001',
+        'dedupe_key': 'wechat\u0000零钱\u00004200001',
+        'currency': 'CNY',
+        'version': 1,
+      });
+      await legacy.insert('allocation', <String, Object?>{
+        'transaction_id': 9001,
+        'category_id': SeedCategoryIds.food,
+        'amount_cents': 2800,
+      });
+      await legacy.insert('review_session', <String, Object?>{
+        'ledger_id': DemoLedgerSeed.realLedgerId,
+        'year': 2026,
+        'month': 9,
+        'sort_mode': 'TIME_DESC',
+        'updated_at_ms': 6000,
+      });
+      await legacy.insert('month_review', <String, Object?>{
+        'ledger_id': DemoLedgerSeed.realLedgerId,
+        'year': 2026,
+        'month': 9,
+        'coverage_confirmed': 1,
+        'confirmed_at_ms': 7000,
+      });
+
+      expect(await countOf(legacy, 'txn'), 1);
+      final versionBefore = await legacy.getVersion();
+      expect(versionBefore, 1, reason: '这一份确实是老版本的库');
+      await legacy.close();
+
+      // 现在按正常路径打开：sqflite 看到版本 1 < 2，走 onUpgrade。
+      final upgraded = SqfliteLedgerStore(databasePath: legacyPath);
+      await upgraded.initialize();
+      addTearDown(upgraded.close);
+
+      final db = await openRaw(legacyPath);
+      expect(await db.getVersion(), younumSchemaVersion);
+
+      // 新表建出来了。
+      expect(await countOf(db, 'import_batch'), 0);
+      expect(await countOf(db, 'import_row'), 0);
+      expect(await countOf(db, 'transaction_origin'), 0);
+
+      // 老数据一条不少。
+      //
+      // 期望是 7 而不是 1：升级后会跑一遍 initialize()，
+      // 把 6 笔演示账单写进演示账本，而真实账本里我们那笔必须原封不动。
+      expect(await countOf(db, 'txn'), 7, reason: '6 笔演示 + 1 笔旧数据');
+      expect(await countOf(db, 'allocation'), 1);
+      expect(await countOf(db, 'month_review'), 1);
+      expect(await countOf(db, 'review_session'), 1);
+
+      // 用户改过的账本不会被种子覆盖（initialize 用的是 OR IGNORE）。
+      final ledgers = await db.query(
+        'ledger',
+        where: 'id = ?',
+        whereArgs: <Object?>[DemoLedgerSeed.realLedgerId],
+      );
+      expect(ledgers.first['name'], '我的账本', reason: '用户改过的名字不能被种子盖掉');
+
+      // 按 id 取，不能 .first —— 演示账单也在同一张表里。
+      final txns = await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[9001],
+      );
+      expect(txns, hasLength(1), reason: '旧数据必须原封不动还在');
+      expect(txns.first['merchant'], '老王牛肉面');
+      expect(txns.first['amount_cents'], 2800);
+      expect(txns.first['review_status'], 'RESOLVED');
+      expect(txns.first['source_transaction_id'], '4200001');
+      expect(
+        txns.first['dedupe_key'],
+        'wechat\u0000零钱\u00004200001',
+        reason: '同源去重键是历史数据的一部分，升级不能让后续导入重复入账',
+      );
+
+      // 分类行数会因为种子变多，所以按内容核对而不是数行数。
+      final categories = await db.query(
+        'category',
+        where: 'id = ?',
+        whereArgs: <Object?>[SeedCategoryIds.food],
+      );
+      expect(categories.first['name'], '餐饮');
+
+      final monthReview = await db.query('month_review');
+      expect(
+        monthReview.first['coverage_confirmed'],
+        1,
+        reason: '「本月范围完整」这个用户确认不能因为升级丢掉',
+      );
+
+      // 升级后业务照旧能跑：数据集里该笔消费还在，分类名也取得出来。
+      final dataset = await upgraded.dataset(
+        ledgerId: DemoLedgerSeed.realLedgerId,
+      );
+      expect(dataset.transactions, hasLength(1));
+      expect(dataset.categoryName(SeedCategoryIds.food), '餐饮');
+      expect(
+        await upgraded.coverageConfirmed(
+          ledgerId: DemoLedgerSeed.realLedgerId,
+          month: YearMonth(2026, 9),
+        ),
+        isTrue,
+      );
+    });
+
+    test('全新安装也是「先建 v1 再跑迁移链」，新表同样存在', () async {
+      // 这条用例看着多余，但它证明的是：上面那条升级用例走到的代码路径，
+      // 与全新安装走的是同一段。否则「升级路径从没被执行过」的坑会一直埋着。
+      final db = await openRaw();
+      expect(await db.getVersion(), younumSchemaVersion);
+      for (final table in <String>[
+        'import_batch',
+        'import_row',
+        'transaction_origin',
+      ]) {
+        final found = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+          <Object?>[table],
+        );
+        expect(found, hasLength(1), reason: '$table 应当存在');
+      }
+    });
+
+    test('来源绑定与批次的外键约束真的生效', () async {
+      final db = await openRaw();
+
+      // 不存在的事务 ID —— 必须被外键拦住，否则来源表会慢慢积累孤儿记录。
+      await expectLater(
+        db.insert('transaction_origin', <String, Object?>{
+          'transaction_id': 999999,
+          'batch_id': 1,
+          'row_number': 1,
+        }),
+        throwsA(isA<DatabaseException>()),
+      );
+
+      // 批次行数不存在于文件里时，阶段值必须落在枚举之内。
+      await expectLater(
+        db.insert('import_batch', <String, Object?>{
+          'ledger_id': DemoLedgerSeed.demoLedgerId,
+          'source_namespace': 'wechat',
+          'file_name': 'x.csv',
+          'file_hash': 'h',
+          'file_size_bytes': 10,
+          'encoding': 'UTF-8',
+          'delimiter': ',',
+          'stage': 'NOT_A_STAGE',
+          'started_at_ms': 1,
+        }),
+        throwsA(isA<DatabaseException>()),
+      );
+    });
+
+    test('同一批次里的同一行不能被绑定两次', () async {
+      final db = await openRaw();
+      await db.insert('import_batch', <String, Object?>{
+        'ledger_id': DemoLedgerSeed.demoLedgerId,
+        'source_namespace': 'wechat',
+        'file_name': '2026-09.csv',
+        'file_hash': 'abc',
+        'file_size_bytes': 10,
+        'encoding': 'UTF-8',
+        'delimiter': ',',
+        'stage': 'COMMITTED',
+        'started_at_ms': 1000,
+      });
+      final batchId = await db.query('import_batch', limit: 1);
+      final id = batchId.first['id']! as int;
+
+      // 直接用种子数据里已有的交易，既不重复列清单一遍，
+      // 也顺带证明演示账本真的落库了。
+      final existing = await db.query('txn', columns: <String>['id'], limit: 1);
+      final txId = existing.first['id']! as int;
+
+      Future<int> bind() => db.insert('transaction_origin', <String, Object?>{
+        'transaction_id': txId,
+        'batch_id': id,
+        'row_number': 8,
+      });
+
+      await bind();
+      await expectLater(
+        bind(),
+        throwsA(isA<DatabaseException>()),
+        reason:
+            '提交过程重试时不能把同一行绑两次，否则引用计数会虚高、'
+            '撤回批次时该删的交易删不掉',
+      );
     });
   });
 }
