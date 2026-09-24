@@ -563,6 +563,21 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<Set<YearMonth>> confirmedMonths({required int ledgerId}) async {
+    final db = await _db;
+    final rows = await db.query(
+      'month_review',
+      columns: <String>['year', 'month'],
+      where: 'ledger_id = ? AND coverage_confirmed = 1',
+      whereArgs: <Object?>[ledgerId],
+    );
+    return <YearMonth>{
+      for (final row in rows)
+        YearMonth(row['year']! as int, row['month']! as int),
+    };
+  }
+
+  @override
   Future<void> setCoverageConfirmed({
     required int ledgerId,
     required YearMonth month,

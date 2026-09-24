@@ -112,6 +112,11 @@ abstract interface class LedgerStore {
     required bool value,
   });
 
+  /// 已确认范围完整的月份。
+  ///
+  /// 趋势与环比需要知道**上个月是不是也完整**，只查当前月份不够。
+  Future<Set<YearMonth>> confirmedMonths({required int ledgerId});
+
   /// 确认归类：在**一个事务**里写入分配、置为已处理、递增版本、
   /// 保存会话顺序、写下可撤销的操作日志。
   ///

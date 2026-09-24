@@ -33,7 +33,7 @@ final class InMemoryLedgerStore implements LedgerStore {
   final List<RefundLink> _refundLinks = <RefundLink>[];
   final List<RefundAllocation> _refundAllocations = <RefundAllocation>[];
   final Map<String, ReviewSessionRecord> _sessions = <String, ReviewSessionRecord>{};
-  final Map<String, bool> _coverage = <String, bool>{};
+  final Map<int, Set<YearMonth>> _coverage = <int, Set<YearMonth>>{};
   final List<UndoRecord> _actions = <UndoRecord>[];
 
   int _nextTransactionId = 1000;
@@ -210,7 +210,11 @@ final class InMemoryLedgerStore implements LedgerStore {
     required int ledgerId,
     required YearMonth month,
   }) async =>
-      _coverage[_sessionKey(ledgerId, month)] ?? false;
+      _coverage[ledgerId]?.contains(month) ?? false;
+
+  @override
+  Future<Set<YearMonth>> confirmedMonths({required int ledgerId}) async =>
+      Set<YearMonth>.unmodifiable(_coverage[ledgerId] ?? const <YearMonth>{});
 
   @override
   Future<void> setCoverageConfirmed({
@@ -219,7 +223,12 @@ final class InMemoryLedgerStore implements LedgerStore {
     required bool value,
   }) async {
     _throwIfFailing();
-    _coverage[_sessionKey(ledgerId, month)] = value;
+    final months = _coverage[ledgerId] ??= <YearMonth>{};
+    if (value) {
+      months.add(month);
+    } else {
+      months.remove(month);
+    }
   }
 
   @override

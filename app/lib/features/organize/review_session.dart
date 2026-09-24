@@ -21,6 +21,7 @@ import '../../domain/models/category.dart';
 import '../../domain/models/ledger_transaction.dart';
 import '../../domain/models/year_month.dart';
 import '../../domain/repositories/ledger_repository.dart';
+import '../../domain/rules/month_insights.dart';
 import '../../domain/rules/month_overview.dart';
 import 'review_card.dart';
 
@@ -32,6 +33,7 @@ class ReviewSession extends ChangeNotifier {
   final LedgerRepository repository;
 
   ReviewSnapshot? _snapshot;
+  MonthReport? _report;
   List<Category> _categories = const <Category>[];
   String? _loadError;
   bool _loading = false;
@@ -64,11 +66,23 @@ class ReviewSession extends ChangeNotifier {
     _isDemo = isDemo;
     _month = null;
     _snapshot = null;
+    _report = null;
     _selectedCategory = null;
     await load();
   }
 
-  /// 加载（必要时创建）整理会话。
+  /// 切换到另一个月份。
+  ///
+  /// 切月后必须读对应月份的数据，不能继续展示上一份固定报告
+  /// （指南第 5 节 months 的验收项）。
+  Future<void> selectMonth(YearMonth month) async {
+    if (_month == month) return;
+    _month = month;
+    _selectedCategory = null;
+    await load();
+  }
+
+  /// 加载（必要时创建）整理会话与当前月份的报告。
   Future<void> load() async {
     _loading = true;
     _loadError = null;
@@ -81,6 +95,11 @@ class ReviewSession extends ChangeNotifier {
       _hasRecords = state.hasRecords;
       _categories = await repository.categories(ledgerId: ledger.id);
       _snapshot = await repository.loadSnapshot(
+        ledgerId: ledger.id,
+        month: _month!,
+      );
+      // 报告与队列用的是同一份数据，因此首页与月报永远给出同一组数字。
+      _report = await repository.monthReport(
         ledgerId: ledger.id,
         month: _month!,
       );
@@ -99,7 +118,25 @@ class ReviewSession extends ChangeNotifier {
   // 读取
   // ---------------------------------------------------------------------------
 
-  MonthOverview? get overview => _snapshot?.overview;
+  /// 当前月份的完整报告：概况、洞察、趋势、有记录的月份、数据集。
+  ///
+  /// 月报 / 趋势 / 明细 / 分享 / 月份页都从这里取数，
+  /// 与首页用的是同一份计算结果。
+  MonthReport? get report => _report;
+
+  /// 当前月份的金额与分类概况。
+  MonthOverview? get overview => _report?.overview;
+
+  /// 当前月份的洞察：日均、单笔最高、最低消费日、环比、分类变化。
+  MonthInsights? get insights => _report?.insights;
+
+  /// 近 N 个月的趋势，按时间升序。
+  List<MonthTrendPoint> get trend =>
+      _report?.trend ?? const <MonthTrendPoint>[];
+
+  /// 有记录的月份，倒序。
+  List<YearMonth> get recordedMonths =>
+      _report?.recordedMonths ?? const <YearMonth>[];
 
   /// 会话是否已经成功加载过。
   ///
@@ -318,6 +355,7 @@ class ReviewSession extends ChangeNotifier {
   /// 不能留下上一份账本的完成数（指南 8.3）。
   Future<void> reset() async {
     _snapshot = null;
+    _report = null;
     _selectedCategory = null;
     _lastFailure = null;
     _month = null;
@@ -357,6 +395,11 @@ class ReviewSession extends ChangeNotifier {
       switch (outcome) {
         case ReviewSucceeded(:final snapshot):
           _snapshot = snapshot;
+          // 金额随之变化，报告也要重算 —— 否则首页与月报会出现两套数字。
+          _report = await repository.monthReport(
+            ledgerId: _ledgerId!,
+            month: _month!,
+          );
           // 每次操作后清空临时选择，下一张默认未选分类。
           _selectedCategory = null;
           return true;

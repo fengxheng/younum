@@ -14,6 +14,7 @@ import '../models/ledger_transaction.dart';
 import '../models/review_session_record.dart';
 import '../models/year_month.dart';
 import '../rules/allocation_rules.dart';
+import '../rules/month_insights.dart';
 import '../rules/month_overview.dart';
 import '../rules/refund_rules.dart';
 import 'ledger_store.dart';
@@ -178,6 +179,31 @@ final class LedgerRepository {
   /// 保留主题偏好与引导状态（指南 8.3）。
   Future<void> clearAllData() async {
     await _store.clearAll();
+  }
+
+  /// 月度报告：概况 + 洞察 + 趋势 + 有记录的月份 + 完整数据集。
+  ///
+  /// 一次把页面需要的东西全算好。取的是**整本账本**的数据集，
+  /// 因为跨月退款、趋势、分类变化都需要目标月份之外的记录。
+  ///
+  /// 首页、月报、趋势、明细、分享、月份页都从这一个对象取数，
+  /// 于是「同一笔交易在所有页面金额一致」是从源头成立的，
+  /// 而不是靠每个页面各自小心。
+  Future<MonthReport> monthReport({
+    required int ledgerId,
+    required YearMonth month,
+    int trendMonths = MonthReports.defaultTrendMonths,
+  }) async {
+    final ledger = await _ledgerById(ledgerId);
+    final dataset = await _store.dataset(ledgerId: ledgerId);
+    final confirmed = await _store.confirmedMonths(ledgerId: ledgerId);
+    return MonthReports.build(
+      month: month,
+      dataset: dataset,
+      isDemoLedger: ledger.isDemo,
+      coverageConfirmed: confirmed,
+      trendMonths: trendMonths,
+    );
   }
 
   Future<LedgerDataset> dataset({
