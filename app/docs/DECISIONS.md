@@ -120,8 +120,8 @@ Compose 尺寸区间改读为 dp/sp、无障碍与主题规则全部沿用。
 
 ## 10. 工程路径必须为纯 ASCII（已迁移）
 
-工程最初位于 `C:\Users\liuxu\OneDrive\桌面\小项目\youshu`，路径含中文与 OneDrive 同步目录，
-触发了三类问题：
+工程最初位于 OneDrive 下的一个中文路径（`…\OneDrive\桌面\小项目\youshu`），
+路径含中文且处于 OneDrive 同步目录内，触发了三类问题：
 
 | 问题 | 实测现象 | 只靠配置能否绕过 |
 | --- | --- | --- |
