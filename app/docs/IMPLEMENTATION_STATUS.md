@@ -365,7 +365,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **538 passed**（含大文件：6 万行解析 + 提交） |
+| 单元测试（包含界面测试） | `flutter test` | **539 passed**（含大文件：6 万行解析 + 提交） |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **42 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
@@ -602,3 +602,4 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   字节在内存里等用户选位置，所以取消后没有临时文件要清理。
 * 界面入口：月报页「保存我的月度回顾」→ 分享与导出页；隐私与数据页
   「导出本月明细 CSV」。文案里不把 CSV 说成「备份」。
+

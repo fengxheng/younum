@@ -86,8 +86,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  group('字号放大', () {
-    testWidgets('默认字号下卡片就是设计高度', (tester) async {
+  group('字号放大', () {    testWidgets('默认字号下卡片就是设计高度', (tester) async {
       await pumpAppAt(tester, 1.0);
       await openTab(tester, '整理');
 
@@ -150,6 +149,28 @@ void main() {
       // 金额那一行溢出会抛异常，能走到这里就说明它装下了。
       expect(error, isNull);
       expect(find.textContaining('¥'), findsWidgets);
+    });
+  });
+
+  group('引导页（三屏）', () {
+    setUp(() async {
+      // 引导页只在**没看过**时出现，所以这里要把它改回去。
+      appStateController = await AppStateController.restore(
+        InMemoryAppStateStore(),
+      );
+    });
+
+    testWidgets('字号 2.0 下三屏逐屏翻过去，不溢出', (tester) async {
+      await pumpAppAt(tester, 2.0);
+      expect(find.text('钱花在哪，\n心里有数。'), findsOneWidget);
+
+      for (var page = 0; page < 2; page++) {
+        await tester.tap(find.text('下一步'));
+        await tester.pumpAndSettle();
+      }
+
+      expect(find.text('开启我的第一份月账单'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }

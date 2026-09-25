@@ -213,7 +213,23 @@ class _OnboardingSlide extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              ExcludeSemantics(child: page.art),
+              // 插画里的字**不随系统字号放大**。
+              //
+              // 这几张票据是装饰，不是内容：它们对读屏已经隐藏
+              // （`ExcludeSemantics`），尺寸、旋转角度与位置都是设计稿定死的
+              // 固定值。文字一放大就只剩「框太小、字太大」——真机字号 200% 下
+              // 两张票据都报 `BOTTOM OVERFLOWED`（101px / 40px，已截图确认）。
+              //
+              // 固定上限取 1.0，也就是插画里的字始终是设计稿那么大。
+              // 试过 1.25（这台机器默认的字号），部件测试里仍然溢出 ——
+              // 票据是 152×172 的小盒子，里面还有虚线分隔与 `Spacer`，
+              // 容不下任何放大；而且不同机器/ROM 的字体度量并不一样，
+              // 留一点余量是不够的。真正的文案（英文小标、标题、正文）
+              // 照旧按用户字号放大，用户的阅读能力不会被这几张图换掉。
+              MediaQuery.withClampedTextScaling(
+                maxScaleFactor: 1.0,
+                child: ExcludeSemantics(child: page.art),
+              ),
               const SizedBox(height: YounumDimens.gapXl),
               Text(
                 page.eyebrow,
@@ -859,3 +875,4 @@ class HomeTabScreen extends StatelessWidget {
     return session.hasAnyRecord ? const HomeScreen() : const EmptyHomeScreen();
   }
 }
+
