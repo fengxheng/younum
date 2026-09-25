@@ -561,7 +561,8 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
    继续有效」，数据层也已经支持（`Category.archived`，选择列表会滤掉归档分类、
    历史记录照旧显示），但设计原型里没有这个入口，所以一直没做 —— 要先确认要不要做、
    放在哪。分类合并同理（指南写明「需显式迁移分配关系」）。
-3. **上架前必须做的**：换成正式签名 keystore、确认 `com.younum.app` 未被占用
+* 换成正式签名 keystore —— **已完成**：`android/key.properties`（不进仓库）+ gradle 里接好，
+  正式包已用 `apksigner` 验过证书（见 `RELEASE.md` 第 4 节）。剩下确认 `com.younum.app` 未被占用。
    （`android/app/build.gradle.kts` 里两处 TODO），见 `docs/RELEASE.md`。
 
 可选：Photo Picker（现在选图片走的是系统文档选择器）；主题页里的预览金额用的是

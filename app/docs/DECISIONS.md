@@ -1323,3 +1323,24 @@ CSV 那边是另一套：
 （这台机器的默认值，正是它会换行的那一档，单测默认的 1.0 反而看不出来）下
 月份与词标必须同一行，且月份按钮的右边缘要与尾部入口的右边缘对齐；
 2.0 下允许换行但不许溢出、不许压到词标上。
+
+## 62. 发布签名：凭据不进仓库，也**不经过对话**
+
+签名接到 `app/android/key.properties`，gradle 从这里读 `keyAlias` / 两个密码 /
+`storeFile`。三条原则：
+
+1. **凭据只在文件里。** 密码不写进代码、不写进提交信息、不贴进聊天 ——
+   需要落盘时由我写脚本从密钥目录读出来写进 `key.properties`，
+   脚本只打印「长度」不打印内容。key.properties 与 keystore 目录都在
+   `.gitignore` 里。
+2. **缺文件不报错。** 没有 `key.properties` 时回退到调试签名并在构建日志里说明，
+   这样别人克隆下来、没有密钥也能 `flutter run --release`。代价是「看起来构建成功」
+   不等于「签的是正式密钥」，所以 `RELEASE.md` 里写了怎么验：
+   `apksigner verify --print-certs`，调试密钥的 DN 是 `CN=Android Debug,O=Android,C=US`。
+3. **换签名等于换应用。** 调试签名的包与正式签名的包不能互相覆盖安装，
+   从调试切到正式必须先卸载（数据一起没）。因此从这一版起日常试用也统一用
+   正式签名的 release 包，`RELEASE.md` 里有命令。
+
+顺带把 `namespace` 上那条「发布前确认包名」的 TODO 收掉了（包名确认属于上架检查，
+`RELEASE.md` 的清单里还留着），`build.gradle.kts` 里原来 Apache 模板留下的
+「Add your own signing config」TODO 也删了 —— 它已经没有意义。
