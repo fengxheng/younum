@@ -88,6 +88,13 @@ void main() {
       expect(ExportRules.csvCell('a\rb'), '"a\rb"');
       expect(ExportRules.csvCell('普通文本'), '普通文本');
     });
+
+    test('时间列用与平台账单一致的写法：横杠加秒', () {
+      // 界面上的 2026.09.23 18:09 拿去对账、再导回来都不方便，
+      // 导出固定用 2026-09-23 18:09:20。
+      expect(ExportRules.timeCell(_at(23, 18, 9)), '2026-09-23 18:09:00');
+      expect(ExportRules.timeCell(_at(1, 0, 0)), '2026-09-01 00:00:00');
+    });
   });
 
   group('明细行', () {
@@ -176,6 +183,7 @@ void main() {
       expect(parsed.$2, isNull, reason: '自己生成的 CSV 必须能被自己的解析器读懂');
       final table = parsed.$1!;
       expect(table.rows, hasLength(2));
+      expect(table.rows[1][0], '2026-09-23 12:00:00', reason: '时间列固定写法');
       expect(table.rows[1][1], "'=cmd|calc");
       expect(table.rows[1][5], '备注里有,逗号和"引号"\n还有换行', reason: '引号与换行原样往返');
       expect(table.rows[1][2], '-1.00');

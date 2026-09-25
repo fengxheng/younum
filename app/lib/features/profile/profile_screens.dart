@@ -18,8 +18,49 @@ import '../../core/time/statistics_time.dart';
 import '../../core/time/younum_clock.dart';
 import '../../domain/models/import_records.dart';
 import '../../domain/models/year_month.dart';
+import '../../domain/repositories/document_saver.dart';
+import '../export/export_files.dart';
+import '../export/export_scope.dart';
 import '../import_flow/import_session.dart';
 import '../organize/review_session.dart';
+
+/// 导出**当前月份**的明细 CSV。
+///
+/// 走系统的「创建文档」流程；取消不提示成功，失败如实说明原因
+/// （指南 8.1）。没有可导出的记录时也不假装存了一个空文件。
+Future<void> _exportCurrentMonth(BuildContext context) async {
+  final session = ReviewSessionScope.of(context);
+  final overview = session.overview;
+  final dataset = session.report?.dataset;
+  if (overview == null || dataset == null) {
+    showYounumToast(context, '还没有可以导出的记录');
+    return;
+  }
+
+  final saver = ExportScope.of(context).documentSaver;
+  if (!await saver.isAvailable()) {
+    if (!context.mounted) return;
+    showYounumToast(context, '这个平台上还不能保存文件');
+    return;
+  }
+
+  final outcome = await saveDetailCsv(
+    saver: saver,
+    dataset: dataset,
+    month: overview.month,
+  );
+  if (!context.mounted) return;
+
+  switch (outcome) {
+    case DocumentSaved(:final name):
+      showYounumToast(context, '已保存：$name');
+    case SaveCanceled():
+      // 取消不是错误，也不是成功。
+      break;
+    case SaveFailed(:final message):
+      showYounumToast(context, message);
+  }
+}
 
 // -----------------------------------------------------------------------------
 // profile —— 我的
@@ -445,10 +486,9 @@ class PrivacyScreen extends StatelessWidget {
           ),
           const SizedBox(height: YounumDimens.gapLg),
           PrimaryAction(
-            label: '导出我的数据',
+            label: '导出本月明细 CSV',
             style: YounumActionStyle.secondary,
-            onPressed: () =>
-                showYounumToast(context, 'CSV 导出将在阶段 5 接入；导出的 CSV 不等同于完整备份'),
+            onPressed: () => _exportCurrentMonth(context),
           ),
           const SizedBox(height: YounumDimens.gap),
           PrimaryAction(
@@ -457,6 +497,7 @@ class PrivacyScreen extends StatelessWidget {
             onPressed: () => context.open(AppRoutes.deleteConfirm),
           ),
           const YounumPillNote('清除与撤回单次导入是两个不同的操作，影响范围也不一样。'),
+          const YounumPillNote('导出的 CSV 是数据导出，不等同于完整备份：它不能用来还原应用。'),
         ],
       ),
     );

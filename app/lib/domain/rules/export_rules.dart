@@ -151,6 +151,17 @@ abstract final class ExportRules {
     return signed < 0 ? '-$text' : text;
   }
 
+  /// 时间列：`2026-09-23 18:09:20`。
+  ///
+  /// 刻意不用界面上那个 `2026.09.23 18:09` 写法：这份文件是要拿去对账、
+  /// 甚至再导回来的，横杠加秒与各平台账单的写法一致，Excel 也直接当时间认。
+  static String timeCell(int occurredAtMs) {
+    final at = StatisticsTime.toLocal(occurredAtMs);
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${at.year}-${two(at.month)}-${two(at.day)} '
+        '${two(at.hour)}:${two(at.minute)}:${two(at.second)}';
+  }
+
   /// 从**真实数据集**里取出某个月的明细。
   ///
   /// 只保留目标月份的交易：导出内容必须和所选月份一致（阶段 5 验收）。
@@ -190,7 +201,7 @@ abstract final class ExportRules {
       ..write(lineEnding);
     for (final row in rows) {
       buffer
-        ..write(csvCell(StatisticsTime.formatFull(row.occurredAtMs)))
+        ..write(csvCell(timeCell(row.occurredAtMs)))
         ..write(',')
         ..write(csvCell(row.merchant))
         ..write(',')

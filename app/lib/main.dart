@@ -8,10 +8,13 @@ import 'data/db/sqflite_ledger_store.dart';
 import 'data/files/app_files_directory.dart';
 import 'data/files/icon_asset_store.dart';
 import 'data/files/icon_image_processor.dart';
+import 'data/files/share_poster_renderer.dart';
+import 'data/files/system_document_saver.dart';
 import 'data/files/system_file_source.dart';
 import 'data/files/system_image_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
 import 'domain/repositories/icon_asset_ports.dart';
+import 'domain/repositories/document_saver.dart';
 import 'domain/repositories/image_file_source.dart';
 import 'domain/repositories/ledger_file_source.dart';
 import 'domain/repositories/ledger_repository.dart';
@@ -82,6 +85,13 @@ Future<void> main() async {
   // 测试里换成假实现就能跑完整的「选图 → 裁切 → 落盘」路径。
   final ImageFileSource imageSource = SystemImageSource();
 
+  // 导出能力。
+  //
+  // 海报用引擎现画（不引图片插件，也不存中间文件）；保存走系统的「创建文档」
+  // 流程，字节直接递给系统，不把应用私有路径抖出去（指南 8.1）。
+  const posterMaker = SharePosterRenderer();
+  final DocumentSaver documentSaver = SystemDocumentSaver();
+
   runApp(
     YounumApp(
       themeController: themeController,
@@ -89,6 +99,8 @@ Future<void> main() async {
       ledgerRepository: repository,
       ledgerFileSource: fileSource,
       imageFileSource: imageSource,
+      posterMaker: posterMaker,
+      documentSaver: documentSaver,
     ),
   );
 }

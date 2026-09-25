@@ -18,11 +18,18 @@ import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/money/money.dart';
 import '../../core/time/statistics_time.dart';
+import '../../domain/models/ledger_dataset.dart';
 import '../../domain/models/ledger_transaction.dart';
 import '../../domain/models/year_month.dart';
+import '../../domain/repositories/document_saver.dart';
+import '../../domain/rules/export_rules.dart';
 import '../../domain/rules/month_insights.dart';
 import '../../domain/rules/month_overview.dart';
 import '../../domain/rules/monthly_stats.dart';
+import '../../domain/rules/share_poster_rules.dart';
+import '../export/export_files.dart';
+import '../export/export_scope.dart';
+import '../export/poster_preview.dart';
 import '../organize/category_registry.dart';
 import '../organize/review_session.dart';
 
@@ -918,8 +925,12 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
 
 /// 分享与导出。
 ///
-/// 隐私开关必须作用于**最终文件**，而不只是屏幕上的遮罩；
-/// 每次进入默认隐藏金额（指南 8.1）。
+/// 指南 8.1 的三条硬要求在这里落地：
+///
+/// * 隐私开关必须作用于**最终文件**，不只是屏幕上的遮罩 —— 所以开关先变成
+///   `SharePosterSpec` 的一部分，再交给渲染器；渲染器拿不到交易，漏不出金额。
+/// * 每次进入默认隐藏金额，不沿用上次公开出去的设置。
+/// * 用户取消保存**不显示成功**；写失败要如实说原因。
 class ShareScreen extends StatefulWidget {
   const ShareScreen({super.key});
 
@@ -931,15 +942,92 @@ class _ShareScreenState extends State<ShareScreen> {
   /// 每次进入默认隐藏金额，避免沿用上次公开设置。
   bool _showAmount = false;
 
+  /// 正在渲染或保存：按钮置灰，避免连点两次弹出两个系统界面。
+  bool _busy = false;
+
+  ExportPrivacy get _privacy => ExportPrivacy(showAmount: _showAmount);
+
+  PosterPalette _paletteOf(BuildContext context) {
+    final colors = YounumColors.of(context);
+    return PosterPalette(
+      background: colors.tintColor,
+      foreground: colors.inkColor,
+      muted: colors.mutedColor,
+    );
+  }
+
+  Future<void> _export({
+    required MonthOverview overview,
+    required LedgerDataset dataset,
+    required ExportScope ports,
+    required bool poster,
+  }) async {
+    if (_busy) return;
+    final saver = ports.documentSaver;
+    // 保存前先确认平台真的有这个能力，避免点了之后才弹一句「不支持」。
+    if (!await saver.isAvailable()) {
+      if (!mounted) return;
+      showYounumToast(context, '这个平台上还不能保存文件');
+      return;
+    }
+    if (!mounted) return;
+
+    // 先算内容再动手：海报的隐私开关在这里就定型了（不在渲染之后补遮罩）。
+    final spec = poster
+        ? SharePosterRules.build(
+            overview: overview,
+            privacy: _privacy,
+            palette: _paletteOf(context),
+          )
+        : null;
+
+    setState(() => _busy = true);
+    final SaveOutcome outcome;
+    try {
+      outcome = poster
+          ? await savePoster(
+              saver: saver,
+              maker: ports.posterMaker,
+              spec: spec!,
+              month: overview.month,
+            )
+          : await saveDetailCsv(
+              saver: saver,
+              dataset: dataset,
+              month: overview.month,
+            );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+
+    switch (outcome) {
+      case DocumentSaved(:final name):
+        showYounumToast(context, '已保存：$name');
+      case SaveCanceled():
+        // 取消不是错误，也不是成功：什么都不说，安静回到原样。
+        break;
+      case SaveFailed(:final message):
+        showYounumToast(context, message);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
-    final colors = YounumColors.of(context);
-    final overview = ReviewSessionScope.of(context).overview;
-    if (overview == null) return const _ReportLoading(title: '保存月度回顾');
+    final session = ReviewSessionScope.of(context);
+    final overview = session.overview;
+    final dataset = session.report?.dataset;
+    if (overview == null || dataset == null) {
+      return const _ReportLoading(title: '保存月度回顾');
+    }
 
-    final month = overview.month;
-    final summary = overview.summary;
+    final ports = ExportScope.of(context);
+    final spec = SharePosterRules.build(
+      overview: overview,
+      privacy: _privacy,
+      palette: _paletteOf(context),
+    );
 
     return YounumScreen(
       title: '保存月度回顾',
@@ -948,101 +1036,49 @@ class _ShareScreenState extends State<ShareScreen> {
         children: <Widget>[
           Text('把这个月，轻轻收好', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gap),
-          Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: colors.tintColor,
-              borderRadius: BorderRadius.circular(YounumDimens.radiusPanel),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: Text(
-                        '∷ 有数',
-                        style: text.listPrimary.copyWith(fontSize: 15),
-                      ),
-                    ),
-                    YounumCaptionText(
-                      '${month.year} / ${month.month.toString().padLeft(2, '0')}',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: YounumDimens.gap),
-                Text(
-                  '把钱花在\n有意义的生活里。',
-                  style: text.screenTitle.copyWith(fontSize: 26),
-                ),
-                const SizedBox(height: YounumDimens.gapSm),
-                YounumMutedText('我的 ${month.month} 月消费手记'),
-                const SizedBox(height: YounumDimens.gap),
-                if (_showAmount)
-                  AmountText(
-                    cents: summary.netExpenseCents,
-                    scale: AmountScale.panel,
-                  )
-                else
-                  // 隐藏时必须真正不渲染数值，而不是画一层遮罩 ——
-                  // 否则导出文件仍会带上金额（指南 8.1）。
-                  Semantics(
-                    label: '金额已隐藏',
-                    excludeSemantics: true,
-                    child: Text(
-                      '¥ ••••',
-                      style: text.amountPanel.copyWith(
-                        letterSpacing: 2,
-                        color: colors.inkColor.withValues(alpha: 0.55),
-                      ),
-                    ),
-                  ),
-                const YounumDivider(),
-                Row(
-                  children: <Widget>[
-                    Expanded(
-                      child: YounumCaptionText(
-                        '${summary.importedExpenseCount} 笔生活记录',
-                      ),
-                    ),
-                    YounumCaptionText(
-                      '${summary.byCategory.length} 种生活用途',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: YounumDimens.gapSm),
-                YounumCaptionText('每一次看见，都是更了解自己的开始。'),
-              ],
-            ),
+          // 预览就是导出文件的内容：同一份 SharePosterSpec、同一份版式。
+          PosterPreview(
+            spec: spec,
+            semanticLabel: _showAmount
+                ? '月度回顾预览，含金额'
+                : '月度回顾预览，金额已隐藏',
           ),
           YounumSwitchRow(
             label: '展示具体金额',
             description: _showAmount
-                ? '导出文件会包含金额数字。'
+                ? '导出的图片会包含金额数字。'
                 : '默认隐藏金额：导出的图片里不会出现金额。',
             value: _showAmount,
             onChanged: (value) => setState(() => _showAmount = value),
           ),
           const YounumPillNote('不展示商户、交易单号和个人身份信息。'),
           PrimaryAction(
-            label: '导出月度回顾',
-            onPressed: () => showYounumToast(
-              context,
-              'PNG 导出将在阶段 5 后续接入：会按当前主题与隐私开关重新生成文件',
-            ),
+            label: _busy ? '正在保存…' : '导出月度回顾',
+            onPressed: _busy
+                ? null
+                : () => _export(
+                    overview: overview,
+                    dataset: dataset,
+                    ports: ports,
+                    poster: true,
+                  ),
           ),
           const SizedBox(height: YounumDimens.gap),
           PrimaryAction(
             label: '导出明细 CSV',
             style: YounumActionStyle.secondary,
-            onPressed: () => showYounumToast(
-              context,
-              'CSV 导出将在阶段 5 后续接入：含防公式注入处理，且不等同于完整备份',
-            ),
+            onPressed: _busy
+                ? null
+                : () => _export(
+                    overview: overview,
+                    dataset: dataset,
+                    ports: ports,
+                    poster: false,
+                  ),
           ),
           const YounumDemoNote(
-            '本页金额已经来自真实查询；隐私开关按规则「每次进入默认隐藏」。'
-            '导出尚未接入文件写入，因此不会产生半成品文件。',
+            '导出走系统的「创建文档」流程，由你选保存位置；取消不会有任何提示，'
+            '失败会说明原因。CSV 是数据导出，不等同于完整备份。',
           ),
         ],
       ),

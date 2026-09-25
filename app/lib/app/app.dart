@@ -4,8 +4,11 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import '../core/preferences/app_state_store.dart';
 import '../core/preferences/theme_controller.dart';
 import '../domain/repositories/image_file_source.dart';
+import '../domain/repositories/document_saver.dart';
 import '../domain/repositories/ledger_file_source.dart';
 import '../domain/repositories/ledger_repository.dart';
+import '../domain/repositories/poster_ports.dart';
+import '../features/export/export_scope.dart';
 import '../features/import_flow/import_screens.dart';
 import '../features/import_flow/import_session.dart';
 import '../features/import_flow/parse_screens.dart';
@@ -39,6 +42,8 @@ class YounumApp extends StatefulWidget {
     required this.ledgerRepository,
     required this.ledgerFileSource,
     this.imageFileSource = const UnsupportedImageSource(),
+    this.posterMaker = const UnsupportedPosterMaker(),
+    this.documentSaver = const UnsupportedDocumentSaver(),
   });
 
   final ThemeController themeController;
@@ -55,6 +60,12 @@ class YounumApp extends StatefulWidget {
 
   /// 选分类图片的能力。桌面与测试环境是不支持实现，入口会显灰。
   final ImageFileSource imageFileSource;
+
+  /// 生成月报海报的能力。桌面与测试环境是不支持实现，导出会如实报错。
+  final PosterMaker posterMaker;
+
+  /// 保存文件的能力。桌面与测试环境是不支持实现，导出会如实报错。
+  final DocumentSaver documentSaver;
 
   @override
   State<YounumApp> createState() => _YounumAppState();
@@ -135,33 +146,37 @@ class _YounumAppState extends State<YounumApp> {
                   session: _import,
                   child: CategoryRegistryScope(
                     registry: _registry,
-                    child: MaterialApp(
-                      title: '有数',
-                      debugShowCheckedModeBanner: false,
-                      // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
-                      theme: widget.themeController.themeData,
-                      themeMode: ThemeMode.light,
-                      locale: const Locale('zh', 'CN'),
-                      supportedLocales: const <Locale>[Locale('zh', 'CN')],
-                      localizationsDelegates:
-                          const <LocalizationsDelegate<Object>>[
-                            GlobalMaterialLocalizations.delegate,
-                            GlobalWidgetsLocalizations.delegate,
-                            GlobalCupertinoLocalizations.delegate,
-                          ],
-                      initialRoute: widget.appStateController.onboardingSeen
-                          ? AppRoutes.root
-                          : AppRoutes.welcome,
-                      onGenerateRoute: _onGenerateRoute,
-                      builder: (context, child) {
-                        // 限制文字缩放上限，避免堆叠卡片这类固定高度容器在大字体下溢出。
-                        // 下限不压低，用户调大字号的能力不被剥夺（指南 6.3）。
-                        return MediaQuery.withClampedTextScaling(
-                          minScaleFactor: 0.85,
-                          maxScaleFactor: 1.6,
-                          child: child ?? const SizedBox.shrink(),
-                        );
-                      },
+                    child: ExportScope(
+                      posterMaker: widget.posterMaker,
+                      documentSaver: widget.documentSaver,
+                      child: MaterialApp(
+                        title: '有数',
+                        debugShowCheckedModeBanner: false,
+                        // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
+                        theme: widget.themeController.themeData,
+                        themeMode: ThemeMode.light,
+                        locale: const Locale('zh', 'CN'),
+                        supportedLocales: const <Locale>[Locale('zh', 'CN')],
+                        localizationsDelegates:
+                            const <LocalizationsDelegate<Object>>[
+                              GlobalMaterialLocalizations.delegate,
+                              GlobalWidgetsLocalizations.delegate,
+                              GlobalCupertinoLocalizations.delegate,
+                            ],
+                        initialRoute: widget.appStateController.onboardingSeen
+                            ? AppRoutes.root
+                            : AppRoutes.welcome,
+                        onGenerateRoute: _onGenerateRoute,
+                        builder: (context, child) {
+                          // 限制文字缩放上限，避免堆叠卡片这类固定高度容器在大字体下溢出。
+                          // 下限不压低，用户调大字号的能力不被剥夺（指南 6.3）。
+                          return MediaQuery.withClampedTextScaling(
+                            minScaleFactor: 0.85,
+                            maxScaleFactor: 1.6,
+                            child: child ?? const SizedBox.shrink(),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
@@ -254,7 +269,9 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.transactionNature:
         final natureArgs = settings.arguments;
         return (context) => TransactionNatureScreen(
-          transactionId: natureArgs is NatureArgs ? natureArgs.transactionId : 0,
+          transactionId: natureArgs is NatureArgs
+              ? natureArgs.transactionId
+              : 0,
         );
       case AppRoutes.pendingQueue:
         return (context) => const PendingQueueScreen();
