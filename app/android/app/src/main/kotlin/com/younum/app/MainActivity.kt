@@ -196,7 +196,8 @@ class MainActivity : FlutterActivity() {
             when (uri) {
                 // 用户取消：这不是错误，回 null 让界面安静回到原样。
                 null -> pending.result.success(null)
-                else -> writeInto(pending, uri, data.type)
+                // data 仍然是可空的：uri 非空不代表整个 Intent 非空。
+                else -> writeInto(pending, uri, data?.type)
             }
             return
         }
