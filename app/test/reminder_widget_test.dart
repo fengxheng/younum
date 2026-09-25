@@ -12,6 +12,7 @@ import 'package:younum/data/memory/in_memory_ledger_store.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
 import 'package:younum/domain/repositories/reminder_scheduler.dart';
+import 'package:younum/features/organize/cards_screen.dart';
 
 /// 提醒设置页。
 ///
@@ -28,6 +29,10 @@ final class _FakeScheduler implements ReminderScheduler {
   bool available;
   bool permissionGranted;
   bool notificationsEnabled;
+
+  /// 模拟「这次启动是点通知进来的」。取走即清，和原生侧一致。
+  String? launchRoute;
+
   final List<DateTime> scheduled = <DateTime>[];
   int cancelCount = 0;
 
@@ -58,6 +63,13 @@ final class _FakeScheduler implements ReminderScheduler {
   Future<void> cancel() async {
     cancelCount++;
     scheduled.clear();
+  }
+
+  @override
+  Future<String?> consumeLaunchRoute() async {
+    final route = launchRoute;
+    launchRoute = null;
+    return route;
   }
 }
 
@@ -184,7 +196,43 @@ void main() {
 
     expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
     expect(find.text('每月 15 日'), findsWidgets);
-    expect(find.text('09:00'), findsWidgets);
+    expect(find.text('9 点'), findsWidgets);
+    expect(find.text('0 分'), findsWidgets);
     expect(find.textContaining('下次提醒约在'), findsOneWidget);
+  });
+
+  group('点通知进应用', () {
+    Future<void> bootWithRoute(WidgetTester tester, String? route) async {
+      final scheduler = _FakeScheduler()..launchRoute = route;
+      await tester.pumpWidget(
+        YounumApp(
+          themeController: themeController,
+          appStateController: appStateController,
+          ledgerRepository: repository,
+          ledgerFileSource: const UnsupportedFileSource(),
+          reminderStore: reminderStore,
+          reminderScheduler: scheduler,
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('带上整理页的路由：启动后直接落在卡片整理', (tester) async {
+      await bootWithRoute(tester, '/organize/cards');
+
+      expect(find.byType(CardsScreen), findsOneWidget);
+    });
+
+    testWidgets('路由不在白名单里：什么都不跳', (tester) async {
+      await bootWithRoute(tester, '/somewhere/else');
+
+      expect(find.byType(CardsScreen), findsNothing);
+    });
+
+    testWidgets('没有路由（普通启动）：不会多跳一页', (tester) async {
+      await bootWithRoute(tester, null);
+
+      expect(find.byType(CardsScreen), findsNothing);
+    });
   });
 }

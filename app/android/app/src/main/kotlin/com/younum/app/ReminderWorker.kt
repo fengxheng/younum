@@ -83,6 +83,9 @@ class ReminderWorker(context: Context, params: WorkerParameters) : Worker(contex
 
         val intent = Intent(applicationContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            // 点通知要**直接落到整理页**：用户点它就是因为有事要整理，
+            // 再让他自己找一遍没有意义。路由字符串由 Dart 侧白名单过滤。
+            putExtra(EXTRA_ROUTE, ROUTE_ORGANIZE)
         }
         val pending = PendingIntent.getActivity(
             applicationContext,
@@ -129,6 +132,12 @@ class ReminderWorker(context: Context, params: WorkerParameters) : Worker(contex
         private const val KEY_LAST_NOTIFIED = "lastNotifiedMonth"
         private const val NOTIFICATION_ID = 0x594E
         private const val REQUEST_OPEN = 0x594E
+
+        /** 通知里带的路由提示，与 MainActivity 共用一套名字。 */
+        const val EXTRA_ROUTE = "younum.route"
+
+        /** 点通知后要去的页面：卡片整理。 */
+        const val ROUTE_ORGANIZE = "/organize/cards"
 
         /** 提醒时间按账目那套时区口径解读（指南 3.1 / 8.2）。 */
         const val ZONE = "Asia/Shanghai"

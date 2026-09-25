@@ -58,6 +58,33 @@ final class SystemDocumentSaver implements DocumentSaver {
       return DocumentSaved(
         name: (saved['name'] as String?) ?? fileName,
         uri: saved['uri'] as String?,
+        destination: saved['gallery'] == true
+            ? SaveDestination.gallery
+            : SaveDestination.document,
+      );
+    } on MissingPluginException {
+      return const SaveFailed('这个平台上还不能保存文件');
+    } on PlatformException catch (error) {
+      return _failureOf(error);
+    }
+  }
+
+  @override
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    if (bytes.isEmpty) return const SaveFailed('没有可保存的内容');
+    try {
+      final saved = await _channel.invokeMapMethod<String, Object?>(
+        'saveImageToGallery',
+        <String, Object?>{'fileName': fileName, 'bytes': bytes},
+      );
+      if (saved == null) return const SaveFailed('存相册时没有拿到结果');
+      return DocumentSaved(
+        name: (saved['name'] as String?) ?? fileName,
+        uri: saved['uri'] as String?,
+        destination: SaveDestination.gallery,
       );
     } on MissingPluginException {
       return const SaveFailed('这个平台上还不能保存文件');
@@ -71,6 +98,7 @@ final class SystemDocumentSaver implements DocumentSaver {
     final detail = error.message ?? '';
     return switch (error.code) {
       'unwritable' => SaveFailed(detail.isEmpty ? '写不进去这个位置，请换一个位置' : detail),
+      'forbidden' => SaveFailed(detail.isEmpty ? '没有权限保存到这个位置' : detail),
       'too_large' => SaveFailed(detail.isEmpty ? '导出文件太大了，暂时保存不了' : detail),
       'unavailable' => SaveFailed(detail.isEmpty ? '这台设备上没有可用的文件保存界面' : detail),
       'busy' => const SaveFailed('正在保存上一个文件，请稍候'),

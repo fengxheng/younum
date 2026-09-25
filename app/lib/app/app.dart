@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -82,8 +84,11 @@ class YounumApp extends StatefulWidget {
   State<YounumApp> createState() => _YounumAppState();
 }
 
-class _YounumAppState extends State<YounumApp> {
+class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
   final TabSelection _tabs = TabSelection();
+
+  /// 通知点进来时要跳页，必须能拿到 Navigator。
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   late final ReviewSession _review = ReviewSession(
     repository: widget.ledgerRepository,
   );
@@ -113,6 +118,40 @@ class _YounumAppState extends State<YounumApp> {
     );
     // 提醒设置与平台状态也启动就读：设置页必须显示**实际**状态。
     _reminder.load();
+    // 点通知进来时要落到整理页（指南 8.2：通知跳转到需要整理的月份）。
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingRoute());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 应用已经在后台时点通知，走的是 onNewIntent + 回到前台，两条路都要接。
+    if (state != AppLifecycleState.resumed) return;
+    _openPendingRoute();
+    // onNewIntent 有时比 resume 晚到一步（真机上碰到过），再问一次就不会漏。
+    // 路由取走即清，所以重复问不会多跳一页。
+    Timer(const Duration(milliseconds: 500), _openPendingRoute);
+  }
+
+  /// 取走通知带的路由并跳页。
+  ///
+  /// ⚠️ 只认白名单里的路由：平台通道给什么就跳什么太危险，
+  /// 而且路由名本来就是应用内部约定，不该让外部决定。
+  Future<void> _openPendingRoute() async {
+    final String? route;
+    try {
+      route = await widget.reminderScheduler.consumeLaunchRoute();
+    } catch (_) {
+      return;
+    }
+    if (route == null || !mounted) return;
+
+    final target = switch (route) {
+      '/organize/cards' => AppRoutes.cards,
+      _ => null,
+    };
+    if (target == null) return;
+    _navigatorKey.currentState?.pushNamed(target);
   }
 
   /// 进入 / 退出演示账本时整体重载会话。
@@ -135,6 +174,7 @@ class _YounumAppState extends State<YounumApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.appStateController.removeListener(_syncLedgerMode);
     _tabs.dispose();
     _review.dispose();
@@ -168,6 +208,7 @@ class _YounumAppState extends State<YounumApp> {
                       posterMaker: widget.posterMaker,
                       documentSaver: widget.documentSaver,
                       child: MaterialApp(
+                        navigatorKey: _navigatorKey,
                         title: '有数',
                         debugShowCheckedModeBanner: false,
                         // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。

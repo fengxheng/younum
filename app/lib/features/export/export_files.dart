@@ -49,10 +49,13 @@ Future<SaveOutcome> saveDetailCsv({
   bytes: detailCsvBytes(dataset: dataset, month: month),
 );
 
-/// 保存月报海报。
+/// 保存月报海报：**直接进相册**。
 ///
 /// [spec] 决定了文件里有什么 —— 隐私开关必须已经体现在这份清单里
 /// （见 `DECISIONS.md` 第 55 节）：渲染器拿不到交易，也就漏不出金额。
+///
+/// 存相册而不是让用户选位置：这是拿来分享的图片，多一跳没有意义
+/// （CSV 那种数据文件才需要自己选位置）。
 Future<SaveOutcome> savePoster({
   required DocumentSaver saver,
   required PosterMaker maker,
@@ -61,9 +64,8 @@ Future<SaveOutcome> savePoster({
 }) async {
   final rendered = await maker.render(spec);
   return switch (rendered) {
-    PosterRendered(:final bytes) => saver.save(
+    PosterRendered(:final bytes) => saver.saveImageToGallery(
       fileName: posterFileName(month),
-      mimeType: 'image/png',
       bytes: bytes,
     ),
     PosterRenderFailed(:final message) => SaveFailed(message),

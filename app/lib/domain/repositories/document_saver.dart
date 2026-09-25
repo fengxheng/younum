@@ -10,7 +10,7 @@ library;
 
 import 'dart:typed_data';
 
-/// 系统「创建文档」流程。
+/// 系统「创建文档」流程与相册。
 abstract interface class DocumentSaver {
   /// 这个平台有没有可用的保存界面。没有就如实把按钮置灰，不做假成功。
   Future<bool> isAvailable();
@@ -21,6 +21,24 @@ abstract interface class DocumentSaver {
     required String mimeType,
     required Uint8List bytes,
   });
+
+  /// 把图片直接存进**相册**（`Pictures/有数`）。
+  ///
+  /// 与 [save] 的分工：月报回顾是拿来分享的图片，让用户再跳一次「保存到哪儿」
+  /// 没有意义；CSV 这种数据文件才需要自己选位置。
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
+    required Uint8List bytes,
+  });
+}
+
+/// 保存到哪儿了。界面文案要靠它说清楚，不能一律说「已保存」。
+enum SaveDestination {
+  /// 用户自己选的位置（系统「创建文档」流程）。
+  document,
+
+  /// 相册。
+  gallery,
 }
 
 /// 保存结果。
@@ -30,7 +48,11 @@ sealed class SaveOutcome {
 
 /// 保存成功。
 final class DocumentSaved extends SaveOutcome {
-  const DocumentSaved({required this.name, this.uri});
+  const DocumentSaved({
+    required this.name,
+    this.uri,
+    this.destination = SaveDestination.document,
+  });
 
   /// 用户最终用的文件名（可能被改过）。
   final String name;
@@ -38,8 +60,11 @@ final class DocumentSaved extends SaveOutcome {
   /// 系统给的 `content://` URI，仅用于记录，不展示给用户。
   final String? uri;
 
+  /// 存到哪儿了。
+  final SaveDestination destination;
+
   @override
-  String toString() => 'DocumentSaved($name)';
+  String toString() => 'DocumentSaved($name, ${destination.name})';
 }
 
 /// 用户取消。不是错误。
@@ -68,6 +93,12 @@ final class UnsupportedDocumentSaver implements DocumentSaver {
   Future<SaveOutcome> save({
     required String fileName,
     required String mimeType,
+    required Uint8List bytes,
+  }) async => const SaveFailed('这个平台上还不能保存文件');
+
+  @override
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
     required Uint8List bytes,
   }) async => const SaveFailed('这个平台上还不能保存文件');
 }

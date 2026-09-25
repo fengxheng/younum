@@ -523,7 +523,7 @@ class ReminderScreen extends StatelessWidget {
 
   final ReminderController controller;
 
-  /// 可选的小时。整点：账单提醒不需要挑到分钟。
+  /// 可选的小时（6 点到 23 点）。
   static const List<int> hourOptions = <int>[
     6,
     7,
@@ -544,6 +544,12 @@ class ReminderScreen extends StatelessWidget {
     22,
     23,
   ];
+
+  /// 分钟：0 到 59 全给。
+  ///
+  /// 只给整点会很难用（想设 20:30 就设不了），也不好验证 ——
+  /// 想确认一次通知真能发出来，得等到下一个整点。
+  static List<int> get minuteOptions => List<int>.generate(60, (index) => index);
 
   @override
   Widget build(BuildContext context) {
@@ -590,16 +596,27 @@ class ReminderScreen extends StatelessWidget {
                         onSelected: controller.setDay,
                       ),
                       const SizedBox(height: YounumDimens.gap),
-                      const YounumFieldLabel('提醒时间'),
+                      const YounumFieldLabel('提醒时间 · 小时'),
                       YounumSelectField<int>(
                         options: hourOptions,
-                        labelBuilder: (hour) =>
-                            '${hour.toString().padLeft(2, '0')}:00',
+                        labelBuilder: (hour) => '$hour 点',
                         selected: settings.hour,
-                        semanticLabel: '提醒时间',
+                        semanticLabel: '提醒小时',
                         onSelected: (hour) => controller.setTime(
                           hour: hour,
                           minute: settings.minute,
+                        ),
+                      ),
+                      const SizedBox(height: YounumDimens.gap),
+                      const YounumFieldLabel('提醒时间 · 分钟'),
+                      YounumSelectField<int>(
+                        options: minuteOptions,
+                        labelBuilder: (minute) => '$minute 分',
+                        selected: settings.minute,
+                        semanticLabel: '提醒分钟',
+                        onSelected: (minute) => controller.setTime(
+                          hour: settings.hour,
+                          minute: minute,
                         ),
                       ),
                       const SizedBox(height: YounumDimens.gap),

@@ -12,6 +12,14 @@ import 'package:flutter/material.dart';
 
 import '../../domain/rules/share_poster_rules.dart';
 
+/// 一段文字排版时该用的最小宽度。
+///
+/// 右对齐必须让段落**撑满**可用宽度，否则段落会缩到文字自身的宽度，
+/// 对齐无从谈起（真机上表现为「有数」和月份叠在一起）。
+/// 左对齐则给 0 就行。
+double textBoxMinWidth(PosterTextPlacement placement, double maxWidth) =>
+    placement.align == TextAlign.right ? maxWidth : 0;
+
 /// 按设计尺寸等比缩放显示海报。
 class PosterPreview extends StatelessWidget {
   const PosterPreview({super.key, required this.spec, this.semanticLabel});
@@ -57,20 +65,30 @@ class _PosterPainter extends CustomPainter {
     final maxWidth = SharePosterLayout.maxWidthOf(spec);
     for (final placement in SharePosterLayout.placementsOf(spec)) {
       if (placement.text.isEmpty) continue;
-      final painter = TextPainter(
-        text: TextSpan(
-          text: placement.text,
-          style: TextStyle(
-            color: SharePosterLayout.colorOf(spec, placement.role),
-            fontSize: placement.size,
-            fontWeight: placement.weight,
-          ),
-        ),
-        textAlign: placement.align,
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout(maxWidth: maxWidth);
-      painter.paint(canvas, Offset(placement.x, placement.bottom - painter.height));
+      final painter =
+          TextPainter(
+            text: TextSpan(
+              text: placement.text,
+              style: TextStyle(
+                color: SharePosterLayout.colorOf(spec, placement.role),
+                fontSize: placement.size,
+                fontWeight: placement.weight,
+              ),
+            ),
+            textAlign: placement.align,
+            textDirection: TextDirection.ltr,
+            maxLines: 1,
+          )..layout(
+            // ⚠️ minWidth 必须跟着给：只给 maxWidth 的话，段落宽度会缩到**文字自身**
+            // 的宽度，TextAlign.right 就没有可对齐的空间了 —— 右对齐失效，
+            // 月份与品牌字样会叠在一起（这条真在真机上出现过）。
+            minWidth: textBoxMinWidth(placement, maxWidth),
+            maxWidth: maxWidth,
+          );
+      painter.paint(
+        canvas,
+        Offset(placement.x, placement.bottom - painter.height),
+      );
     }
 
     canvas.drawRect(

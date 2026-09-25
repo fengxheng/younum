@@ -96,4 +96,16 @@ final class SystemReminderScheduler implements ReminderScheduler {
       // 取消失败不影响用户手上的数据，不值得打断他；状态页会如实显示。
     }
   }
+
+  @override
+  Future<String?> consumeLaunchRoute() async {
+    try {
+      final route = await _channel.invokeMethod<String>('consumeLaunchRoute');
+      return (route == null || route.isEmpty) ? null : route;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
 }

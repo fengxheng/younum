@@ -1002,8 +1002,11 @@ class _ShareScreenState extends State<ShareScreen> {
     if (!mounted) return;
 
     switch (outcome) {
-      case DocumentSaved(:final name):
-        showYounumToast(context, '已保存：$name');
+      case DocumentSaved(:final name, :final destination):
+        showYounumToast(
+          context,
+          destination == SaveDestination.gallery ? '已存到相册：$name' : '已保存：$name',
+        );
       case SaveCanceled():
         // 取消不是错误，也不是成功：什么都不说，安静回到原样。
         break;
@@ -1077,8 +1080,9 @@ class _ShareScreenState extends State<ShareScreen> {
                   ),
           ),
           const YounumDemoNote(
-            '导出走系统的「创建文档」流程，由你选保存位置；取消不会有任何提示，'
-            '失败会说明原因。CSV 是数据导出，不等同于完整备份。',
+            '月度回顾直接存进相册（Pictures/有数），不用选位置；'
+            '明细 CSV 走系统的「创建文档」流程，由你选保存位置。'
+            '取消不会有任何提示，失败会说明原因。CSV 是数据导出，不等同于完整备份。',
           ),
         ],
       ),

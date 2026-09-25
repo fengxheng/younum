@@ -62,6 +62,9 @@ final class _FakeScheduler implements ReminderScheduler {
     cancelCount++;
     scheduled.clear();
   }
+
+  @override
+  Future<String?> consumeLaunchRoute() async => null;
 }
 
 void main() {

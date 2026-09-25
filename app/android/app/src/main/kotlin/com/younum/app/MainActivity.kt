@@ -2,10 +2,14 @@ package com.younum.app
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
@@ -15,6 +19,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
 
@@ -61,8 +66,14 @@ class MainActivity : FlutterActivity() {
         /** 申请通知权限用的请求码（同上的理由，单独一个）。 */
         private const val REQUEST_NOTIFICATION_PERMISSION = 0x5950
 
+        /** 旧系统（Android 9 及以下）写相册要的存储权限。 */
+        private const val REQUEST_GALLERY_PERMISSION = 0x5951
+
         /** 每月提醒的通道名。与文件通道分开：两件事互不相干。 */
         private const val REMINDER_CHANNEL = "com.younum.app/reminder"
+
+        /** 存到相册时的子目录：Pictures/有数。 */
+        private const val GALLERY_FOLDER = "有数"
     }
 
     /** 同一时刻只允许一个选择请求。 */
@@ -85,11 +96,31 @@ class MainActivity : FlutterActivity() {
     /** 等通知权限结果的请求。 */
     private var pendingPermission: MethodChannel.Result? = null
 
+    /** 等存储权限、拿到就写相册的请求（仅旧系统用得上）。 */
+    private var pendingGallerySave: PendingGallerySave? = null
+
+    /**
+     * 通知带过来的路由提示。
+     *
+     * 冷启动从 [configureFlutterEngine] 里的 intent 取，热启动（应用已经在跑）
+     * 从 [onNewIntent] 取 —— 两条路都要照顾到，否则「点通知没反应」会时有时无。
+     */
+    private var pendingRoute: String? = null
+
+    private class PendingGallerySave(
+        val result: MethodChannel.Result,
+        val bytes: ByteArray,
+        val name: String,
+    )
+
     /** 文件读写一律在这个线程上做，不占 UI 线程。 */
     private val fileExecutor = Executors.newSingleThreadExecutor()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // 冷启动：如果这次启动是点通知进来的，先把路由记下来等价 Dart 来取。
+        pendingRoute = intent?.getStringExtra(ReminderWorker.EXTRA_ROUTE)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -102,6 +133,14 @@ class MainActivity : FlutterActivity() {
                         result,
                         call.argument<String>("fileName"),
                         call.argument<String>("mimeType"),
+                        call.argument<ByteArray>("bytes"),
+                    )
+
+                    // 图片直接进相册：月报回顾是拿来分享的图，让用户再跳一次
+                    // 系统「保存到哪儿」没有意义，直接放进 Pictures/有数。
+                    "saveImageToGallery" -> handleSaveImageToGallery(
+                        result,
+                        call.argument<String>("fileName"),
                         call.argument<ByteArray>("bytes"),
                     )
 
@@ -182,9 +221,25 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
 
+                    // Dart 侧在启动与回到前台时各问一次；取走即清，
+                    // 免得到前台一次就多跳一次页面。
+                    "consumeLaunchRoute" -> {
+                        val route = pendingRoute
+                        pendingRoute = null
+                        result.success(route)
+                    }
+
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /** 应用已经在跑时点通知：路由从新的 intent 里取。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val route = intent.getStringExtra(ReminderWorker.EXTRA_ROUTE)
+        if (!route.isNullOrBlank()) pendingRoute = route
     }
 
     private fun handleReminderStatus(result: MethodChannel.Result) {
@@ -262,6 +317,19 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         if (requestCode != REQUEST_NOTIFICATION_PERMISSION) {
+            if (requestCode == REQUEST_GALLERY_PERMISSION) {
+                val pending = pendingGallerySave
+                pendingGallerySave = null
+                val granted = grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+                if (pending == null) return
+                if (granted) {
+                    writeImageToGallery(pending)
+                } else {
+                    pending.result.error("forbidden", "没有存储权限，存不进相册", null)
+                }
+                return
+            }
             super.onRequestPermissionsResult(requestCode, permissions, grantResults)
             return
         }
@@ -549,6 +617,135 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * 把图片写进相册。
+     *
+     * Android 10 起用 MediaStore 直接写 `Pictures/有数`，**不需要任何权限**，
+     * 写进前先标 `IS_PENDING`，写完再清 —— 这样相册不会扫到半张图。
+     * Android 9 及以下没有分区存储，只能写公开目录，需要存储权限，
+     * 所以先要权限、拿到再写，并用 MediaScanner 让它出现在相册里。
+     */
+    private fun handleSaveImageToGallery(
+        result: MethodChannel.Result,
+        fileName: String?,
+        bytes: ByteArray?,
+    ) {
+        if (fileName.isNullOrBlank()) {
+            result.error("bad_arguments", "缺少文件名", null)
+            return
+        }
+        if (bytes == null || bytes.isEmpty()) {
+            result.error("bad_arguments", "没有可保存的内容", null)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            writeImageToGallery(PendingGallerySave(result, bytes, fileName))
+            return
+        }
+
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            writeImageToGallery(PendingGallerySave(result, bytes, fileName))
+            return
+        }
+        if (pendingGallerySave != null) {
+            result.error("busy", "已经有一个保存操作在进行中", null)
+            return
+        }
+        pendingGallerySave = PendingGallerySave(result, bytes, fileName)
+        requestPermissions(
+            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+            REQUEST_GALLERY_PERMISSION,
+        )
+    }
+
+    private fun writeImageToGallery(pending: PendingGallerySave) {
+        fileExecutor.execute {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, pending.name)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/" + GALLERY_FOLDER,
+                        )
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        values,
+                    ) ?: throw IOException("相册不接受这个文件")
+
+                    contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(pending.bytes)
+                        stream.flush()
+                    } ?: throw IOException("写不进相册")
+
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+
+                    runOnUiThread {
+                        pending.result.success(
+                            mapOf(
+                                "uri" to uri.toString(),
+                                "name" to pending.name,
+                                "gallery" to true,
+                            ),
+                        )
+                    }
+                    return@execute
+                }
+
+                // Android 9 及以下：写公开目录再通知相册扫描。
+                val folder = File(
+                    Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_PICTURES,
+                    ),
+                    GALLERY_FOLDER,
+                )
+                if (!folder.exists() && !folder.mkdirs()) {
+                    throw IOException("建不了相册目录")
+                }
+                val target = File(folder, pending.name)
+                target.writeBytes(pending.bytes)
+
+                MediaScannerConnection.scanFile(
+                    this,
+                    arrayOf(target.absolutePath),
+                    arrayOf("image/png"),
+                    null,
+                )
+
+                runOnUiThread {
+                    pending.result.success(
+                        mapOf(
+                            "uri" to Uri.fromFile(target).toString(),
+                            "name" to pending.name,
+                            "gallery" to true,
+                        ),
+                    )
+                }
+            } catch (error: SecurityException) {
+                runOnUiThread {
+                    pending.result.error("forbidden", "没有存储权限，存不进相册", null)
+                }
+            } catch (error: IOException) {
+                runOnUiThread {
+                    pending.result.error("unwritable", "存相册失败：${error.message}", null)
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "存相册失败", error)
+                runOnUiThread {
+                    pending.result.error("unwritable", error.message ?: "存相册失败", null)
+                }
+            }
+        }
+    }
+
+    /**
      * 判断系统里有没有能响应「创建文档」的界面（理由同 [pickerAvailable]）。
      */
     private fun saverAvailable(): Boolean = try {
@@ -592,6 +789,8 @@ class MainActivity : FlutterActivity() {
         pendingSave = null
         pendingPermission?.error("detached", "界面已经关闭", null)
         pendingPermission = null
+        pendingGallerySave?.result?.error("detached", "界面已经关闭", null)
+        pendingGallerySave = null
         fileExecutor.shutdown()
         super.onDestroy()
     }

@@ -25,6 +25,10 @@ final class FakeSaver implements DocumentSaver {
   final List<({String fileName, String mimeType, Uint8List bytes})> calls =
       <({String fileName, String mimeType, Uint8List bytes})>[];
 
+  /// 走「存相册」的记录（海报走的就是这条）。
+  final List<({String fileName, Uint8List bytes})> galleryCalls =
+      <({String fileName, Uint8List bytes})>[];
+
   @override
   Future<bool> isAvailable() async => available;
 
@@ -35,6 +39,15 @@ final class FakeSaver implements DocumentSaver {
     required Uint8List bytes,
   }) async {
     calls.add((fileName: fileName, mimeType: mimeType, bytes: bytes));
+    return outcome;
+  }
+
+  @override
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    galleryCalls.add((fileName: fileName, bytes: bytes));
     return outcome;
   }
 }
@@ -146,9 +159,12 @@ void main() {
     expect(saver.calls.single.fileName, '有数_2026-09_明细.csv');
   });
 
-  test('保存海报：先渲染再保存，用的是传进来的那份清单', () async {
+  test('保存海报：先渲染再保存，走的是相册而不是让用户选位置', () async {
     final saver = FakeSaver(
-      outcome: const DocumentSaved(name: '有数_2026-09_月度回顾.png'),
+      outcome: const DocumentSaved(
+        name: '有数_2026-09_月度回顾.png',
+        destination: SaveDestination.gallery,
+      ),
     );
     final maker = FakeMaker();
 
@@ -162,9 +178,15 @@ void main() {
     expect(outcome, isA<DocumentSaved>());
     expect(maker.specs, hasLength(1));
     expect(maker.specs.single.showsAmount, isFalse);
-    expect(saver.calls.single.mimeType, 'image/png');
-    expect(saver.calls.single.fileName, '有数_2026-09_月度回顾.png');
-    expect(saver.calls.single.bytes, <int>[1, 2, 3]);
+    expect(saver.calls, isEmpty, reason: '海报不该走「创建文档」流程');
+    expect(saver.galleryCalls, hasLength(1));
+    expect(saver.galleryCalls.single.fileName, '有数_2026-09_月度回顾.png');
+    expect(saver.galleryCalls.single.bytes, <int>[1, 2, 3]);
+    expect(
+      (outcome as DocumentSaved).destination,
+      SaveDestination.gallery,
+      reason: '界面文案靠它区分「已存到相册」与「已保存」',
+    );
   });
 
   test('渲染失败时不落盘，并且把原因原样带出来', () async {
@@ -180,7 +202,8 @@ void main() {
 
     expect(outcome, isA<SaveFailed>());
     expect((outcome as SaveFailed).message, contains('出了点问题'));
-    expect(saver.calls, isEmpty, reason: '画不出来就不该产生文件');
+    expect(saver.galleryCalls, isEmpty, reason: '画不出来就不该产生文件');
+    expect(saver.calls, isEmpty);
   });
 
   test('取消与失败原样传回去，不会被改写成成功', () async {

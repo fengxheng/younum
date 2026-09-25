@@ -44,6 +44,10 @@ final class _RecordingSaver implements DocumentSaver {
   final List<({String fileName, String mimeType, Uint8List bytes})> calls =
       <({String fileName, String mimeType, Uint8List bytes})>[];
 
+  /// 走「存相册」的调用（海报走这条）。
+  final List<({String fileName, Uint8List bytes})> galleryCalls =
+      <({String fileName, Uint8List bytes})>[];
+
   @override
   Future<bool> isAvailable() async => true;
 
@@ -55,6 +59,23 @@ final class _RecordingSaver implements DocumentSaver {
   }) async {
     calls.add((fileName: fileName, mimeType: mimeType, bytes: bytes));
     return outcome;
+  }
+
+  @override
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    galleryCalls.add((fileName: fileName, bytes: bytes));
+    // 成功时按相册语义回，失败/取消原样回 —— 与原生侧一致。
+    final current = outcome;
+    if (current is DocumentSaved) {
+      return DocumentSaved(
+        name: fileName,
+        destination: SaveDestination.gallery,
+      );
+    }
+    return current;
   }
 }
 
@@ -157,11 +178,15 @@ void main() {
       expect(_money.hasMatch(text), isFalse, reason: '导出的文件里不该有金额：$text');
     }
 
-    expect(saver.calls, hasLength(1));
-    expect(saver.calls.single.mimeType, 'image/png');
-    expect(saver.calls.single.fileName, endsWith('_月度回顾.png'));
-    expect(saver.calls.single.bytes, <int>[9, 8, 7], reason: '存的就是渲染出来的字节');
-    expect(find.textContaining('已保存'), findsOneWidget);
+    expect(saver.galleryCalls, hasLength(1), reason: '海报直接存相册');
+    expect(saver.calls, isEmpty, reason: '不该弹「保存到哪儿」');
+    expect(saver.galleryCalls.single.fileName, endsWith('_月度回顾.png'));
+    expect(
+      saver.galleryCalls.single.bytes,
+      <int>[9, 8, 7],
+      reason: '存的就是渲染出来的字节',
+    );
+    expect(find.textContaining('已存到相册'), findsOneWidget);
   });
 
   testWidgets('打开金额开关后导出：清单里出现金额', (tester) async {
@@ -182,7 +207,7 @@ void main() {
     await openShare(tester);
     await tapAction(tester, '导出月度回顾');
 
-    expect(saver.calls, hasLength(1));
+    expect(saver.galleryCalls, hasLength(1));
     expect(find.byType(SnackBar), findsNothing);
   });
 

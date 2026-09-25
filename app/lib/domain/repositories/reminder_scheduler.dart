@@ -68,6 +68,12 @@ abstract interface class ReminderScheduler {
 
   /// 取消提醒。
   Future<void> cancel();
+
+  /// 取走「这次启动是点通知进来的」附带的路由，取走即清。
+  ///
+  /// 返回 null 表示这次不是从通知进来的。路由字符串由调用方**白名单**过滤 ——
+  /// 平台给什么就跳什么太危险。
+  Future<String?> consumeLaunchRoute();
 }
 
 /// 当前环境不支持提醒。
@@ -91,4 +97,7 @@ final class UnsupportedReminderScheduler implements ReminderScheduler {
 
   @override
   Future<void> cancel() async {}
+
+  @override
+  Future<String?> consumeLaunchRoute() async => null;
 }
