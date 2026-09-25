@@ -48,10 +48,27 @@ class MainActivity : FlutterActivity() {
          * 一个回调，插件也会走它，所以不能随便拿 1 这种小数字。
          */
         private const val REQUEST_PICK_DOCUMENT = 0x594E // "YN"
+
+        /** 导出文件用的请求码（与选择文件分开，否则分不清回来的是哪个）。 */
+        private const val REQUEST_SAVE_DOCUMENT = 0x594F
     }
 
     /** 同一时刻只允许一个选择请求。 */
     private var pendingPick: MethodChannel.Result? = null
+
+    /**
+     * 等保存结果的请求。
+     *
+     * 字节拿在内存里等用户选位置 —— 导出物最大也就是一两张海报，
+     * 不先写临时文件，也就没有「取消后要清理的残片」。
+     */
+    private var pendingSave: PendingSave? = null
+
+    private class PendingSave(
+        val result: MethodChannel.Result,
+        val bytes: ByteArray,
+        val name: String,
+    )
 
     /** 文件读写一律在这个线程上做，不占 UI 线程。 */
     private val fileExecutor = Executors.newSingleThreadExecutor()
@@ -63,6 +80,15 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "pickDocument" -> handlePick(result, call.argument<String>("mimeType"))
+
+                    // 导出：把生成好的字节交给系统「创建文档」流程，由用户选位置。
+                    // 不先写临时文件、也不把应用私有路径告诉系统（指南 8.1）。
+                    "saveDocument" -> handleSave(
+                        result,
+                        call.argument<String>("fileName"),
+                        call.argument<String>("mimeType"),
+                        call.argument<ByteArray>("bytes"),
+                    )
 
                     // 应用私有目录。分类图片要落在自己拥有的目录里
                     // （指南 14.4.2：不能长期依赖选择器给的临时 URI）。
@@ -104,6 +130,7 @@ class MainActivity : FlutterActivity() {
                             "supported" to true,
                             "maxBytes" to MAX_BYTES,
                             "pickerAvailable" to pickerAvailable(),
+                            "saverAvailable" to saverAvailable(),
                             "busy" to (pendingPick != null),
                         ),
                     )
@@ -161,6 +188,19 @@ class MainActivity : FlutterActivity() {
      */
     @Deprecated("startActivityForResult 已被官方标记为弃用，但这里是可用且最小的做法")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_SAVE_DOCUMENT) {
+            val pending = pendingSave
+            pendingSave = null
+            if (pending == null) return
+            val uri = if (resultCode == RESULT_OK) data?.data else null
+            when (uri) {
+                // 用户取消：这不是错误，回 null 让界面安静回到原样。
+                null -> pending.result.success(null)
+                else -> writeInto(pending, uri, data.type)
+            }
+            return
+        }
+
         if (requestCode != REQUEST_PICK_DOCUMENT) {
             // 别的请求（插件自己的）交给引擎处理。
             super.onActivityResult(requestCode, resultCode, data)
@@ -282,6 +322,108 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * 系统「创建文档」的选择器。
+     *
+     * `EXTRA_TITLE` 只是**建议**的文件名，用户可以改；真正的文件由系统
+     * 在用户选的位置创建，我们只拿到一个可写的 `content://` URI。
+     */
+    private fun saveIntent(name: String, mimeType: String?): Intent =
+        Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mimeType ?: "application/octet-stream"
+            putExtra(Intent.EXTRA_TITLE, name)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+
+    private fun handleSave(
+        result: MethodChannel.Result,
+        fileName: String?,
+        mimeType: String?,
+        bytes: ByteArray?,
+    ) {
+        if (fileName.isNullOrBlank()) {
+            result.error("bad_arguments", "缺少文件名", null)
+            return
+        }
+        if (bytes == null || bytes.isEmpty()) {
+            result.error("bad_arguments", "没有可保存的内容", null)
+            return
+        }
+        if (bytes.size > MAX_BYTES) {
+            result.error("too_large", "导出文件超过上限，暂时保存不了", null)
+            return
+        }
+        if (pendingSave != null) {
+            result.error("busy", "已经有一个保存操作在进行中", null)
+            return
+        }
+
+        pendingSave = PendingSave(result, bytes, fileName)
+        try {
+            startActivityForResult(saveIntent(fileName, mimeType), REQUEST_SAVE_DOCUMENT)
+        } catch (error: ActivityNotFoundException) {
+            pendingSave = null
+            result.error("unavailable", "这台设备上没有可用的文件保存界面", null)
+        }
+    }
+
+    /**
+     * 写字节到用户选中的位置。
+     *
+     * 失败一律如实上报：磁盘满、URI 失效、目标应用被卸载都会走到这里，
+     * 不能吞掉 —— 用户以为存下来了、其实没有，比报错严重得多。
+     */
+    private fun writeInto(pending: PendingSave, uri: Uri, mimeType: String?) {
+        fileExecutor.execute {
+            try {
+                val output = contentResolver.openOutputStream(uri)
+                if (output == null) {
+                    runOnUiThread {
+                        pending.result.error("unwritable", "这个位置写不进去，请换一个位置", null)
+                    }
+                    return@execute
+                }
+                output.use { stream ->
+                    stream.write(pending.bytes)
+                    stream.flush()
+                }
+                runOnUiThread {
+                    pending.result.success(
+                        mapOf(
+                            "uri" to uri.toString(),
+                            "name" to pending.name,
+                            "sizeBytes" to pending.bytes.size,
+                            "mimeType" to mimeType,
+                        ),
+                    )
+                }
+            } catch (error: SecurityException) {
+                runOnUiThread {
+                    pending.result.error("unwritable", "这个位置的写入权限已经失效，请重新保存一次", null)
+                }
+            } catch (error: IOException) {
+                runOnUiThread {
+                    pending.result.error("unwritable", "写不了这个位置：${error.message}", null)
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "保存文件失败", error)
+                runOnUiThread {
+                    pending.result.error("unwritable", error.message ?: "保存失败", null)
+                }
+            }
+        }
+    }
+
+    /**
+     * 判断系统里有没有能响应「创建文档」的界面（理由同 [pickerAvailable]）。
+     */
+    private fun saverAvailable(): Boolean = try {
+        saveIntent("younum.csv", "text/csv").resolveActivity(packageManager) != null
+    } catch (error: Exception) {
+        false
+    }
+
     /** 从 provider 查文件名与它声明的大小。 */
     private fun describe(uri: Uri): Pair<String, Long?> {
         var name: String? = null
@@ -313,6 +455,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         pendingPick?.error("detached", "界面已经关闭", null)
         pendingPick = null
+        pendingSave?.result?.error("detached", "界面已经关闭", null)
+        pendingSave = null
         fileExecutor.shutdown()
         super.onDestroy()
     }
