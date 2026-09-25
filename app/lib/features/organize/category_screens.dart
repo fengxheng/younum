@@ -275,10 +275,49 @@ class CategoryManageScreen extends StatelessWidget {
               '更换图标不会改动消费金额、分类关系与整理进度。',
             ),
           ),
+
+          // 已归档（指南 3.5.8）。
+          //
+          // 「删除」的真相是归档：分类不再出现在用途选择里，但历史记录仍然
+          // 引用它。既然删除不是不可逆的，就必须让用户**找得到回来的路** ——
+          // 否则那个按钮就是个陷阱。
+          if (registry.archivedRoots.isNotEmpty) ...<Widget>[
+            const SizedBox(height: YounumDimens.gapLg),
+            const YounumDivider(),
+            const YounumSectionHeader(title: '已归档'),
+            YounumMutedText(
+              '这 ${registry.archivedRoots.length} 个分类不再出现在选择列表里，'
+              '用它们归过类的记录照旧显示。想继续用就点「恢复」。',
+            ),
+            const SizedBox(height: YounumDimens.gapSm),
+            for (final category in registry.archivedRoots)
+              YounumListRow(
+                title: category.name,
+                subtitle: '已归档，不影响已有记录',
+                iconKey: category.iconKey,
+                imagePath: registry.imagePathOf(category),
+                trailingText: '恢复',
+                onTap: () => _restoreArchived(context, registry, category),
+              ),
+          ],
         ],
       ),
     );
   }
+}
+
+/// 把一个已归档的分类恢复回来。
+Future<void> _restoreArchived(
+  BuildContext context,
+  CategoryRegistry registry,
+  Category category,
+) async {
+  final ok = await registry.restore(category.id);
+  if (!context.mounted) return;
+  showYounumToast(
+    context,
+    ok ? '已恢复「${category.name}」' : (registry.lastFailure ?? '没有恢复成功'),
+  );
 }
 
 class _ManageCategoryCard extends StatelessWidget {
@@ -543,6 +582,58 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
     );
   }
 
+  /// 正在编辑的那个分类（新建时为 null）。
+  Category? get _editingCategory {
+    final id = widget.args.categoryId;
+    return id == null ? null : _registry.byId(id);
+  }
+
+  /// 不能归档时给用户看的原因（例如「这是最后一个分类」）。
+  String? get _archiveBlockedReason {
+    final category = _editingCategory;
+    return category == null ? null : _registry.archiveBlockedReason(category);
+  }
+
+  /// 删除 / 归档这个分类（指南 3.5.8：**分类删除默认归档**）。
+  ///
+  /// 说清楚「变的是什么、不变的是什么」：用户以为删掉分类会连账一起没，
+  /// 那句「记录不受影响」是他敢按下去的前提。
+  Future<void> _archive() async {
+    final category = _editingCategory;
+    if (category == null || _saving || _processing) return;
+    final isBuiltin = category.isBuiltin;
+
+    final confirmed = await showConfirmSheet(
+      context: context,
+      title: isBuiltin ? '归档「${category.name}」？' : '删除「${category.name}」？',
+      description:
+          '已经用它归好类的记录不受影响：用途、金额与月度统计都照旧。\n\n'
+          '变的只有一处：它不再出现在「选择用途」的列表里。'
+          '${isBuiltin ? '内置分类不能删除，只能归档。' : ''}\n\n'
+          '想找回来时，在「分类管理」最底部可以恢复。',
+      confirmLabel: isBuiltin ? '归档' : '删除',
+      cancelLabel: '再想想',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _saving = true);
+    final ok = await _registry.archive(category.id);
+    if (!mounted) return;
+    setState(() => _saving = false);
+
+    if (!ok) {
+      setState(
+        () => _errorText = _registry.lastFailure ?? '没有保存成功，可以重试',
+      );
+      return;
+    }
+    showYounumToast(
+      context,
+      isBuiltin ? '已归档，可在分类管理底部恢复' : '已删除，可在分类管理底部恢复',
+    );
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
@@ -682,6 +773,24 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                   : (_processing ? '图片处理中…' : (_isEditing ? '保存图标' : '保存分类')),
               onPressed: (_saving || _processing) ? null : _save,
             ),
+
+            // 删除 / 归档（指南 3.5.8）。只对已有分类显示 ——
+            // 还在新建的东西没什么可删的。
+            if (_isEditing && _editingCategory != null) ...<Widget>[
+              const SizedBox(height: YounumDimens.gapLg),
+              PrimaryAction(
+                label: _editingCategory!.isBuiltin ? '归档此分类' : '删除此分类',
+                style: YounumActionStyle.danger,
+                onPressed: (_saving || _processing || _archiveBlockedReason != null)
+                    ? null
+                    : _archive,
+              ),
+              YounumPillNote(
+                _archiveBlockedReason ??
+                    '删除等于归档：分类不再出现在选择列表里，'
+                        '但已经归好类的记录照旧显示它，也能在分类管理底部恢复。',
+              ),
+            ],
           ],
         ),
       ),

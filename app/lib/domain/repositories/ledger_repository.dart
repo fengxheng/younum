@@ -1022,6 +1022,56 @@ final class LedgerRepository {
     }
   }
 
+  /// 归档 / 恢复一个分类（指南 3.5.8：**分类删除默认归档**，历史引用继续有效）。
+  ///
+  /// 归档**不动任何已经发生的分配**：记录里存的还是那个分类 ID，
+  /// 明细、月报、导出照旧显示它的名字与图标。变的只有一件事 ——
+  /// 它不再出现在「选择用途」的列表里。
+  ///
+  /// 一级分类归档时**连带**归档它的细分用途：细分用途只能从父级进入，
+  /// 父级归档后它们就成了「选不到、但还挂在全部分类页上」的幽灵条目
+  /// （那一页读的是扁平列表）。恢复父级时一起恢复。
+  ///
+  /// 唯一被拒绝的情况是 [CategoryRules.validateArchive] 里的
+  /// 「最后一个还在用的一级分类」—— 用途列表不能空。
+  Future<CategoryWriteResult> setCategoryArchived({
+    required int ledgerId,
+    required int categoryId,
+    required bool archived,
+  }) async {
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      Category? target;
+      for (final category in all) {
+        if (category.id == categoryId) target = category;
+      }
+      if (target == null) {
+        return const CategoryRejected('找不到这个分类，可能已经被删掉了');
+      }
+
+      final error = CategoryRules.validateArchive(category: target, all: all);
+      if (error != null) return CategoryRejected(error.message);
+
+      final affected = <Category>[
+        target,
+        if (target.isRoot)
+          for (final category in all)
+            if (category.parentId == target.id) category,
+      ];
+
+      Category? saved;
+      for (final category in affected) {
+        final result = await _store.saveCategory(
+          category.copyWith(archived: archived),
+        );
+        if (category.id == categoryId) saved = result;
+      }
+      return CategorySaved(saved ?? target);
+    } catch (error) {
+      return CategoryRejected('分类没有保存成功：$error');
+    }
+  }
+
   /// 改一个分类的图标。
   ///
   /// 只改图标（指南 14.3）：名称、ID、分类关系与金额都不动。

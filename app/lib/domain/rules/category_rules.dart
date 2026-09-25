@@ -38,6 +38,14 @@ final class CategoryNameDuplicated extends CategoryError {
   const CategoryNameDuplicated() : super('这个分类已经存在');
 }
 
+/// 只剩这一个分类了，不能再归档。
+///
+/// 用途选择列表不能空：空了用户整理时无从下手，而且那不是用户想要的 ——
+/// 他只是想删掉一个分类。
+final class CategoryLastRoot extends CategoryError {
+  const CategoryLastRoot() : super('这是最后一个分类，删掉就没有用途可选了');
+}
+
 /// 分类规则。
 abstract final class CategoryRules {
   /// 名称长度上限（与原型校验一致）。
@@ -65,6 +73,28 @@ abstract final class CategoryRules {
       if (excludingId != null && sibling.id == excludingId) continue;
       if (sibling.name == trimmed) return const CategoryNameDuplicated();
     }
+    return null;
+  }
+
+  /// 能不能归档 / 恢复这个分类（指南 3.5.8）。
+  ///
+  /// 只有一条限制：**不能把最后一个还在用的一级分类归档掉** ——
+  /// 那样「选择用途」就空了，用户整理时无从下手。细分用途不受限：
+  /// 它们的父级还在，只是少一个选项。
+  ///
+  /// 恢复永远允许：归档的分类本来就不参与这条判断。
+  static CategoryError? validateArchive({
+    required Category category,
+    required List<Category> all,
+  }) {
+    if (category.archived) return null;
+    if (!category.isRoot) return null;
+
+    final remaining = <Category>[
+      for (final item in all)
+        if (item.isRoot && !item.archived && item.id != category.id) item,
+    ];
+    if (remaining.isEmpty) return const CategoryLastRoot();
     return null;
   }
 }

@@ -365,7 +365,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **543 passed**（含大文件：6 万行解析 + 提交） |
+| 单元测试（包含界面测试） | `flutter test` | **551 passed**（含大文件：6 万行解析 + 提交） |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **42 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
@@ -551,19 +551,15 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 ## 剩余事项
 
-自动化能覆盖的部分都已经做完（`flutter test` 539 项 + 真机数据库 42 项）。剩下的
-只有三类，都不是「代码还没写」：
+自动化能覆盖的部分都已经做完（`flutter test` 551 项 + 真机数据库 42 项）。剩下的只有三类：
 
 1. **只能人工走的**：真机系统文件选择器、相册写入、系统通知设置、六套主题逐页对比度、
    系统字号调到最大、TalkBack、横屏旋转 —— 逐条清单在 `docs/MANUAL_CHECKS.md`，
    标着未验证的不要当成已验证。
-2. **需要产品决定的**：**分类归档入口**。指南 3.5.8 要求「分类删除默认归档，历史引用
-   继续有效」，数据层也已经支持（`Category.archived`，选择列表会滤掉归档分类、
-   历史记录照旧显示），但设计原型里没有这个入口，所以一直没做 —— 要先确认要不要做、
-   放在哪。分类合并同理（指南写明「需显式迁移分配关系」）。
-* 换成正式签名 keystore —— **已完成**：`android/key.properties`（不进仓库）+ gradle 里接好，
-  正式包已用 `apksigner` 验过证书（见 `RELEASE.md` 第 4 节）。剩下确认 `com.younum.app` 未被占用。
-   （`android/app/build.gradle.kts` 里两处 TODO），见 `docs/RELEASE.md`。
+2. **功能仍未写**：**分类合并**（指南 3.5.8 后半句「需显式迁移分配关系」）——
+   要做就得先定「合并时旧分配往哪儿迁」的策略。分类归档入口已完成（`DECISIONS.md` 63 节）。
+3. **上架前必须做的**：确认 `com.younum.app` 未被占用（正式签名已经接好，
+   见 `RELEASE.md` 第 4 节）。
 
 可选：Photo Picker（现在选图片走的是系统文档选择器）；主题页里的预览金额用的是
 样例数字（**仅预览用**，页面文案已经说明）。

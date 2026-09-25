@@ -9,6 +9,7 @@ import '../../domain/models/category_icon_asset.dart';
 import '../../domain/repositories/icon_asset_ports.dart';
 import '../../domain/repositories/image_file_source.dart';
 import '../../domain/repositories/ledger_repository.dart';
+import '../../domain/rules/category_rules.dart';
 
 /// 分类与图标的**唯一**来源。
 ///
@@ -75,6 +76,52 @@ class CategoryRegistry extends ChangeNotifier {
         for (final category in _categories)
           if (category.parentId == parentId && !category.archived) category,
       ];
+
+  /// 已经归档的一级分类（分类管理页底部的「已归档」区）。
+  ///
+  /// 归档的分类不参与用途选择，但历史记录仍然引用它，所以它不能消失 ——
+  /// 这一份列表就是「让它还能被找回来」的那条路。
+  List<Category> get archivedRoots => <Category>[
+        for (final category in _categories)
+          if (category.isRoot && category.archived) category,
+      ];
+
+  /// 能不能归档这个分类；不能时返回给用户看的原因。
+  ///
+  /// 界面用它**先把按钮置灰并说明**，而不是让用户点下去才被拒 ——
+  /// 与名称校验同一条原则。
+  String? archiveBlockedReason(Category category) =>
+      CategoryRules.validateArchive(category: category, all: _categories)
+          ?.message;
+
+  /// 归档一个分类。用户看到的词是「删除」，指南 3.5.8 的语义是归档。
+  Future<bool> archive(int categoryId) =>
+      _setArchived(categoryId, archived: true);
+
+  /// 从「已归档」里找回来。
+  Future<bool> restore(int categoryId) =>
+      _setArchived(categoryId, archived: false);
+
+  /// 归档会**连带**改动细分用途（见仓库层说明），所以这里整表重读，
+  /// 不像图标那样只就地替换一条。
+  Future<bool> _setArchived(int categoryId, {required bool archived}) async {
+    final result = await repository.setCategoryArchived(
+      ledgerId: _ledgerId,
+      categoryId: categoryId,
+      archived: archived,
+    );
+    switch (result) {
+      case CategorySaved():
+        await load(ledgerId: _ledgerId);
+        _lastFailure = null;
+        notifyListeners();
+        return true;
+      case CategoryRejected(:final message):
+        _lastFailure = message;
+        notifyListeners();
+        return false;
+    }
+  }
 
   Category? byId(int id) {
     for (final category in _categories) {

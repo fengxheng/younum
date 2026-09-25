@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
+import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/components/screen_scaffold.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
@@ -177,4 +178,75 @@ void main() {
     expect(after.iconKey, 'coffee');
   });
 
+  testWidgets('删除一个自建分类：真的归档，而且能在「已归档」里找回来', (
+    WidgetTester tester,
+  ) async {
+    // 指南 3.5.8：分类删除默认归档，历史引用继续有效。
+    await openManage(tester);
+    expect(find.text('已归档'), findsNothing, reason: '前提：还没有归档过任何分类');
+
+    await tester.tap(find.text('宠物'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除此分类'));
+    await tester.pumpAndSettle();
+
+    // 确认弹层要把「变的是什么、不变的是什么」说清楚。
+    expect(find.textContaining('已经用它归好类的记录不受影响'), findsOneWidget);
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    final archived = await categoryNamed('宠物');
+    expect(archived, isNotNull, reason: '归档不是删除数据：分类行还在');
+    expect(archived!.archived, isTrue);
+    expect(find.byType(CategoryManageScreen), findsOneWidget, reason: '删完回到管理页');
+    expect(find.text('已归档'), findsOneWidget, reason: '管理页要给出回来的路');
+
+    // 恢复。
+    await tester.tap(find.text('恢复'));
+    await tester.pumpAndSettle();
+
+    final restored = await categoryNamed('宠物');
+    expect(restored!.archived, isFalse);
+    expect(find.text('已归档'), findsNothing, reason: '恢复之后这一段就不该再显示');
+  });
+
+  testWidgets('内置分类只给「归档」，不给「删除」', (WidgetTester tester) async {
+    await openManage(tester);
+    await tester.tap(find.text('餐饮').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('归档此分类'), findsOneWidget);
+    expect(find.text('删除此分类'), findsNothing);
+  });
+
+  testWidgets('只剩一个一级分类时，归档按钮置灰并说明原因', (WidgetTester tester) async {
+    // 用途列表空了，用户整理时无从下手 —— 这个按钮必须先把话说在前面。
+    final all = await repository.categories(ledgerId: ledgerId);
+    final roots = <Category>[
+      for (final category in all)
+        if (category.isRoot) category,
+    ];
+    for (final root in roots.skip(1)) {
+      await repository.setCategoryArchived(
+        ledgerId: ledgerId,
+        categoryId: root.id,
+        archived: true,
+      );
+    }
+
+    await openManage(tester);
+    await tester.tap(find.text(roots.first.name).first);
+    await tester.pumpAndSettle();
+
+    final button = tester.widget<PrimaryAction>(
+      find
+          .ancestor(
+            of: find.text('归档此分类'),
+            matching: find.byType(PrimaryAction),
+          )
+          .first,
+    );
+    expect(button.onPressed, isNull, reason: '最后一个分类不能归档');
+    expect(find.textContaining('这是最后一个分类'), findsWidgets);
+  });
 }
