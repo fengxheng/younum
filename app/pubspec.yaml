@@ -1,7 +1,7 @@
 name: younum
 description: "有数：本地账单整理与月度回顾（设计稿的可运行实现）。"
 publish_to: 'none'
-version: 1.2.1+4
+version: 1.2.1+5
 
 environment:
   sdk: ^3.13.4
