@@ -47,6 +47,9 @@ abstract interface class ThemeStore {
 /// 偏好键名。集中在一处，避免多个功能各写一套。
 abstract final class PreferenceKeys {
   static const String theme = 'younum.theme';
+
+  /// 每月整理提醒的设置。
+  static const String reminder = 'younum.reminder';
 }
 
 /// SharedPreferences 实现。
