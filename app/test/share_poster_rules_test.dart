@@ -158,4 +158,69 @@ void main() {
     expect(spec.height, 1000);
     expect(spec.palette, same(palette));
   });
+
+  group('版式', () {
+    test('版式里的文字与清单完全一致、顺序也一致', () {
+      final spec = build(showAmount: true);
+      final texts = SharePosterLayout.placementsOf(spec)
+          .map((placement) => placement.text)
+          .toList();
+      expect(texts, spec.allText);
+    });
+
+    test('每一行都在画布内，页脚在最下面', () {
+      final spec = build(showAmount: false);
+      final placements = SharePosterLayout.placementsOf(spec);
+
+      for (final placement in placements) {
+        expect(placement.x, greaterThanOrEqualTo(0));
+        expect(placement.bottom, greaterThan(0));
+        expect(placement.bottom, lessThanOrEqualTo(spec.height));
+        expect(placement.size, greaterThan(0));
+      }
+      expect(
+        placements.last.role,
+        PosterTextRole.footer,
+        reason: '页脚应该最后画，压在最底下',
+      );
+      expect(
+        SharePosterLayout.dividerOf(spec).bottom,
+        lessThan(SharePosterLayout.statsBottom),
+        reason: '细线要在笔数上面',
+      );
+    });
+
+    test('主体文字只用主色，说明文字用次要色', () {
+      final spec = build(showAmount: false);
+      for (final entry in <PosterTextRole, Object>{
+        PosterTextRole.brand: palette.foreground,
+        PosterTextRole.headline: palette.foreground,
+        PosterTextRole.amount: palette.foreground,
+        PosterTextRole.period: palette.muted,
+        PosterTextRole.subtitle: palette.muted,
+        PosterTextRole.stats: palette.muted,
+        PosterTextRole.footer: palette.muted,
+      }.entries) {
+        expect(
+          SharePosterLayout.colorOf(spec, entry.key),
+          entry.value,
+          reason: entry.key.name,
+        );
+      }
+    });
+
+    test('标题多行时逐行往下排，不会叠在一起', () {
+      final spec = build(showAmount: false);
+      final headlines = SharePosterLayout.placementsOf(spec)
+          .where((placement) => placement.role == PosterTextRole.headline)
+          .toList();
+      expect(headlines.length, spec.headline.length);
+      for (var index = 1; index < headlines.length; index++) {
+        expect(
+          headlines[index].bottom,
+          greaterThan(headlines[index - 1].bottom),
+        );
+      }
+    });
+  });
 }

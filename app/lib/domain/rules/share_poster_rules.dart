@@ -13,7 +13,7 @@
 /// 尺寸沿用原型的 750×1000（3:4）。渲染时整体等比放大，不改版式。
 library;
 
-import 'dart:ui' show Color;
+import 'dart:ui' show Color, FontWeight, Rect, TextAlign;
 
 import '../../core/money/money.dart';
 import 'export_rules.dart';
@@ -100,7 +100,8 @@ final class SharePosterSpec {
   ];
 
   @override
-  String toString() => 'SharePosterSpec($periodLabel, showsAmount: $showsAmount)';
+  String toString() =>
+      'SharePosterSpec($periodLabel, showsAmount: $showsAmount)';
 }
 
 abstract final class SharePosterRules {
@@ -121,10 +122,7 @@ abstract final class SharePosterRules {
 
   static const String brand = '∷ 有数';
 
-  static const List<String> headline = <String>[
-    '把钱花在',
-    '有意义的生活里。',
-  ];
+  static const List<String> headline = <String>['把钱花在', '有意义的生活里。'];
 
   static const String footer = '每一次看见，都是更了解自己的开始。';
 
@@ -175,4 +173,148 @@ abstract final class SharePosterRules {
   }
 
   static String _two(int value) => value.toString().padLeft(2, '0');
+}
+
+/// 这段文字是干什么的 —— 决定用主文字色还是次要色。
+enum PosterTextRole { brand, period, headline, subtitle, amount, stats, footer }
+
+/// 一段文字在海报上的位置与大小（设计单位）。
+final class PosterTextPlacement {
+  const PosterTextPlacement({
+    required this.role,
+    required this.text,
+    required this.x,
+    required this.bottom,
+    required this.size,
+    this.weight = FontWeight.w400,
+    this.align = TextAlign.left,
+  });
+
+  final PosterTextRole role;
+  final String text;
+  final double x;
+
+  /// 这一行的**底边**。原型里给的是基线，这里改成底边更好算，
+  /// 差的那几像素不影响版式。
+  final double bottom;
+
+  final double size;
+  final FontWeight weight;
+  final TextAlign align;
+
+  @override
+  String toString() => 'PosterTextPlacement(${role.name}, $text)';
+}
+
+/// 海报版式：把 [SharePosterSpec] 摊成「画哪几段字、各在哪儿」。
+///
+/// 界面预览与导出文件都读这一份，所以改文案或改位置时两边一起变 ——
+/// 不会出现「屏幕上一个样、导出的文件另一个样」。
+abstract final class SharePosterLayout {
+  static const double marginX = 70;
+  static const double brandBottom = 110;
+  static const double brandSize = 34;
+  static const double periodSize = 30;
+  static const List<double> headlineBottoms = <double>[290, 375];
+  static const double headlineSize = 58;
+  static const double subtitleBottom = 500;
+  static const double subtitleSize = 25;
+  static const double amountBottom = 600;
+  static const double amountSize = 65;
+  static const double dividerTop = 668;
+  static const double statsBottom = 735;
+  static const double statsSize = 25;
+  static const double footerBottom = 910;
+  static const double footerSize = 21;
+
+  /// 绘制顺序：品牌 → 月份 → 标题 → 副标题 → 金额 → 笔数 → 页脚。
+  ///
+  /// 顺序和 [SharePosterSpec.allText] 一致，测试直接拿两份对一遍。
+  static List<PosterTextPlacement> placementsOf(SharePosterSpec spec) {
+    final placements = <PosterTextPlacement>[
+      PosterTextPlacement(
+        role: PosterTextRole.brand,
+        text: spec.brand,
+        x: marginX,
+        bottom: brandBottom,
+        size: brandSize,
+        weight: FontWeight.w600,
+      ),
+      PosterTextPlacement(
+        role: PosterTextRole.period,
+        text: spec.periodLabel,
+        x: marginX,
+        bottom: brandBottom,
+        size: periodSize,
+        align: TextAlign.right,
+      ),
+    ];
+
+    for (var index = 0; index < spec.headline.length; index++) {
+      placements.add(
+        PosterTextPlacement(
+          role: PosterTextRole.headline,
+          text: spec.headline[index],
+          x: marginX,
+          bottom: index < headlineBottoms.length
+              ? headlineBottoms[index]
+              : headlineBottoms.last,
+          size: headlineSize,
+          weight: FontWeight.w500,
+        ),
+      );
+    }
+
+    placements.addAll(<PosterTextPlacement>[
+      PosterTextPlacement(
+        role: PosterTextRole.subtitle,
+        text: spec.subtitle,
+        x: marginX,
+        bottom: subtitleBottom,
+        size: subtitleSize,
+      ),
+      PosterTextPlacement(
+        role: PosterTextRole.amount,
+        text: spec.amountText,
+        x: marginX,
+        bottom: amountBottom,
+        size: amountSize,
+        weight: FontWeight.w600,
+      ),
+      PosterTextPlacement(
+        role: PosterTextRole.stats,
+        text: spec.statsLine,
+        x: marginX,
+        bottom: statsBottom,
+        size: statsSize,
+      ),
+      PosterTextPlacement(
+        role: PosterTextRole.footer,
+        text: spec.footer,
+        x: marginX,
+        bottom: footerBottom,
+        size: footerSize,
+      ),
+    ]);
+    return placements;
+  }
+
+  /// 每一行文字可用的最大宽度：左右各留 [marginX]。
+  static double maxWidthOf(SharePosterSpec spec) => spec.width - marginX * 2;
+
+  /// 这段文字用什么颜色。主文字色只给品牌、标题和金额。
+  static Color colorOf(SharePosterSpec spec, PosterTextRole role) =>
+      switch (role) {
+        PosterTextRole.brand ||
+        PosterTextRole.headline ||
+        PosterTextRole.amount => spec.palette.foreground,
+        PosterTextRole.period ||
+        PosterTextRole.subtitle ||
+        PosterTextRole.stats ||
+        PosterTextRole.footer => spec.palette.muted,
+      };
+
+  /// 金额与笔数之间那条细线。
+  static Rect dividerOf(SharePosterSpec spec) =>
+      Rect.fromLTWH(marginX, dividerTop, maxWidthOf(spec), 2);
 }
