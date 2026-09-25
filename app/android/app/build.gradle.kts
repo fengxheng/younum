@@ -76,6 +76,20 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+
+            // release 的 R8 压缩与保留规则。
+            //
+            // ⚠️ 规则不能少：Room 的数据库实现、WorkManager 的 Worker 都是**反射**
+            // 实例化的，R8 看不到调用点会把它们裁掉，结果是「启动即退出」
+            // （细节与真机崩溃原文见 proguard-rules.pro）。
+            // debug 不跑 R8，所以这个坑只在正式包里出现 ——
+            // 改了原生代码或依赖后，务必用 `flutter build apk --release` 真实启动一次，
+            // 别只跑 debug。
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }

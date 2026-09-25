@@ -57,6 +57,19 @@ flutter test                          # 单元测试（不需要设备）
 flutter test integration_test/database_test.dart -d <device-id>
 ```
 
+⚠️ **改了原生代码（Kotlin / Manifest / Gradle）或依赖之后，上面这些都不够。**
+release 会跑 R8 而 debug 不会，所以「反射被裁掉」这类问题只在正式包里出现，
+`flutter analyze`（只管 Dart）和 debug 构建都看不见。必须补一条：
+
+```powershell
+flutter build apk --release
+# 然后装到真机上，**真的点开图标看一眼**
+```
+
+上一轮就是靠这一步才发现 release 包「点开即退出」（R8 删掉了 Room 生成的
+`WorkDatabase_Impl` 的反射构造，崩在 Flutter 引擎起来之前，连 flutter 日志都没有）。
+细节与保留规则见 `docs/DECISIONS.md` 第 67 节，排查思路见 `docs/MANUAL_CHECKS.md` 第九节。
+
 调试 APK 路径：`app/build/app/outputs/flutter-apk/app-debug.apk`
 
 > **判断性能请用 profile 或 release 包。**debug 模式下 Dart 是 JIT 解释执行、

@@ -77,7 +77,10 @@ Future<void> main() async {
         password: passphrase,
       );
       debugPrint('数据库加密：$result');
-      if (result.isEncrypted) {
+      // 全新安装也是「加密码」：库是这一步之后由存储层建的，
+      // 此时不把口令交下去，新库就是明文 —— 那不叫加密。
+      if (result.isEncrypted ||
+          result.outcome == EncryptionOutcome.freshInstall) {
         databasePassword = passphrase;
       } else {
         encryptionNote = result.failure ?? '数据加密没有完成，账单仍是未加密存储';
@@ -97,12 +100,14 @@ Future<void> main() async {
     reminderStore = await SharedPreferencesReminderStore.open();
     updateStore = await SharedPreferencesUpdateStore.open();
     ledgerStore = SqfliteLedgerStore(password: databasePassword);
-  } catch (_) {
+  } catch (error) {
     themeStore = InMemoryThemeStore();
     appStateStore = InMemoryAppStateStore();
     reminderStore = InMemoryReminderStore();
     updateStore = InMemoryUpdateStore();
     ledgerStore = InMemoryLedgerStore();
+    // 打出来而不是吞掉：真机上这一句是「为什么这次没落盘」的唯一线索。
+    debugPrint('偏好或本地存储不可用，本次会话退回内存实现：$error');
   }
 
   var repository = LedgerRepository(
