@@ -91,9 +91,42 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 
 1. 是**已发布**的 Release（在 GitHub 网页上「Draft a new release」之后还要点
    「Publish release」）：**草稿**对匿名请求完全不可见，光 push 一个 tag 也不算；
-2. tag 里带 **build number**，形如 `v1.2.1+4` —— 比较新旧只看它；
+2. tag 里带 **build number**，形如 `v1.2.1+5` —— 比较新旧只看它；
 3. **上传了 `.apk` 资源**（不能只有源码 zip），而且必须是**正式签名**的包：
    升级是「覆盖安装」，签名不一致会被系统直接拒绝。
+
+### ⚠️ 这个仓库开了「Release 不可变」——顺序不能错
+
+2026-09-25 发 1.2.1 时踩到了三个坑，都是仓库设置造成的，不是应用的问题：
+
+1. **发布之后就不能再加资源了。** 直接建一个「已发布」的 Release，APK 传不上去：
+   `422 Cannot upload assets to an immutable release`。
+   正确顺序永远是：**先建草稿 → 传 APK → 再发布**。
+2. **标签必须先用 git 推上去。** 这个仓库的规则不允许通过 API 创建 ref，
+   用 API 建带新标签的 Release 会得到这么一串错误：
+   `Cannot create ref due to creations being restricted` /
+   `tag_name was used by an immutable release` / `Published releases must have a valid tag`。
+   如果忽略它、直接从草稿点发布，GitHub 会**默默地**给一个
+   `untagged-<hash>` 的占位标签 —— 应用会把结尾那串十六进制里的数字当成 build
+   number，于是给所有人推一个假的新版本。所以：**先 `git push origin <tag>`，
+   再建 Release**（标签已存在就不会去建 ref）。
+3. **标签被用掉就不能再用。** 哪怕把 Release 删了，那个标签名也被永久占住
+   （`tag_name was used by an immutable release`）。想重发就得改 build number：
+   这就是 `1.2.1+4` 变成 `1.2.1+5` 的原因。
+
+### 发布说明会原样显示在应用的更新页里
+
+更新页把 Release 的正文当**纯文本**展示，不会渲染 Markdown。用 `##`、`**`、
+`>` 写的话，用户会看到一堆符号。所以发布说明请写**纯文本**。
+
+### 国内手机装的时候会多一道系统提示
+
+小米（HyperOS）上实测：安装器会先弹「有数 正尝试安装应用」，点**继续**之后
+再弹一层「**未查询到此应用的 ICP 备案信息**」—— 个人项目没有备案，这是正常的，
+点**继续安装**仍然照装。
+⚠️ 注意 MIUI 把**「退出」放在主按钮位置**、「继续安装」是次要按钮，
+容易让人以为装不了就放弃了。发版时在发布说明里写一句
+「安装时如果看到 ICP 备案提示，点『继续安装』即可」。
 
 关于**预发布**：`releases/latest` 按定义**不返回预发布**，所以在「只发过预发布」
 的阶段应用会读不到。应用的顺序是「先问 latest，404 才退回 `releases` 列表」——
@@ -105,11 +138,13 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 ```powershell
 Set-Location app
 # 1. 改版本号：versionName 给人看，+ 后面的 build number 必须比上一版大
-#    （已发布过 1.1.0+2 与 1.2.0+3，仓库里现在是 1.2.1+4）
-#    下一个版本至少是 1.2.2+5
+#    （已发布过 1.1.0+2、1.2.0+3、1.2.1+5；下一个至少是 1.2.2+6）
 flutter build apk --release
-# 2. 在 GitHub 上 New release：Tag 填 v1.2.1+4，把下面这个文件拖进去，发布
-#    app/build/app/outputs/flutter-apk/app-release.apk
+# 2. 先把标签推上去（不能靠网页/API 替你建）
+git tag 'v1.2.2+6'; git push origin 'v1.2.2+6'
+# 3. 在 GitHub 上 New release：选那个已有标签，**先存为草稿**,
+#    把 app/build/app/outputs/flutter-apk/app-release.apk 拖进去，
+#    然后再点 Publish release（不要勾 pre-release）
 ```
 
 注意：
@@ -119,6 +154,9 @@ flutter build apk --release
 * **网络**：这台机器在国内，GitHub 可能连不上。应用的检查是「失败就静静过去」，
   手动检查才会显示原因 —— 不会影响日常使用。
 * 每次发布都要让 `+` 后面的数字 **+1**，否则应用不会认为有新版。
+* 发布完可以自己核一下应用会算出什么：`versionCode` 就是标签末尾的数字，
+  `versionName` 是去掉 `v`、去掉 `+` 后面的部分。要和应用自己读到的版本号
+  （「我的」页底部）对得上。
 ## 6. 发布前检查清单
 
 * [ ] 权限共四项，且都说得清用途：
@@ -139,9 +177,15 @@ flutter build apk --release
       还在（Room 的数据库实现、WorkManager 的 Worker）：后者被裁掉不会当场崩，
       但**每月提醒会静默失灵**，更难发现。
 * [ ] 人工核对清单里标为未验证的项，在发布说明里如实写明。
+* [ ] **发布说明写成纯文本**（不要 `##` / `**` / `>` 这些标记）：更新页是原样
+      展示正文的，用户会看到一堆符号。
+* [ ] 告诉国内用户一句：小米/HyperOS 装的时候会弹「未查询到此应用的 ICP 备案信息」，
+      点**继续安装**即可（MIUI 把「退出」放在更显眼的位置）。
 * [ ] **数据库确实是加密的**：装好之后按 `MANUAL_CHECKS.md` 第十六节看一眼
       文件头（不该是 `SQLite format 3`），并确认「隐私与数据」页显示已加密。
 * [ ] 从上一版**覆盖安装**一遍：老库能自动搬成加密库，账目一条不少。
+      ⚠️ 要验这一条，**升级前必须库里有真实数据**（导一份账单再升），
+      否则升完什么也对比不了。
 
 ## 7. 已知限制
 

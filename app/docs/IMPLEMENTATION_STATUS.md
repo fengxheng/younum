@@ -399,6 +399,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机 release 包冷启动 | `adb install -r app-release.apk` + `am start` + 截屏 | 正常进引导页（修正 R8 前为「点开即退出」） |
+| 应用内升级（真机，2026-09-25） | 检查更新 → 下载 → 系统安装器 → 覆盖安装 | **走通**：1.2.1+4 → 1.2.1+5，装完能启动（详见 `MANUAL_CHECKS.md` 第十五节） |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
 | 真机加密落库 | `run-as ... cat databases/younum.db \| od -c -N 16` | 文件头**不是** `SQLite format 3`，`files/younum.database.key` 存在 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
