@@ -37,15 +37,6 @@ String _percentText(int basisPoints) =>
     '${(basisPoints / 100).toStringAsFixed(1)}%';
 
 /// 交易性质的中文说明。
-String _natureLabel(TransactionNature nature) => switch (nature) {
-      TransactionNature.expense => '消费',
-      TransactionNature.income => '收入',
-      TransactionNature.transfer => '转账',
-      TransactionNature.refund => '退款',
-      TransactionNature.excluded => '排除统计',
-      TransactionNature.unknown => '待判断',
-    };
-
 /// 金额前缀：支出是负方向，收入与退款是正方向。
 ///
 /// 金额在库里一律存**非负绝对值**，方向由交易性质表达（指南 3.1），
@@ -605,7 +596,7 @@ class TrendsScreen extends StatelessWidget {
                   value: insights.highestSingle == null
                       ? '—'
                       : '¥${Money.format(insights.highestSingle!.amountCents, grouped: true)}'
-                          ' · ${insights.highestSingleCategoryName ?? _natureLabel(insights.highestSingle!.nature)}',
+                          ' · ${insights.highestSingleCategoryName ?? insights.highestSingle!.nature.label}',
                 ),
                 YounumLineInfo(
                   label: '消费最少的一天',
@@ -809,7 +800,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 (_categoryOf(transaction) ?? '')
                     .toLowerCase()
                     .contains(needle) ||
-                _natureLabel(transaction.nature).contains(needle),
+                transaction.nature.label.contains(needle),
           )
           .toList();
     }
@@ -899,7 +890,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 title: visible[index].merchant,
                 subtitle:
                     '${StatisticsTime.formatShort(visible[index].occurredAtMs)} · '
-                    '${_categoryOf(visible[index]) ?? _natureLabel(visible[index].nature)}'
+                    '${_categoryOf(visible[index]) ?? visible[index].nature.label}'
                     '${visible[index].reviewStatus == ReviewStatus.deferred ? ' · 稍后处理' : ''}',
                 iconKey: registry.iconKeyOf(_categoryOf(visible[index]) ?? '') ??
                     YounumIcons.defaultCategoryIconKey,

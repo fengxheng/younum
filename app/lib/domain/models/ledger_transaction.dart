@@ -29,6 +29,30 @@ enum TransactionNature {
   /// 尚未判断。
   unknown;
 
+  /// 中文名。
+  ///
+  /// ⚠️ 它会写进撤销日志，所以属于**持久化文案** —— 改词等于改数据，
+  /// 不能当成普通界面文案随手换。
+  String get label => switch (this) {
+    expense => '消费',
+    income => '收入',
+    transfer => '转账',
+    refund => '退款',
+    excluded => '排除统计',
+    unknown => '待判断',
+  };
+
+  /// 导出金额的符号：支出为 `-1`，收入与退款为 `1`。
+  ///
+  /// **null 表示这笔没有方向**（转账、排除统计、待判断）—— 导出时按绝对值写，
+  /// 不去猜它是进还是出。金额在库里一律存非负绝对值，方向只能由性质表达
+  /// （指南 3.1）。
+  int? get amountSign => switch (this) {
+    expense => -1,
+    income || refund => 1,
+    transfer || excluded || unknown => null,
+  };
+
   static TransactionNature parse(String value) => switch (value) {
         'EXPENSE' => TransactionNature.expense,
         'INCOME' => TransactionNature.income,

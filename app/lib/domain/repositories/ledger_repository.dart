@@ -712,7 +712,7 @@ final class LedgerRepository {
     final nextRecord = _withoutEntry(snapshot.record, transactionId);
     final undo = UndoRecord(
       type: ReviewActionType.resolve,
-      label: '${transaction.merchant} 改为「${_natureLabel(nature)}」',
+      label: '${transaction.merchant} 改为「${nature.label}」',
       ledgerId: ledgerId,
       month: month,
       targets: <UndoTarget>[
@@ -741,16 +741,6 @@ final class LedgerRepository {
       month: month,
     );
   }
-
-  /// 交易性质的中文名。会写进撤销日志，所以是持久化文案。
-  static String _natureLabel(TransactionNature nature) => switch (nature) {
-        TransactionNature.expense => '消费',
-        TransactionNature.income => '收入',
-        TransactionNature.transfer => '转账',
-        TransactionNature.refund => '退款',
-        TransactionNature.excluded => '排除统计',
-        TransactionNature.unknown => '待判断',
-      };
 
   /// 保存详情页的修改：备注，以及（可选的）用途变更。
   ///
