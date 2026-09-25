@@ -52,6 +52,9 @@ abstract final class AppRoutes {
   static const String deleteConfirm = '/profile/delete';
   static const String offlineStatus = '/profile/offline';
 
+  /// 在线升级：查新版本、下载并交给系统安装器。
+  static const String update = '/profile/update';
+
   /// 调试构建下的设计走查入口（Release 不注册）。
   static const String designReview = '/design-review';
 

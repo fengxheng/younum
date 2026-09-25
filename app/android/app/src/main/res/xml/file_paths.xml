@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 的可见范围。
+
+    只暴露缓存目录下的 updates/：安装包下载到这里，交给系统安装器之后
+    就没有别的用途了。账单数据库、图标图片、导出的 CSV 都不在缓存目录里，
+    所以这一条不会顺带把它们暴露出去。
+
+    ⚠️ 不要为了省事写 <root-path>（整个文件系统）—— 那等于把应用的私有数据
+    全部交出去，与「账单不出本机」的承诺冲突。
+-->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

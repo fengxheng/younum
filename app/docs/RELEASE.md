@@ -69,21 +69,61 @@ storeFile=D:\\dev\\younum\\keystore\\younum_keystore.jks
   `+` 后面的 build number（versionCode）**，所以每次发布都要让它 +1。
 * 还没做的：确认 `com.younum.app` 未被占用（上架前要查）。
 
-## 5. 发布前检查清单
+## 5. 怎么发一个「应用内能升级到」的版本
 
-* [ ] 权限只有两项，且都说得清用途：
+应用内的「检查更新」读的是 GitHub 的 **Releases**（不是 tag）：
+
+```
+GET https://api.github.com/repos/fengxheng/younum/releases/latest
+```
+
+能用的 release 必须同时满足三条：
+
+1. 是 **Release**（在 GitHub 网页上「Draft a new release」），光是 push 一个 tag
+   不算；
+2. tag 里带 **build number**，形如 `v1.1.0+2` —— 比较新旧只看它；
+3. **上传了 `.apk` 资源**（不能只有源码 zip），而且必须是**正式签名**的包：
+   升级是「覆盖安装」，签名不一致会被系统直接拒绝。
+
+发布步骤：
+
+```powershell
+Set-Location app
+# 1. 改版本号：versionName 给人看，+ 后面的 build number 必须比上一版大
+#    例如 version: 1.2.0+3
+flutter build apk --release
+# 2. 在 GitHub 上 New release：Tag 填 v1.2.0+3，把下面这个文件拖进去，发布
+#    app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+注意：
+
+* **限流**：未登录的 GitHub API 每小时 60 次，个人使用足够；但被限流时应用会显示
+  「版本信息读不到（HTTP 403）」，这是正常提示，不是缺陷。
+* **网络**：这台机器在国内，GitHub 可能连不上。应用的检查是「失败就静静过去」，
+  手动检查才会显示原因 —— 不会影响日常使用。
+* 每次发布都要让 `+` 后面的数字 **+1**，否则应用不会认为有新版。
+## 6. 发布前检查清单
+
+* [ ] 权限共四项，且都说得清用途：
       `POST_NOTIFICATIONS`（每月提醒）、
       `WRITE_EXTERNAL_STORAGE`（**仅 Android 9 及以下**存相册，已用
-      `maxSdkVersion="28"` 限住）。**没有网络权限**，与「仅本地」的承诺一致。
+      `maxSdkVersion="28"` 限住）、
+      `INTERNET`（**只用于在线升级**：读一个公开的版本号，
+      以及经用户同意后下载安装包 —— 账单数据不参与）、
+      `REQUEST_INSTALL_PACKAGES`（把下载好的安装包交给系统安装器）。
+      发布说明里**不要**再写「没有网络权限」（2026-09-25 之前是这么写的），
+      要写成「联网只用于检查更新」。
 * [ ] `allowBackup="false"`、`dataExtractionRules` 都在（避免账单被系统云备份）。
 * [ ] 设计走查路由 `AppRoutes.designReview` 只在调试构建注册（`kDebugMode`）。
 * [ ] `flutter analyze` 零告警；`flutter test` 全绿；真机数据库测试全绿。
 * [ ] 人工核对清单里标为未验证的项，在发布说明里如实写明。
 
-## 6. 已知限制
+## 7. 已知限制
 
 见 `docs/TEST_REPORT.md` 的「未验证 / 已知限制」一节，以及 `README.md`
 的「已知限制」。摘要：提醒的真实送达依赖系统调度（本机验证过，但延迟由系统
 决定）；桌面与 Web 不支持选择文件、保存、提醒；应用私有存储**不等于**
 数据库已加密。
+
 

@@ -12,7 +12,9 @@ import '../domain/repositories/document_saver.dart';
 import '../domain/repositories/ledger_file_source.dart';
 import '../domain/repositories/ledger_repository.dart';
 import '../domain/repositories/poster_ports.dart';
+import '../core/preferences/update_store.dart';
 import '../domain/repositories/reminder_scheduler.dart';
+import '../domain/repositories/update_ports.dart';
 import '../features/export/export_scope.dart';
 import '../features/import_flow/import_screens.dart';
 import '../features/import_flow/import_session.dart';
@@ -24,6 +26,8 @@ import '../features/organize/review_screens.dart';
 import '../features/organize/review_session.dart';
 import '../features/profile/profile_screens.dart';
 import '../features/profile/theme_screen.dart';
+import '../features/profile/update_controller.dart';
+import '../features/profile/update_screen.dart';
 import '../features/report/report_screens.dart';
 import '../features/review/design_review_screen.dart';
 import '../features/start/start_screens.dart';
@@ -51,6 +55,10 @@ class YounumApp extends StatefulWidget {
     this.documentSaver = const UnsupportedDocumentSaver(),
     this.reminderStore,
     this.reminderScheduler = const UnsupportedReminderScheduler(),
+    this.updateSource = const UnsupportedUpdateSource(),
+    this.updateInstaller = const UnsupportedUpdateInstaller(),
+    this.updateStore,
+    this.appVersion,
   });
 
   final ThemeController themeController;
@@ -80,6 +88,19 @@ class YounumApp extends StatefulWidget {
   /// 提醒调度能力。桌面与测试环境是不支持实现，开关会显灰。
   final ReminderScheduler reminderScheduler;
 
+  /// 去哪里查最新版本。桌面与测试环境是不支持实现，界面会如实说明。
+  final UpdateSource updateSource;
+
+  /// 下载并交给系统安装器的能力。
+  final UpdateInstaller updateInstaller;
+
+  /// 「忽略这个版本」的持久化。不传就用内存实现（测试与降级路径）。
+  final UpdateStore? updateStore;
+
+  /// 当前安装的版本。读不到时为 null —— 那就**不做升级提示**，
+  /// 而不是拿一个猜出来的版本号去比较。
+  final AppVersion? appVersion;
+
   @override
   State<YounumApp> createState() => _YounumAppState();
 }
@@ -105,6 +126,13 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     store: widget.reminderStore ?? InMemoryReminderStore(),
     scheduler: widget.reminderScheduler,
   );
+  late final UpdateController _update = UpdateController(
+    source: widget.updateSource,
+    installer: widget.updateInstaller,
+    store: widget.updateStore ?? InMemoryUpdateStore(),
+    currentVersionCode: widget.appVersion?.versionCode ?? 0,
+    currentVersionName: widget.appVersion?.versionName ?? '',
+  );
 
   @override
   void initState() {
@@ -118,6 +146,13 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     );
     // 提醒设置与平台状态也启动就读：设置页必须显示**实际**状态。
     _reminder.load();
+    // 升级检查：**静默**查一次（不阻塞启动、失败不留痕）。
+    // 用户主动进「检查更新」时才会看到失败原因。
+    // 版本号读不到（桌面、测试）就不查：没有基准没法比新旧。
+    if (widget.appVersion != null) {
+      _update.pruneSkipped();
+      _update.check();
+    }
     // 点通知进来时要落到整理页（指南 8.2：通知跳转到需要整理的月份）。
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingRoute());
@@ -209,44 +244,47 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
                   session: _import,
                   child: CategoryRegistryScope(
                     registry: _registry,
-                    child: ExportScope(
-                      posterMaker: widget.posterMaker,
-                      documentSaver: widget.documentSaver,
-                      child: MaterialApp(
-                        navigatorKey: _navigatorKey,
-                        navigatorObservers: <NavigatorObserver>[
-                          _TabHighlightObserver(_tabs),
-                        ],
-                        title: '有数',
-                        debugShowCheckedModeBanner: false,
-                        // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
-                        theme: widget.themeController.themeData,
-                        themeMode: ThemeMode.light,
-                        locale: const Locale('zh', 'CN'),
-                        supportedLocales: const <Locale>[Locale('zh', 'CN')],
-                        localizationsDelegates:
-                            const <LocalizationsDelegate<Object>>[
-                              GlobalMaterialLocalizations.delegate,
-                              GlobalWidgetsLocalizations.delegate,
-                              GlobalCupertinoLocalizations.delegate,
-                            ],
-                        initialRoute: widget.appStateController.onboardingSeen
-                            ? AppRoutes.root
-                            : AppRoutes.welcome,
-                        onGenerateRoute: _onGenerateRoute,
-                        builder: (context, child) {
-                          // 下限不压低用户调小字号的意愿，也保住按默认字号设计的版式。
-                          //
-                          // ⚠️ 上限已经**去掉**了：曾经写死 1.6，理由是「堆叠卡片这类
-                          // 固定高度容器会溢出」。那是把容器的限制转嫁给了用户 ——
-                          // 指南 6.3 要的是「不固定屏幕总高度，大字号时允许滚动」。
-                          // 现在卡片高度跟着字号一起长（见 `cardHeightFor`），
-                          // 页面本身可滚动，字号想调多大就调多大。
-                          return MediaQuery.withClampedTextScaling(
-                            minScaleFactor: 0.85,
-                            child: child ?? const SizedBox.shrink(),
-                          );
-                        },
+                    child: UpdateScope(
+                      controller: _update,
+                      child: ExportScope(
+                        posterMaker: widget.posterMaker,
+                        documentSaver: widget.documentSaver,
+                        child: MaterialApp(
+                          navigatorKey: _navigatorKey,
+                          navigatorObservers: <NavigatorObserver>[
+                            _TabHighlightObserver(_tabs),
+                          ],
+                          title: '有数',
+                          debugShowCheckedModeBanner: false,
+                          // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
+                          theme: widget.themeController.themeData,
+                          themeMode: ThemeMode.light,
+                          locale: const Locale('zh', 'CN'),
+                          supportedLocales: const <Locale>[Locale('zh', 'CN')],
+                          localizationsDelegates:
+                              const <LocalizationsDelegate<Object>>[
+                                GlobalMaterialLocalizations.delegate,
+                                GlobalWidgetsLocalizations.delegate,
+                                GlobalCupertinoLocalizations.delegate,
+                              ],
+                          initialRoute: widget.appStateController.onboardingSeen
+                              ? AppRoutes.root
+                              : AppRoutes.welcome,
+                          onGenerateRoute: _onGenerateRoute,
+                          builder: (context, child) {
+                            // 下限不压低用户调小字号的意愿，也保住按默认字号设计的版式。
+                            //
+                            // ⚠️ 上限已经**去掉**了：曾经写死 1.6，理由是「堆叠卡片这类
+                            // 固定高度容器会溢出」。那是把容器的限制转嫁给了用户 ——
+                            // 指南 6.3 要的是「不固定屏幕总高度，大字号时允许滚动」。
+                            // 现在卡片高度跟着字号一起长（见 `cardHeightFor`），
+                            // 页面本身可滚动，字号想调多大就调多大。
+                            return MediaQuery.withClampedTextScaling(
+                              minScaleFactor: 0.85,
+                              child: child ?? const SizedBox.shrink(),
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -382,6 +420,8 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
         return (context) => DeleteConfirmScreen(reminder: _reminder);
       case AppRoutes.offlineStatus:
         return (context) => const OfflineStatusScreen();
+      case AppRoutes.update:
+        return (context) => const UpdateScreen();
 
       case AppRoutes.designReview:
         // 只在调试构建注册。Release 里这个分支永远拿不到。

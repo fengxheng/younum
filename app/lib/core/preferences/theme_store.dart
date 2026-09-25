@@ -50,6 +50,9 @@ abstract final class PreferenceKeys {
 
   /// 每月整理提醒的设置。
   static const String reminder = 'younum.reminder';
+
+  /// 用户点过「忽略这个版本」的那个 build number。
+  static const String updateSkippedVersionCode = 'younum.update.skipped';
 }
 
 /// SharedPreferences 实现。

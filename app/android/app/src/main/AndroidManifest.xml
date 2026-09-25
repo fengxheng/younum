@@ -13,6 +13,19 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <!--
+        在线升级（新版本从 GitHub Release 获取）。
+
+        ⚠️ 这是全应用**唯一**需要联网的地方，而且只用两件事：
+        查最新版本号（一个公开的 JSON）、下载安装包。
+        账单数据、设备标识、使用记录一概不发送 —— 隐私页与
+        docs/RELEASE.md 的文案都是按这个写的，改之前先读它们。
+
+        REQUEST_INSTALL_PACKAGES 只是「允许有数把安装包交给系统安装器」，
+        最终装与不装仍由用户在系统界面上点。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!--
         allowBackup=false：实现指南 8.3 要求「仅本地」承诺与系统备份行为一致。
         首版不给用户可用的加密备份格式，因此不让账单被系统云备份静默上传。
     -->
@@ -51,6 +64,21 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+            把下载好的安装包交给系统安装器时，不能用 file:// 路径（Android 7 起
+            会抛 FileUriExposedException），所以走 FileProvider 给出 content:// URI，
+            并只授予读权限。可见范围限定在缓存目录下的 updates/。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -72,6 +100,15 @@
             <action android:name="android.intent.action.OPEN_DOCUMENT"/>
             <category android:name="android.intent.category.OPENABLE"/>
             <data android:mimeType="*/*"/>
+        </intent>
+        <!--
+            同上的包可见性：查不到系统安装器的话，升级会被误判为
+            「这台设备上没有能安装应用的界面」。
+        -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="content"
+                android:mimeType="application/vnd.android.package-archive"/>
         </intent>
     </queries>
 </manifest>

@@ -76,7 +76,7 @@ class DesignReviewScreen extends StatelessWidget {
         _ReviewEntry('profile', '我的', '全部设置入口', AppRoutes.profile),
         _ReviewEntry('theme', '主题与配色', '六套预设 + 取色器 + HEX', AppRoutes.theme),
         _ReviewEntry('importhistory', '导入记录与撤回', '撤回前展示真实影响', AppRoutes.importHistory),
-        _ReviewEntry('privacy', '隐私与数据', '本机处理，无网络权限', AppRoutes.privacy),
+        _ReviewEntry('privacy', '隐私与数据', '本机处理，联网只用于检查更新', AppRoutes.privacy),
         _ReviewEntry('reminder', '每月整理提醒', '默认关闭，权限状态如实显示', AppRoutes.reminder),
         _ReviewEntry('deleteconfirm', '破坏性操作确认', '逐项说明清除与保留范围', AppRoutes.deleteConfirm),
         _ReviewEntry('offline', '已保存 / 恢复状态', '来自真实会话状态', AppRoutes.offlineStatus),

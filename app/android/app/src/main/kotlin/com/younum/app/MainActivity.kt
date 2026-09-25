@@ -11,16 +11,21 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.FileProvider
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
 
 /**
@@ -68,6 +73,20 @@ class MainActivity : FlutterActivity() {
 
         /** 旧系统（Android 9 及以下）写相册要的存储权限。 */
         private const val REQUEST_GALLERY_PERMISSION = 0x5951
+
+        /**
+         * 在线升级单独一条通道。
+         *
+         * 这是全应用**唯一**会联网的地方：只向 GitHub 要一个公开的版本号，
+         * 再（经用户同意后）下载安装包。账单数据一个字节都不发出去。
+         */
+        private const val UPDATE_CHANNEL = "com.younum.app/update"
+
+        /** 安装包存在应用私有缓存里，不占用户的可见空间。 */
+        private const val UPDATE_DIR = "updates"
+
+        /** 下载缓冲区大小。8KB 是 HttpURLConnection 的常用值。 */
+        private const val DOWNLOAD_BUFFER = 8 * 1024
 
         /** 每月提醒的通道名。与文件通道分开：两件事互不相干。 */
         private const val REMINDER_CHANNEL = "com.younum.app/reminder"
@@ -232,6 +251,193 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // 在线升级。与提醒、文件通道都无关，单独一条。
+        val updateChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL)
+        updateChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                // 有没有「安装未知应用」的权限。没有的话下一步就会失败。
+                "canInstall" -> result.success(canInstallPackages())
+
+                // 当前安装的版本号。**从系统读**，不是从 pubspec 抄一份 ——
+                // 抄过来的那份迟早会和真正装上的包对不上。
+                "appVersion" -> result.success(appVersion())
+
+                // 打开系统的「安装未知应用」设置页。这一下必须用户自己点。
+                "openInstallSettings" -> result.success(openInstallSettings())
+
+                "downloadAndInstall" ->
+                    handleUpdateDownload(call, result, updateChannel)
+
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    /**
+     * 这台设备允不允许「有数」安装应用。
+     *
+     * Android 8 起这是**每应用**一个开关（「安装未知应用」），而且只能由用户
+     * 在系统设置里打开 —— 应用不能替他点。所以这一条只是「能不能」，
+     * 界面据此把话说在前面。
+     */
+    private fun canInstallPackages(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+
+    /**
+     * 当前安装的版本。
+     *
+     * `versionCode` 在 API 28 起换成 `longVersionCode`（旧字段对
+     * 大版本号会截断）。两个字段都回，Dart 侧只用 versionCode。
+     */
+    private fun appVersion(): Map<String, Any?> = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+        mapOf("versionName" to info.versionName, "versionCode" to code)
+    } catch (error: Exception) {
+        Log.d(TAG, "读不到版本号：${error.message}")
+        mapOf("versionName" to null, "versionCode" to null)
+    }
+
+    /** 跳系统的「安装未知应用」页。取不到就退回应用详情页。 */
+    private fun openInstallSettings(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val direct = Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:$packageName"),
+        )
+        val fallback = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName"),
+        )
+        return startSettingIntent(direct) || startSettingIntent(fallback)
+    }
+
+    private fun startSettingIntent(intent: Intent): Boolean = try {
+        startActivity(intent)
+        true
+    } catch (error: ActivityNotFoundException) {
+        Log.d(TAG, "打不开设置页：${error.message}")
+        false
+    }
+
+    /**
+     * 下载安装包并交给**系统安装器**。
+     *
+     * 最后那一下「安装」必须用户自己点：我们不静默安装，也做不到。
+     * 下载过程中通过同一条通道发 `progress`，让界面能显示进度 ——
+     * 几十兆的东西转上一分钟而屏幕上什么都没动，用户会以为卡死了。
+     */
+    private fun handleUpdateDownload(
+        call: MethodCall,
+        result: MethodChannel.Result,
+        channel: MethodChannel,
+    ) {
+        val url = call.argument<String>("url")
+        val fileName = call.argument<String>("fileName") ?: "younum-update.apk"
+        if (url.isNullOrBlank()) {
+            result.error("bad_arguments", "缺少下载地址", null)
+            return
+        }
+        if (!canInstallPackages()) {
+            result.success("needPermission")
+            return
+        }
+
+        fileExecutor.execute {
+            try {
+                val dir = File(cacheDir, UPDATE_DIR).apply { mkdirs() }
+                // 文件名固定：同一次升级不会在缓存里留下一堆几十兆的残留。
+                val apk = File(dir, fileName)
+
+                downloadTo(url, apk) { percent ->
+                    runOnUiThread { channel.invokeMethod("progress", percent) }
+                }
+
+                val uri = FileProvider.getUriForFile(
+                    this,
+                    "$packageName.fileprovider",
+                    apk,
+                )
+                val install = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                if (install.resolveActivity(packageManager) == null) {
+                    runOnUiThread {
+                        result.success("failed:这台设备上没有能安装应用的界面")
+                    }
+                    return@execute
+                }
+                runOnUiThread {
+                    try {
+                        startActivity(install)
+                        result.success("handedOff")
+                    } catch (error: ActivityNotFoundException) {
+                        result.success("failed:打不开系统安装界面：${error.message}")
+                    }
+                }
+            } catch (error: Exception) {
+                val reason = error.message ?: error.javaClass.simpleName
+                runOnUiThread { result.success("failed:下载没有完成：$reason") }
+            }
+        }
+    }
+
+    /** 下载到 [target]，边下边报百分比（内容长度未知时不报）。 */
+    private fun downloadTo(
+        url: String,
+        target: File,
+        onProgress: (Int) -> Unit,
+    ) {
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                // GitHub 的资源地址会 302 到 CDN，必须跟随。
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "younum-app")
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw IOException("服务器返回 $code")
+            }
+            val total = connection.contentLengthLong
+            connection.inputStream.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(DOWNLOAD_BUFFER)
+                    var written = 0L
+                    var lastPercent = -1
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                        written += read
+                        if (total > 0) {
+                            val percent = ((written * 100) / total).toInt()
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                onProgress(percent)
+                            }
+                        }
+                    }
+                    output.flush()
+                }
+            }
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     /** 应用已经在跑时点通知：路由从新的 intent 里取。 */

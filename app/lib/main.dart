@@ -5,6 +5,7 @@ import 'core/preferences/app_state_store.dart';
 import 'core/preferences/reminder_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
+import 'core/preferences/update_store.dart';
 import 'data/db/sqflite_ledger_store.dart';
 import 'data/files/app_files_directory.dart';
 import 'data/files/icon_asset_store.dart';
@@ -14,7 +15,9 @@ import 'data/files/system_document_saver.dart';
 import 'data/files/system_file_source.dart';
 import 'data/files/system_image_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
+import 'data/net/github_update_source.dart';
 import 'data/platform/system_reminder_scheduler.dart';
+import 'data/platform/system_update_installer.dart';
 import 'domain/repositories/icon_asset_ports.dart';
 import 'domain/repositories/document_saver.dart';
 import 'domain/repositories/image_file_source.dart';
@@ -22,6 +25,7 @@ import 'domain/repositories/ledger_file_source.dart';
 import 'domain/repositories/ledger_repository.dart';
 import 'domain/repositories/ledger_store.dart';
 import 'domain/repositories/reminder_scheduler.dart';
+import 'domain/repositories/update_ports.dart';
 
 /// 应用入口。
 ///
@@ -39,6 +43,7 @@ Future<void> main() async {
   ThemeStore themeStore;
   AppStateStore appStateStore;
   ReminderStore reminderStore;
+  UpdateStore updateStore;
   LedgerStore ledgerStore = SqfliteLedgerStore();
   // 分类图片的文件柜。目录从平台通道拿（`filesDir`），这里不猜。
   final IconAssetStore iconFiles = FileIconAssetStore(
@@ -48,10 +53,12 @@ Future<void> main() async {
     themeStore = await SharedPreferencesThemeStore.open();
     appStateStore = await SharedPreferencesAppStateStore.open();
     reminderStore = await SharedPreferencesReminderStore.open();
+    updateStore = await SharedPreferencesUpdateStore.open();
   } catch (_) {
     themeStore = InMemoryThemeStore();
     appStateStore = InMemoryAppStateStore();
     reminderStore = InMemoryReminderStore();
+    updateStore = InMemoryUpdateStore();
     ledgerStore = InMemoryLedgerStore();
   }
 
@@ -116,6 +123,25 @@ Future<void> main() async {
   // Dart 只负责「什么时候该有提醒」与如实上报状态（指南 8.2）。
   final ReminderScheduler reminderScheduler = SystemReminderScheduler();
 
+  // 在线升级。
+  //
+  // ⚠️ 这是全应用**唯一**联网的地方：只向 GitHub 要一个公开的版本号，
+  // 再（经用户同意后）下载安装包。账单数据不参与。
+  // 版本号从系统读（`PackageManager`），不是从 pubspec 抄一份：
+  // 抄的那份迟早会和真正装上的包对不上，而升级判断全靠它。
+  // 读不到就不做升级提示 —— 宁可不说，也不拿猜出来的版本去比。
+  final updateInstaller = SystemUpdateInstaller();
+  final githubUpdateSource = GithubUpdateSource(
+    owner: 'fengxheng',
+    repo: 'younum',
+  );
+  AppVersion? appVersion;
+  try {
+    appVersion = await updateInstaller.readAppVersion();
+  } catch (error) {
+    debugPrint('读不到版本号，本次不做升级检查：$error');
+  }
+
   runApp(
     YounumApp(
       themeController: themeController,
@@ -127,6 +153,10 @@ Future<void> main() async {
       documentSaver: documentSaver,
       reminderStore: reminderStore,
       reminderScheduler: reminderScheduler,
+      updateSource: githubUpdateSource,
+      updateInstaller: updateInstaller,
+      updateStore: updateStore,
+      appVersion: appVersion,
     ),
   );
 }

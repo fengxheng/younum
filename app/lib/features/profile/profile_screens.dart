@@ -25,6 +25,7 @@ import '../export/export_files.dart';
 import '../export/export_scope.dart';
 import '../import_flow/import_session.dart';
 import '../organize/review_session.dart';
+import 'update_controller.dart';
 
 /// 导出**当前月份**的明细 CSV。
 ///
@@ -77,6 +78,9 @@ class ProfileScreen extends StatelessWidget {
     final text = YounumText.of(context);
     final theme = ThemeScope.of(context);
     final session = ReviewSessionScope.of(context);
+    // 订阅升级状态：副标题要显示**真实**的新版本情况，而不是永远一句
+    // 「检查更新」。
+    final update = UpdateScope.of(context);
 
     return YounumScreen(
       bottomBar: const AppBottomBar(),
@@ -163,6 +167,25 @@ class ProfileScreen extends StatelessWidget {
             icon: YounumIcons.clock,
             onTap: () => context.open(AppRoutes.offlineStatus),
           ),
+          // 检查更新。
+          //
+          // 副标题是**真实状态**（有新版本 / 找不到新版本 / 查不到），
+          // 而不是永远写着「检查更新」—— 用户不必点进去才知道有没有新版。
+          YounumSettingRow(
+            title: '检查更新',
+            subtitle: switch (update.phase) {
+              UpdatePhase.available => '有新版本 ${update.available!.versionName}',
+              UpdatePhase.skipped =>
+                '${update.available?.versionName ?? ''} 已被你忽略',
+              UpdatePhase.upToDate => '已经是最新版本',
+              UpdatePhase.unreadable => '上次没查到版本，可以再试一次',
+              UpdatePhase.checking => '正在检查…',
+              UpdatePhase.installing => '正在下载安装包…',
+              UpdatePhase.idle => '当前 ${update.currentVersionName}',
+            },
+            icon: YounumIcons.download,
+            onTap: () => context.open(AppRoutes.update),
+          ),
           YounumSettingRow(
             title: '使用帮助',
             subtitle: '账单导出与常见问题',
@@ -181,8 +204,12 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                const YounumCaptionText(
-                  '把注意力还给生活。\nVersion 1.0 · 设计走查构建',
+                // 版本号**从系统读**，不再写死。以前这里写着「Version 1.0」，
+                // 而实际包里的版本早就不是它了 —— 一句话在那儿静静地说错。
+                YounumCaptionText(
+                  '把注意力还给生活。\n'
+                  'Version ${update.currentVersionName.isEmpty ? '未知' : update.currentVersionName}'
+                  '${AppRoutes.isDesignReviewEnabled ? ' · 设计走查构建' : ''}',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: YounumDimens.gap),
@@ -455,7 +482,11 @@ class PrivacyScreen extends StatelessWidget {
         children: <Widget>[
           Text('你的生活，\n由你掌握。', style: text.screenTitle),
           const SizedBox(height: YounumDimens.gapSm),
-          YounumMutedText('默认本地保存。App 没有申请互联网权限，账单不会离开这台设备。'),
+          YounumMutedText(
+            '默认本地保存。账目数据不会离开这台设备；'
+            '应用只会在你检查更新时联网（只读一个公开的版本号，'
+            '再经你同意后下载安装包）。',
+          ),
           const SizedBox(height: YounumDimens.gap),
           YounumPanel(
             tone: YounumPanelTone.soft,
@@ -791,7 +822,9 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
 /// 已保存与恢复状态。
 ///
 /// 必须从真实的持久化结果生成，不能虚报「已保存」（指南第 5 节 offline）。
-/// 首版没有网络能力，因此离线是常态而不是降级。
+/// 首版没有网络能力，因此离线是常态而不是降级；
+/// 唯一的例外是「检查更新」（只读一个公开的版本号，
+/// 以及经用户同意后下载安装包）。
 class OfflineStatusScreen extends StatelessWidget {
   const OfflineStatusScreen({super.key});
 
