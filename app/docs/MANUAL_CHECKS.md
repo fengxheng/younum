@@ -94,6 +94,19 @@ flutter test integration_test/database_test.dart -d 412913d4
 flutter test integration_test/file_source_test.dart -d 412913d4
 ```
 
+— — —
+
+**⚠️ 改了原生代码（Kotlin / Manifest / Gradle）或依赖之后，上面四条不够。**
+它们跑的是 debug 构建，**不跑 R8**。release 专属的崩溃（反射被裁、保持规则缺失）
+只能这样发现：
+
+```powershell
+flutter build apk --release
+# 装到真机上，**真的点开图标看一眼**，别只看安装输出里的 Success
+```
+
+上一轮就是靠这一步才发现了「release 包点开即退出」（见 `DECISIONS.md` 67 节）。
+
 ---
 
 ## 七、首次使用：三屏引导
@@ -120,16 +133,24 @@ flutter test integration_test/file_source_test.dart -d 412913d4
 - [ ] Android 13+ 开**主题图标**（跟随壁纸取色）：单色层能正确出形状
 - [ ] 小尺寸（例如应用抽屉里的最小图标）下仍能认出是三张卡片 + 一片叶子
 
-## 九、本机渲染后端（环境问题，不是应用缺陷）
+## 九、启动异常怎么分诊（环境 / 原生层）
 
-- [ ] 冷启动白屏时先看 logcat：出现 `Gralloc4: isSupported(...) failed` /
-      `Failed to allocate (...) usage b00` 且**没有** `I/flutter` 的 Dart 输出，
-      说明是设备端 Impeller/Vulkan 的问题 —— **先重启手机**再试
-- [ ] 如果重启后依旧白屏，再用 `flutter run --no-enable-impeller`（Skia）确认
-      是不是同一个原因
-- [ ] 若确认是，再决定要不要在 Manifest 里加
+真机上一片空白时，**先分清是「进程活着但画面不对」还是「进程已经不在了」**，
+两类原因完全不同，查错方向也相反：
+
+- [ ] `adb shell pidof com.younum.app` **有输出**（进程在）+ 白屏 → 渲染/窗口问题。
+      再看 logcat 里有没有 `I/flutter` 的 Dart 输出：有说明 Dart 层已经跑起来了
+      （能看到 `[启动]` 之类），问题在画面这一层
+- [ ] `pidof` **没有输出**（进程不在）→ 原生层崩了，白屏和闪退提示都不会有。
+      去 logcat 里搜 `AndroidRuntime` / `FATAL EXCEPTION`，栈里出现 `r8-map-id-`
+      就是 release 专属的 R8 裁剪问题（见 `DECISIONS.md` 67 节）
+- [ ] 已经实测过、**不成立**的一个旧猜测：本机 Impeller（Vulkan）会白屏。
+      同一台机器上同一个 APK 用普通 `am start` 启动（Impeller 开着）画面完全正常，
+      `--no-enable-impeller` 也正常。所以**不要**去加
       `io.flutter.embedding.android.EnableImpeller=false`
-      （这是换渲染后端的产品决定，Skia 已在弃用）
+- [ ] MIUI 上安装被拦（`INSTALL_FAILED_USER_RESTRICTED`）：先
+      `adb shell input keyevent KEYCODE_WAKEUP` + `adb shell svc power stayon true` 再重试
+
 ## 十、月报页：确认本月范围完整
 
 自动化已覆盖「入口在不在、点了是不是真的写库、还有待整理时不给确认」
@@ -207,6 +228,31 @@ flutter test integration_test/file_source_test.dart -d 412913d4
 - [ ] 把一个分类归档后回到**明细/月报**：用过它的那些记录仍显示它的名字与图标（
       这是「历史引用继续有效」的关键一条）
 - [ ] 只剩一个一级分类时打开它：「归档此分类」应置灰，并说明「这是最后一个分类」
+
+### 分类合并（指南 3.5.8「需显式迁移分配关系」）
+
+自动化已覆盖「规则（同层级 / 目标不能已归档 / 源不能还有细分用途）、
+真的把分配迁过去、同一笔拆给两个分类时金额相加不撞唯一索引、
+退款分配改指向且合计不变、被拒时不写任何东西」（`test/category_merge_test.dart`、
+`test/category_merge_widget_test.dart`，真机 `database_test.dart` 另有 3 条）。
+下面这些靠人手：
+
+- [ ] 新建一个分类「养花」，拿两笔消费归到它 → 打开该分类 → 点「合并到其他分类」
+- [ ] 选目标的那一步：列表里**只应该有同层级**的分类
+      （一级分类的候选里**不该**出现「咖啡茶饮」这种细分用途），也不该出现它自己
+- [ ] 选一个目标 → 确认弹层要说清三件事：账目会改成目标、源分类会被归档、
+      **这一步不能撤销**；点「再想想」应什么都不改
+- [ ] 确认后：提示应是「N 笔账已归到「X」」，回到分类管理，底部「已归档」里多了那个源分类
+- [ ] 进明细 / 月报：那两笔的用途已经变成目标分类，**金额一分没变**，
+      两个分类的统计与占比跟着重新汇总
+- [ ] 把源分类从「已归档」恢复出来：它能回到选择列表，但里面**已经没有账目**了
+- [ ] 拿一笔**同时拆给 A 和 B** 的消费（拆分 → 两个分类各一半）合并 A 到 B：
+      结果应是**一项**、金额是两半之和，明细里不再出现「同一笔拆出两项同一分类」
+- [ ] 给那笔拆分的消费先挂一笔退款（抵扣到两个拆分项上），再合并：
+      退款关联应仍然在、抵扣合计仍等于退款金额，月报净消费不受影响
+- [ ] 打开一个**下面还有细分用途**的分类（如「餐饮」）：「合并到其他分类」应置灰，
+      并说明「先把它们合并或归档」；把一个一级分类的细分用途全归档后再看，入口应可点
+- [ ] 打开一个**已归档**的分类（底部「已归档」区）：它不应出现在任何合并的**目标**列表里
 ## 十三、导出（PNG / CSV）
 
 - [ ] 月报页「保存我的月度回顾」→ 分享与导出页，**每次进来金额都是隐藏的**

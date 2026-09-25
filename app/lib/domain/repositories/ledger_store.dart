@@ -211,6 +211,24 @@ abstract interface class LedgerStore {
   /// `refund_link.refund_transaction_id` 上有唯一索引，这里是个直查。
   Future<RefundLink?> refundLinkOf(int refundTransactionId);
 
+  /// 把一个分类上的分配**整体迁到另一个分类**（分类合并，指南 3.5.8）。
+  ///
+  /// 放在存储层而不是仓库层的原因：这事要同时改 `allocation` 与
+  /// `refund_allocation`，而且 `allocation(transaction_id, category_id)` 上有
+  /// 唯一索引 —— 同一笔交易同时拆给这两个分类时，必须**先合流再删**，
+  /// 否则中途就会撞索引。整个过程必须在一个事务里：崩在中间会留下
+  /// 「一半已迁移」的账，月度统计会因此出现用户无法解释的数字。
+  ///
+  /// 金额只相加、从不改动，所以指南 3.5.5 的两条退款规则
+  /// （退款分配合计等于退款金额、单项累计不超过原分配金额）仍然成立。
+  ///
+  /// 返回**受影响的交易笔数**（迁移前直接挂在源分类上的记录数），
+  /// 供界面如实告诉用户「有 N 笔归到了「Y」」。
+  Future<int> migrateAllocations({
+    required int sourceCategoryId,
+    required int targetCategoryId,
+  });
+
   /// 解除退款关联（指南 3.5.7），退款**回到待核对**。
   ///
   /// 与 [linkRefundAndResolve] 对称，也是**一个事务**里做完：

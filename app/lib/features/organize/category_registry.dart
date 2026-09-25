@@ -123,6 +123,43 @@ class CategoryRegistry extends ChangeNotifier {
     }
   }
 
+  /// 这个分类能不能当合并的源；不能时返回给用户看的原因。
+  ///
+  /// 界面拿它**先把入口置灰并说明**，而不是让用户走完选目标再被拒 ——
+  /// 与名称校验、归档同一条原则。
+  String? mergeBlockedReason(Category category) =>
+      CategoryRules.mergeSourceBlocked(source: category, all: _categories)
+          ?.message;
+
+  /// 能合并到的其他分类。空列表的意思是「没有可合并的目标」——
+  /// 与 [mergeBlockedReason] 是两句不同的话，界面分开说。
+  List<Category> mergeTargetsFor(Category category) =>
+      CategoryRules.mergeTargets(source: category, all: _categories);
+
+  /// 把 [sourceId] 合并到 [targetId]（指南 3.5.8）。
+  ///
+  /// 成功后**整表重读**：合并不只改了源分类（归档），还改了真实账目的用途，
+  /// 内存里那些按分类 ID 缓存的引用不能只靠就地替换。
+  Future<CategoryMergeResult> merge({
+    required int sourceId,
+    required int targetId,
+  }) async {
+    final result = await repository.mergeCategories(
+      ledgerId: _ledgerId,
+      sourceId: sourceId,
+      targetId: targetId,
+    );
+    switch (result) {
+      case CategoryMerged():
+        await load(ledgerId: _ledgerId);
+        _lastFailure = null;
+      case CategoryMergeRejected(:final message):
+        _lastFailure = message;
+    }
+    notifyListeners();
+    return result;
+  }
+
   Category? byId(int id) {
     for (final category in _categories) {
       if (category.id == id) return category;

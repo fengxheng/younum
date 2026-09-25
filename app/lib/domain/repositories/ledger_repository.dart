@@ -151,6 +151,40 @@ final class CategoryRejected extends CategoryWriteResult {
   final String message;
 }
 
+/// 分类合并的结果。
+///
+/// 不复用 [CategoryWriteResult]：合并不只是「保存了一下」——
+/// 它**改了真实账目的用途**，还把源分类归档了。只说一句「保存成功」
+/// 会让用户不知道到底动了什么，所以把「多少笔」单独报回来。
+sealed class CategoryMergeResult {
+  const CategoryMergeResult();
+}
+
+/// 合并成功。
+final class CategoryMerged extends CategoryMergeResult {
+  const CategoryMerged({
+    required this.movedTransactions,
+    required this.sourceName,
+    required this.targetName,
+  });
+
+  /// 有多少笔账换了用途。
+  final int movedTransactions;
+
+  /// 源分类名（已经归档）。
+  final String sourceName;
+
+  /// 目标分类名。
+  final String targetName;
+}
+
+/// 被规则拒绝或中途失败，[message] 直接给用户看。
+final class CategoryMergeRejected extends CategoryMergeResult {
+  const CategoryMergeRejected(this.message);
+
+  final String message;
+}
+
 /// 账本仓库。
 final class LedgerRepository {
   LedgerRepository(
@@ -1069,6 +1103,79 @@ final class LedgerRepository {
       return CategorySaved(saved ?? target);
     } catch (error) {
       return CategoryRejected('分类没有保存成功：$error');
+    }
+  }
+
+  /// 把一个分类合并到另一个分类（指南 3.5.8：
+  /// 「分类删除默认归档，历史引用继续有效。重命名保留稳定 ID；
+  /// **分类合并需显式迁移分配关系**」）。
+  ///
+  /// 三件事，顺序有意如此：
+  ///
+  /// 1. 校验：只能并到同层级的分类，目标不能已归档，源下面不能还有细分用途
+  ///    （见 [CategoryRules.validateMerge]）；
+  /// 2. **显式迁移分配**：把直接挂在源分类上的账目改成目标分类 ——
+  ///    这就是指南要求的那句「显式」，不是把源藏起来让统计自己撞；
+  /// 3. 源分类按 3.5.8 的默认语义**归档**，不删。它已经没有账目了，
+  ///    但用户可能在「已归档」里找它，也可能只是想先把账并过去、
+  ///    过两天再决定这个空壳要不要恢复。
+  ///
+  /// 迁移在前、归档在后：万一归档失败，用户看到的是「账已经并过去了，
+  /// 那个空分类还在」—— 比反过来（分类没了、账没动）好解释得多。
+  ///
+  /// 合并**不提供撤销**：迁移会改掉分配的行结构（撞车时要先把两行合一），
+  /// 撤不回去。所以界面必须在确认弹窗里先把这件事说清楚。
+  Future<CategoryMergeResult> mergeCategories({
+    required int ledgerId,
+    required int sourceId,
+    required int targetId,
+  }) async {
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      Category? source;
+      Category? target;
+      for (final category in all) {
+        if (category.id == sourceId) source = category;
+        if (category.id == targetId) target = category;
+      }
+      if (source == null) {
+        return const CategoryMergeRejected('找不到这个分类，可能已经被删掉了');
+      }
+
+      final error = CategoryRules.validateMerge(
+        source: source,
+        all: all,
+        targetId: targetId,
+      );
+      if (error != null) return CategoryMergeRejected(error.message);
+      // 上面的校验已经保证目标存在；这里只是让类型收窄。
+      final targetName = target?.name ?? '';
+
+      final moved = await _store.migrateAllocations(
+        sourceCategoryId: sourceId,
+        targetCategoryId: targetId,
+      );
+
+      final archived = await setCategoryArchived(
+        ledgerId: ledgerId,
+        categoryId: sourceId,
+        archived: true,
+      );
+      if (archived is CategoryRejected) {
+        // 账已经并过去了，不能假装什么都没发生。
+        return CategoryMergeRejected(
+          '账目已经归到「$targetName」，但「${source.name}」没能归档：'
+          '${archived.message}。它现在是个空分类，可以再删一次。',
+        );
+      }
+
+      return CategoryMerged(
+        movedTransactions: moved,
+        sourceName: source.name,
+        targetName: targetName,
+      );
+    } catch (error) {
+      return CategoryMergeRejected('合并没有完成：$error');
     }
   }
 

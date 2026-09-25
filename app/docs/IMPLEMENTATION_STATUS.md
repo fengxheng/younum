@@ -97,6 +97,36 @@ CSV 与 XLSX 都吃，并且已经用**一份真实的微信导出账单**验过
 * 清除数据：逐项说明清除与保留范围；执行后账本与会话一起归零。
 * 金额：精确十进制解析（`0.005` 报错而非四舍五入）、加总溢出检查。
 
+### 最近一轮（分类合并 · RELEASE 崩溃修正）
+
+**分类合并已完成**（指南 3.5.8 后半句「分类合并需显式迁移分配关系」）。
+策略由需求方定为：**合并 = 把源分类上的账目迁到目标分类**，源分类归档。
+
+* 规则（`CategoryRules.validateMerge` / `mergeSourceBlocked` / `mergeTargets`）：
+  只能并到**同层级**的分类、目标不能已归档、源下面不能还有细分用途；
+  候选列表与写库校验**用的是同一份规则**，所以界面上不可能出现
+  「点下去会被拒」的选项。
+* 迁移（`LedgerStore.migrateAllocations`，真机实现走一个事务）：
+  撞车时先把两行金额合到目标那一行再删源那一行，并把退款分配
+  （`refund_allocation.original_allocation_id`，ON DELETE RESTRICT）改指向；
+  不撞车时只改 `category_id`，**保留行 ID**。
+* 界面：分类编辑页的「合并到其他分类」→ 带图标的同层级目标选择 →
+  确认弹层（写清「账目会改成谁」「源会被归档」「不能撤销」）→
+  如实报回「N 笔账已归到「X」」。源还有细分用途时入口**置灰并说明原因**。
+* 见 `DECISIONS.md` 第 66 节。
+
+**修掉一个只在 release 出现的启动崩溃**（详见 `DECISIONS.md` 第 67 节）：
+R8 把 Room 生成的 `WorkDatabase_Impl` 的无参构造当成死代码删了，
+而它是被反射实例化的 —— 结果是 `flutter build apk --release` 装到真机上
+**点开什么也不发生**（没有白屏，也没有 flutter 日志，因为崩在引擎起来之前）。
+已补 `android/app/proguard-rules.pro` 并在 `build.gradle.kts` 里显式启用 R8 +
+保留规则；同时把 Room 数据库与 WorkManager Worker 两条都写进去了
+（后者不写不会当场炸，但每月提醒会**静默失灵**）。
+
+口径变化：**以后改了原生代码或依赖，除了 `flutter analyze` + debug 构建，
+还必须 `flutter build apk --release` 真机启动一次**，并把这条写进了 README 的
+验收步骤。
+
 ## 本次验证
 
 工程已迁移到 `D:\dev\younum`（原因见 `DECISIONS.md` 第 10 节），以下结果均在**新位置**取得。
@@ -365,10 +395,12 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **583 passed**（含大文件：6 万行解析 + 提交） |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **42 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **598 passed**（含大文件：6 万行解析 + 提交） |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
+| 真机 release 包冷启动 | `adb install -r app-release.apk` + `am start` + 截屏 | 正常进引导页（修正 R8 前为「点开即退出」） |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
+| 真机加密落库 | `run-as ... cat databases/younum.db \| od -c -N 16` | 文件头**不是** `SQLite format 3`，`files/younum.database.key` 存在 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
 | 真机桌面图标 | `adb install` 后截桌面 | 与设计稿「默认·森林绿」一致 |
 
@@ -532,14 +564,14 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 **环境遗留问题（迁移不能解决）**
 
-* **本机 Impeller 会白屏（未定性）**：2026-09-25 在本机 `adb install` 后冷启动，
-  应用永久停在启动页，logcat 里是 `qdgralloc: Unrecognized pixel format 0x3b`、
-  `Gralloc4: isSupported(...) failed`、`Failed to allocate (4 x 4) ... usage b00`。
-  换成 `flutter run --no-enable-impeller`（Skia）立即正常，
-  **与 Dart 代码无关**。之前在同一台设备上是好的，像是设备端 GPU 状态被弄脏了；
-  建议先重启手机再试。如果重启后依旧白屏，可在 Manifest 加
-  `io.flutter.embedding.android.EnableImpeller=false` 绕开，
-  但那是全局换渲染后端，需当成产品决定（而且 Flutter 已在弃用该开关）。
+* **本机 Impeller 会白屏（已定性：不成立）**：之前记录为「本机 Impeller 会白屏」。
+  这一轮在同一台设备上做了对照：同一个 APK 用普通 `am start` 启动（Impeller 开着）
+  **画面完全正常**，`--no-enable-impeller`（Skia）也正常。所以白屏不是 Impeller，
+  不必在 Manifest 里加 `EnableImpeller=false`（那个开关 Flutter 也已在弃用）。
+  当时那次白屏的 logcat 里有 `MainActivity EXITING` + `DeadObjectException`，
+  更像是 MIUI 在那一轮安装/启动时把 Activity 掐掉了。
+  真正需要留意的是**进程在不在**：进程在 + 白屏 → 渲染/窗口；
+  进程不在 → 原生层崩了，去看 `AndroidRuntime`（本轮就这么找到了 R8 那个问题）。
 * 本机 `sdkmanager.bat` 会以 `NTSTATUS 0xC0000409` 崩溃，需要联网补装 SDK 组件时会受阻。
 * 因此 `ndkVersion` 显式指向本机已装的 `30.0.16248370`，并关闭了 Kotlin 增量编译
   （pub 缓存在 C 盘、工程在 D 盘，跨盘符会让 Kotlin 增量缓存报 `different roots`）。
@@ -551,16 +583,16 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 ## 剩余事项
 
-自动化能覆盖的部分都已经做完（`flutter test` 583 项 + 真机数据库 47 项）。剩下的只有三类：
+自动化能覆盖的部分都已经做完（`flutter test` 598 项 + 真机数据库 50 项）。剩下的只有三类：
 
 1. **只能人工走的**：真机系统文件选择器、相册写入、系统通知设置、六套主题逐页对比度、
    系统字号调到最大、TalkBack、横屏旋转 —— 逐条清单在 `docs/MANUAL_CHECKS.md`，
    标着未验证的不要当成已验证。
-2. **仍可做的**：分类合并（指南 3.5.8 后半句「需显式迁移分配关系」）——要做就得
-   先定「合并时旧分配往哪儿迁」的策略。分类归档（63 节）、在线升级（64 节）、
-   数据库加密（65 节）都已完成。
+2. **仍可做的**：指南 3.5.8 那条已经收尾 —— 分类归档（63 节）、分类合并（66 节）、
+   在线升级（64 节）、数据库加密（65 节）都已完成。
 3. **只能人工走的**：正式签名包的覆盖安装与升级流程（`MANUAL_CHECKS.md` 第十五节）、
-   加密后的数据库实际读一遍（第十六节）。上架前还要确认 `com.younum.app` 未被占用。
+   加密后的数据库实际读一遍（第十六节）、分类合并走一遍（第十二节）。
+   上架前还要确认 `com.younum.app` 未被占用。
 
 可选：Photo Picker（现在选图片走的是系统文档选择器）；主题页里的预览金额用的是
 样例数字（**仅预览用**，页面文案已经说明）。

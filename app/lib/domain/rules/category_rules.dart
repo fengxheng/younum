@@ -46,6 +46,44 @@ final class CategoryLastRoot extends CategoryError {
   const CategoryLastRoot() : super('这是最后一个分类，删掉就没有用途可选了');
 }
 
+/// 合并时选了自己。
+final class CategoryMergeSelf extends CategoryError {
+  const CategoryMergeSelf() : super('不能合并到自己');
+}
+
+/// 合并的目标不存在（刚被别处删掉 / 恢复）。
+final class CategoryMergeTargetMissing extends CategoryError {
+  const CategoryMergeTargetMissing() : super('找不到要合并到的分类');
+}
+
+/// 合并的目标已经归档。
+///
+/// 归档的分类不在用途列表里，把账目迁过去等于让它们「从此选不到」——
+/// 用户要的是把两个分类合成一个，不是把账藏起来。
+final class CategoryMergeTargetArchived extends CategoryError {
+  const CategoryMergeTargetArchived()
+      : super('不能合并到已归档的分类，先把它恢复出来');
+}
+
+/// 跨层级 / 跨父级合并。
+///
+/// 一级只能并进一级，细分只能并进**同一个父级下**的细分：
+/// 「把一级分类并进别人的细分用途」在语义上说不通 ——
+/// 迁移之后那笔账会挂在别人的子节点下，用户根本找不到它。
+final class CategoryMergeLevelMismatch extends CategoryError {
+  const CategoryMergeLevelMismatch() : super('只能合并到同一层级的分类');
+}
+
+/// 源分类下面还有细分用途。
+///
+/// 合并只迁移**直接挂在源分类上**的分配，不会动它的细分用途 ——
+/// 那些账会留在一个已经归档的父级下，变成用户看不见也点不到的角落。
+/// 与其默默把账藏起来，不如让用户先把子级处理掉（归档或合并都可以）。
+final class CategoryMergeHasChildren extends CategoryError {
+  const CategoryMergeHasChildren()
+      : super('这个分类下面还有细分用途，先把它们合并或归档再合并这个分类');
+}
+
 /// 分类规则。
 abstract final class CategoryRules {
   /// 名称长度上限（与原型校验一致）。
@@ -97,4 +135,73 @@ abstract final class CategoryRules {
     if (remaining.isEmpty) return const CategoryLastRoot();
     return null;
   }
+
+  /// 能不能把 [source] 合并到 [targetId]（指南 3.5.8）。
+  ///
+  /// 同名/同层级的重名检查不在这里：合并本来就是为了把两个不同的名字合成一个，
+  /// 而重名在同一个父级下根本建不出来（`idx_category_parent_name` 唯一索引）。
+  ///
+  /// 源分类**可以是已归档的**：归档列表里那些清理不掉的分类，
+  /// 合并掉它们正是用户想要的。
+  ///
+  /// 检查顺序是「先源后目标」：源自己就有问题（下面还有细分用途）时，
+  /// 报那一句更有用 —— 它才是用户真正要先去处理的东西。
+  static CategoryError? validateMerge({
+    required Category source,
+    required List<Category> all,
+    required int? targetId,
+  }) {
+    final sourceError = mergeSourceBlocked(source: source, all: all);
+    if (sourceError != null) return sourceError;
+
+    if (targetId == null) return const CategoryMergeTargetMissing();
+    if (targetId == source.id) return const CategoryMergeSelf();
+
+    Category? target;
+    for (final category in all) {
+      if (category.id == targetId) target = category;
+    }
+    if (target == null) return const CategoryMergeTargetMissing();
+    if (target.archived) return const CategoryMergeTargetArchived();
+    // 同一父级才叫同一层级：两个一级分类的 parentId 都是 null。
+    if (target.parentId != source.parentId) {
+      return const CategoryMergeLevelMismatch();
+    }
+    return null;
+  }
+
+  /// 只检查**源分类自己**能不能当合并的源。
+  ///
+  /// 拆出来是因为界面要分两句问：「这个分类能不能合并」（本函数）
+  /// 与「能并到哪里」（[mergeTargets]）。合成一句的话，
+  /// 源分类自己没问题、只是没别的分类可并时，界面只能报出一句错的话。
+  static CategoryError? mergeSourceBlocked({
+    required Category source,
+    required List<Category> all,
+  }) {
+    for (final category in all) {
+      // 已归档的子级不挡路：它本来就不在用途列表里，
+      // 归档父级时它们已经跟着归档过了。
+      if (category.parentId == source.id && !category.archived) {
+        return const CategoryMergeHasChildren();
+      }
+    }
+    return null;
+  }
+
+  /// 可以合并到的候选目标（界面用它出选择列表）。
+  ///
+  /// 规则只有一份：这里逐个调用 [validateMerge]，界面因此不可能给出一个
+  /// 「点下去会被拒」的选项。
+  static List<Category> mergeTargets({
+    required Category source,
+    required List<Category> all,
+  }) => <Category>[
+    for (final category in all)
+      if (category.isRoot == source.isRoot &&
+          category.parentId == source.parentId &&
+          validateMerge(source: source, all: all, targetId: category.id) ==
+              null)
+        category,
+  ];
 }

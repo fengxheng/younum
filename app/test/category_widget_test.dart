@@ -187,6 +187,10 @@ void main() {
 
     await tester.tap(find.text('宠物'));
     await tester.pumpAndSettle();
+    // 编辑页顶部有图标网格、图片入口、合并入口……「删除」在最底下，
+    // 小屏上会落在可视区之外。先滚到它再点，别让 tap 打空气。
+    await tester.ensureVisible(find.text('删除此分类'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('删除此分类'));
     await tester.pumpAndSettle();
 

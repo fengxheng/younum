@@ -338,6 +338,240 @@ void main() {
     });
   });
 
+  group('分类合并（指南 3.5.8：显式迁移分配关系）', () {
+    /// 把第一笔消费拆成「餐饮 + 购物」，返回（交易 ID、餐饮那一项、购物那一项）。
+    ///
+    /// 为什么非要在真机上再测一遍：这一段的关键全在 **SQL** 上 ——
+    /// `allocation(transaction_id, category_id)` 的唯一索引、
+    /// `refund_allocation.original_allocation_id` 的 ON DELETE RESTRICT，
+    /// 内存实现根本碰不到它们。合并写错了，表现是抛异常或者账目凭空消失，
+    /// 都是不能靠单元测试兜住的那一类。
+    Future<({int transactionId, Allocation food, Allocation shopping})>
+        splitFirstCard() async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+      final half = current.amountCents ~/ 2;
+
+      final outcome = await repository.split(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        items: <AllocationDraft>[
+          AllocationDraft(categoryId: SeedCategoryIds.food, amountCents: half),
+          AllocationDraft(
+            categoryId: SeedCategoryIds.shopping,
+            amountCents: current.amountCents - half,
+          ),
+        ],
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      final dataset = await repository.dataset(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        months: <YearMonth>{DemoLedgerSeed.month},
+      );
+      final items = dataset.allocationsOf(current.id);
+      return (
+        transactionId: current.id,
+        food: items.firstWhere((item) => item.categoryId == SeedCategoryIds.food),
+        shopping: items.firstWhere(
+          (item) => item.categoryId == SeedCategoryIds.shopping,
+        ),
+      );
+    }
+
+    test('撞车 + 退款分配：金额相加、退款改指向，重开数据库仍然如此', () async {
+      final repository = _repositoryFor(store);
+      final card = await splitFirstCard();
+      final originalCents = card.food.amountCents + card.shopping.amountCents;
+
+      // 一笔退款，明确抵扣到两个拆分项上（指南 3.5.5）。
+      final refundFood = card.food.amountCents ~/ 4;
+      final refundShopping = card.shopping.amountCents ~/ 4;
+      final refundCents = refundFood + refundShopping;
+      final refundId = await store.insertTransaction(
+        LedgerTransaction(
+          id: LedgerTransaction.idUnassigned,
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          occurredAtMs: StatisticsTime.epochMsFor(2026, 9, 26, 12),
+          amountCents: refundCents,
+          merchant: '退款 · 合并用例',
+          nature: TransactionNature.refund,
+          reviewStatus: ReviewStatus.pending,
+          timeZone: StatisticsTime.timeZone,
+          sourceNamespace: 'ALIPAY',
+          sourceTransactionId: 'merge-refund-dev',
+        ),
+      );
+      final linked = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: card.transactionId,
+        allocations: <RefundAllocationDraft>[
+          RefundAllocationDraft(
+            originalAllocationId: card.food.id,
+            amountCents: refundFood,
+          ),
+          RefundAllocationDraft(
+            originalAllocationId: card.shopping.id,
+            amountCents: refundShopping,
+          ),
+        ],
+      );
+      expect(linked, isA<ReviewSucceeded>(), reason: '$linked');
+
+      final result = await repository.mergeCategories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        sourceId: SeedCategoryIds.shopping,
+        targetId: SeedCategoryIds.food,
+      );
+      expect(result, isA<CategoryMerged>(), reason: '$result');
+      expect((result as CategoryMerged).movedTransactions, 1);
+
+      // ① 同一笔交易对同一分类只能留一行，金额是两项之和。
+      final db = await openRaw();
+      final allocations = await db.query(
+        'allocation',
+        where: 'transaction_id = ?',
+        whereArgs: <Object?>[card.transactionId],
+      );
+      expect(allocations, hasLength(1), reason: '撞唯一索引时必须先合流再删');
+      expect(allocations.single['category_id'], SeedCategoryIds.food);
+      expect(allocations.single['amount_cents'], originalCents);
+      expect(
+        allocations.single['id'],
+        card.food.id,
+        reason: '留下的是目标那一行，退款分配才有地方改指向',
+      );
+
+      // ② 退款分配不能指着一个已经不存在的拆分项（外键 RESTRICT）。
+      final refundRows = await db.query(
+        'refund_allocation',
+        where: 'original_allocation_id = ?',
+        whereArgs: <Object?>[card.food.id],
+      );
+      expect(refundRows, isNotEmpty, reason: '退款分配必须还在，金额不能丢');
+      expect(
+        refundRows.fold<int>(
+          0,
+          (sum, row) => sum + (row['amount_cents']! as int),
+        ),
+        refundCents,
+        reason: '合计必须仍然等于退款金额（指南 3.5.5）',
+      );
+      expect(
+        await countOf(db, 'refund_allocation'),
+        refundRows.length,
+        reason: '同一个关联上不该留下两条指向同一项的记录',
+      );
+
+      // ③ 源分类归档，不是删除。
+      final categories = await store.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      );
+      expect(
+        categories
+            .firstWhere((item) => item.id == SeedCategoryIds.shopping)
+            .archived,
+        isTrue,
+      );
+
+      // ④ 重开数据库：上面这些不是内存里的假象。
+      await store.close();
+      store = SqfliteLedgerStore(databasePath: databasePath);
+      final reopenRepo = _repositoryFor(store);
+      final reopenDataset = await reopenRepo.dataset(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        months: <YearMonth>{DemoLedgerSeed.month},
+      );
+      final after = reopenDataset.allocationsOf(card.transactionId);
+      expect(after, hasLength(1));
+      expect(after.single.categoryId, SeedCategoryIds.food);
+      expect(after.single.amountCents, originalCents);
+      expect(reopenDataset.linkForRefund(refundId), isNotNull);
+    });
+
+    test('多笔交易一起迁移，并且不动别的分类的账', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final entries = snapshot.record.entries.take(3).toList();
+      expect(entries.length, 3, reason: '前提：这个月至少有三笔');
+
+      // 两笔归到「购物」，一笔归到「餐饮」（后者不该被合并动到）。
+      for (final entry in entries.take(2)) {
+        final outcome = await repository.confirm(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          month: DemoLedgerSeed.month,
+          transactionId: entry.transactionId,
+          categoryId: SeedCategoryIds.shopping,
+        );
+        expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+      }
+      final keep = await repository.confirm(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: entries[2].transactionId,
+        categoryId: SeedCategoryIds.food,
+      );
+      expect(keep, isA<ReviewSucceeded>(), reason: '$keep');
+
+      final result = await repository.mergeCategories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        sourceId: SeedCategoryIds.shopping,
+        targetId: SeedCategoryIds.transport,
+      );
+      expect(result, isA<CategoryMerged>(), reason: '$result');
+      expect((result as CategoryMerged).movedTransactions, 2);
+
+      final dataset = await repository.dataset(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        months: <YearMonth>{DemoLedgerSeed.month},
+      );
+      for (final entry in entries.take(2)) {
+        expect(
+          dataset.allocationsOf(entry.transactionId).single.categoryId,
+          SeedCategoryIds.transport,
+        );
+      }
+      expect(
+        dataset.allocationsOf(entries[2].transactionId).single.categoryId,
+        SeedCategoryIds.food,
+        reason: '没被合并的分类上的账目一点都不能动',
+      );
+    });
+
+    test('被拒的合并不写任何东西', () async {
+      final repository = _repositoryFor(store);
+      final db = await openRaw();
+      final allocationsBefore = await countOf(db, 'allocation');
+
+      final result = await repository.mergeCategories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        sourceId: SeedCategoryIds.food,
+        targetId: SeedCategoryIds.food,
+      );
+      expect(result, isA<CategoryMergeRejected>());
+      expect(await countOf(db, 'allocation'), allocationsBefore);
+      expect(await countOf(db, 'refund_allocation'), 0);
+      final categories = await store.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      );
+      expect(
+        categories.every((item) => !item.archived),
+        isTrue,
+        reason: '被拒之后连归档状态都不能动',
+      );
+    });
+  });
+
   group('外键真的在生效', () {
     test('外键开关已打开：关联指向不存在的交易会失败', () async {
       // 这一条同时证明了 `PRAGMA foreign_keys = ON` 确实执行了 ——

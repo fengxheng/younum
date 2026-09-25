@@ -1488,7 +1488,7 @@ LIVE OK: 1.1.0+2 apk=https://github.com/fengxheng/younum/releases/download/v1.1.
   很难查 —— 所以 `onConfigure` 里主动读一次 `sqlite_master`。
 * **FileProvider 只暴露缓存里的 updates/**，账单、图标、导出文件都不在内。
 
-**验证（真机，47 项全绿）：** 明文库搬完之后**文件头不再是 `SQLite format 3`**
+**验证（加密那 5 条真机用例全绿）：** 明文库搬完之后**文件头不再是 `SQLite format 3`**
 （这是「真的加密了」最直接的证据）、账目与用户建的分类一条不少、留底已删、
 正确口令能读、不给口令读不出、留底还在时会自动重来、已经是加密库时不重复搬、
 全新安装什么都不做。
@@ -1502,3 +1502,100 @@ LIVE OK: 1.1.0+2 apk=https://github.com/fengxheng/younum/releases/download/v1.1.
 2. sqflite 会把同一个原生异常**报两次**：一次回到 await 的 Future，
    一次落到 zone 的错误处理器上（会让测试莫名失败）。测试里用 try/catch 接住，
    不再用 `runZonedGuarded`（那个会把测试卡到超时）。
+
+## 66. 分类合并：账目「迁过去」，源分类「归档」
+
+指南 3.5.8 对这一块只有一句：「分类删除默认归档，历史引用继续有效。
+重命名保留稳定 ID；**分类合并需显式迁移分配关系**。」—— 前半句归档已经做了，
+后半句就是这一节。
+
+**先说策略（需求方确认）：合并 = 把源分类上的账目迁到目标分类。**
+不是「把源藏起来、统计时悄悄换算」，也不是「保留两个分类但显示成一个」——
+`allocation.category_id` 真的改掉，因为只有这样，明细、月报、导出、
+按分类筛选这些**已经写好的代码**才会一致，不需要各自打补丁。
+
+**三件事，顺序有意如此：**
+
+1. 校验（`CategoryRules.validateMerge`）：只能并到**同层级**的分类（一级对一级，
+   细分对同一个父级下的细分）、目标不能已归档、源下面不能还有细分用途；
+2. **迁移分配**（`LedgerStore.migrateAllocations`，一个事务）；
+3. 源分类**归档**（不是删除）。
+
+迁移在前、归档在后：万一归档这一小步失败，用户看到的是「账已经并过去了，
+那个空分类还在」—— 比反过来（分类没了、账没动）好解释得多。
+
+**为什么「只能同层级」：** 把一级分类并进别人的细分用途，迁移之后那笔账会挂在
+别人的子节点下，用户根本找不到它；反过来把细分提成一级更没法解释。
+跨层级不是被技术禁掉的，是语义上说不通。
+
+**为什么「源下面还有细分用途就拒掉」：** 合并只迁移**直接挂在源分类上**的分配。
+子分类的账不会跟着搬（它们本来就属于别的分类），结果会变成「一堆账挂在一个已经归档的
+父级下面」。与其默默把账藏进角落，不如让用户先把子级处理掉（归档或合并都行）——
+把话说清比替用户猜强。
+
+**为什么放在存储层：** 这件事在 SQL 上有两个真实的坑，只能在事务里解决：
+
+* `allocation(transaction_id, category_id)` 上有**唯一索引**。同一笔交易同时拆给了
+  源和目标时，直接把源那行的 `category_id` 改过去会撞索引 —— 必须先把两行金额
+  合到目标那一行，再删源那一行。金额只相加、从不改动，因此「分配合计等于原金额」
+  （指南 3.5.1）仍然成立。
+* `refund_allocation.original_allocation_id` 是 **ON DELETE RESTRICT**，
+  而它指的是**具体的拆分项**。删掉源那一项前，要先把指向它的退款分配改指向留下来
+  的那一项；两边都已经指向同一个关联时金额相加（合计不变，所以
+  「退款分配合计等于退款金额」「单项累计不超原分配金额」仍然成立，指南 3.5.5）。
+
+不撞车的大多数情况就简单了：`UPDATE allocation SET category_id = ?` ——
+**保留行 ID 的改动**，退款分配指的本来就是它，不需要动。
+
+**不提供撤销。** 撞车时分配的行结构真的变了（两行合一），撤不回去。
+所以界面的确认弹层里写明了「这一步不能撤销」—— 这是用户敢按下去的前提。
+
+**代价与边界（已知）：** 合并会让「这笔退款当初是抵在哪个拆分项上」的信息变粗
+（变成了目标分类那一项）。这是合并语义本身带来的，不是实现偷懒。
+另外，撤销历史（`review_action`）里存的是旧的分配草稿：合并之后再去撤销一条**旧**操作，
+分配会按当时记录的 `categoryId` 回来 —— 也就是会重新指向已经归档的源分类。
+记录仍然正常显示（归档分类保留身份），这里没有额外处理。
+
+## 67. release 包启动即崩：R8 把反射构造裁掉了
+
+**现象很误导人**：`flutter build apk --release` 装到真机上，点开图标**什么都没发生**
+—— 没有白屏，没有闪退提示，直接回到桌面。`pidof` 查不到进程，logcat 里一条
+`flutter` 日志都没有（因为崩在 Flutter 引擎起来**之前**）。
+
+真凶在 `AndroidRuntime` 那行：
+
+```text
+FATAL EXCEPTION: main
+java.lang.RuntimeException: Unable to get provider androidx.startup.InitializationProvider
+Caused by: java.lang.NoSuchMethodException: androidx.work.impl.WorkDatabase_Impl.<init> []
+    at androidx.work.WorkManagerInitializer...
+```
+
+Room 生成的 `WorkDatabase_Impl` 是**反射**实例化的（`Class.getDeclaredConstructor()`
++ `newInstance()`）。R8 做静态分析时看不到这个调用点，就把那个无参构造当成死代码删了。
+而 WorkManager 是通过 `androidx.startup` 的 ContentProvider 在**进程启动时**自动初始化的，
+所以这个崩溃发生在最早的阶段，任何 Dart 层的日志都没机会输出。
+
+**为什么只有 release 会炸：** debug 不跑 R8。`flutter analyze` 也看不见
+（那只管 Dart）。所以：**改了原生代码或依赖之后，必须用 `flutter build apk --release`
+真机启动一次**，只跑 debug 等于没验。
+
+**修法：** 新增 `android/app/proguard-rules.pro`，在 `build.gradle.kts` 里给
+release 显式写上 `isMinifyEnabled = true` + `proguardFiles(...)`，规则两条：
+
+```proguard
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+```
+
+第二条同样重要但**不会当场炸**：`ReminderWorker` 也是按类名从数据库里读出来反射构造的，
+被裁掉或改名的话，每月整理提醒只是**静默失灵** —— 更难发现。
+
+**顺带纠正一条之前的判断。** 之前把「真机白屏」记成了本机 Impeller 的问题。
+这一轮在同一台机器上做了对照：同一个 APK 用普通 `am start` 启动（Impeller 开着）
+**画面完全正常**，`--no-enable-impeller` 也正常。所以白屏不是 Impeller；
+那一轮的 logcat 里同时有 `MainActivity EXITING` + `DeadObjectException`，
+更像 MIUI 在那次安装/启动时把 Activity 掐掉了。结论已按实测改写，
+不再把它当成渲染后端的问题。

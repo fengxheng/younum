@@ -250,6 +250,114 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<int> migrateAllocations({
+    required int sourceCategoryId,
+    required int targetCategoryId,
+  }) async {
+    final db = await _db;
+    return db.transaction<int>((txn) async {
+      // 先数「有多少笔账会换用途」：这一步必须在改动之前做，
+      // 改完之后源分类上已经什么都没有了。
+      final counted = await txn.rawQuery(
+        'SELECT COUNT(DISTINCT transaction_id) AS n FROM allocation '
+        'WHERE category_id = ?',
+        <Object?>[sourceCategoryId],
+      );
+      final affected = (counted.first['n'] as int?) ?? 0;
+
+      // ① 先处理「同一笔交易同时拆给了源和目标」这种撞车。
+      //    把源那行的 category_id 直接改成目标会撞上
+      //    idx_allocation_tx_category，所以要把两行金额合到目标那一行，
+      //    再删掉源那一行。
+      final collisions = await txn.rawQuery(
+        'SELECT s.id AS source_id, t.id AS target_id, '
+        '       s.amount_cents AS source_amount, '
+        '       t.amount_cents AS target_amount '
+        'FROM allocation s '
+        'JOIN allocation t '
+        '  ON t.transaction_id = s.transaction_id AND t.category_id = ? '
+        'WHERE s.category_id = ?',
+        <Object?>[targetCategoryId, sourceCategoryId],
+      );
+
+      for (final row in collisions) {
+        final sourceId = row['source_id']! as int;
+        final targetId = row['target_id']! as int;
+        final total =
+            (row['source_amount']! as int) + (row['target_amount']! as int);
+
+        // 退款分配引用的是**具体的拆分项**，而源那一项马上要被删掉
+        // （`refund_allocation.original_allocation_id` 是 ON DELETE RESTRICT）。
+        // 先把它们改指向目标那一项；两边都已经指向同一个关联时把金额相加，
+        // 合计不变，所以退款规则仍然成立。
+        final refunds = await txn.query(
+          'refund_allocation',
+          columns: <String>['id', 'refund_link_id', 'amount_cents'],
+          where: 'original_allocation_id = ?',
+          whereArgs: <Object?>[sourceId],
+        );
+        for (final refund in refunds) {
+          final refundId = refund['id']! as int;
+          final linkId = refund['refund_link_id']! as int;
+          final amount = refund['amount_cents']! as int;
+
+          final already = await txn.query(
+            'refund_allocation',
+            columns: <String>['id', 'amount_cents'],
+            where: 'refund_link_id = ? AND original_allocation_id = ?',
+            whereArgs: <Object?>[linkId, targetId],
+            limit: 1,
+          );
+          if (already.isEmpty) {
+            await txn.update(
+              'refund_allocation',
+              <String, Object?>{'original_allocation_id': targetId},
+              where: 'id = ?',
+              whereArgs: <Object?>[refundId],
+            );
+          } else {
+            await txn.update(
+              'refund_allocation',
+              <String, Object?>{
+                'amount_cents': (already.first['amount_cents']! as int) + amount,
+              },
+              where: 'id = ?',
+              whereArgs: <Object?>[already.first['id']],
+            );
+            await txn.delete(
+              'refund_allocation',
+              where: 'id = ?',
+              whereArgs: <Object?>[refundId],
+            );
+          }
+        }
+
+        await txn.delete(
+          'allocation',
+          where: 'id = ?',
+          whereArgs: <Object?>[sourceId],
+        );
+        await txn.update(
+          'allocation',
+          <String, Object?>{'amount_cents': total},
+          where: 'id = ?',
+          whereArgs: <Object?>[targetId],
+        );
+      }
+
+      // ② 剩下的没有撞车，改分类就行 —— 而且是**保留行 ID 的改动**，
+      //    退款分配指的还是原来那一项，不需要动。
+      await txn.update(
+        'allocation',
+        <String, Object?>{'category_id': targetCategoryId},
+        where: 'category_id = ?',
+        whereArgs: <Object?>[sourceCategoryId],
+      );
+      return affected;
+    });
+  }
+
+  @override
   Future<CategoryIconAsset> saveIconAsset(CategoryIconAsset asset) async {
     final db = await _db;
     // 同一份内容只留一条：先查哈希，命中了直接用它（文件也已经在了）。

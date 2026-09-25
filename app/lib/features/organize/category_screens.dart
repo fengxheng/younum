@@ -18,6 +18,7 @@ import '../../core/designsystem/younum_text.dart';
 import '../../domain/models/category.dart';
 import '../../domain/repositories/icon_asset_ports.dart';
 import '../../domain/repositories/ledger_file_source.dart';
+import '../../domain/repositories/ledger_repository.dart';
 import '../../domain/rules/category_rules.dart';
 import 'category_registry.dart';
 import 'review_session.dart';
@@ -594,6 +595,142 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
     return category == null ? null : _registry.archiveBlockedReason(category);
   }
 
+  /// 不能合并时给用户看的原因（例如「下面还有细分用途」）。
+  String? get _mergeBlockedReason {
+    final category = _editingCategory;
+    return category == null ? null : _registry.mergeBlockedReason(category);
+  }
+
+  /// 合并到另一个分类（指南 3.5.8：分类合并需显式迁移分配关系）。
+  ///
+  /// 两步都要先问：**并到哪里**（选列表），以及**确认**。
+  /// 确认里把真实影响说清楚 —— 「账目会改成目标分类」「源分类会被归档」
+  /// 「不能撤销」—— 用户才敢按下去，与归档确认同一条原则。
+  Future<void> _merge() async {
+    final category = _editingCategory;
+    if (category == null || _saving || _processing) return;
+    final registry = _registry;
+
+    final targets = registry.mergeTargetsFor(category);
+    if (targets.isEmpty) {
+      showYounumToast(context, '没有可以合并到的分类：需要同层级的另一个分类才行');
+      return;
+    }
+
+    final target = await _pickMergeTarget(category, targets);
+    if (target == null || !mounted) return;
+
+    final confirmed = await showConfirmSheet(
+      context: context,
+      title: '把「${category.name}」并到「${target.name}」？',
+      description:
+          '已经用「${category.name}」归好类的账目会改成「${target.name}」：'
+          '金额、时间、备注都不变，月度统计会跟着重新汇总。\n\n'
+          '「${category.name}」会变成一个空分类并归档 —— 不再出现在选择列表里。'
+          '想找回来时可以在「分类管理」最底部恢复（那时它里面已经没有账目了）。\n\n'
+          '这一步不能撤销。',
+      confirmLabel: '合并',
+      cancelLabel: '再想想',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _saving = true);
+    final result = await registry.merge(
+      sourceId: category.id,
+      targetId: target.id,
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+
+    switch (result) {
+      case CategoryMergeRejected(:final message):
+        // 失败要说清原因，而且**不能**返回上一页 —— 否则用户以为并好了。
+        setState(() => _errorText = message);
+      case CategoryMerged(:final movedTransactions, :final targetName):
+        showYounumToast(
+          context,
+          movedTransactions == 0
+              ? '「${category.name}」并到了「$targetName」，它下面本来没有账目'
+              : '$movedTransactions 笔账已归到「$targetName」',
+        );
+        Navigator.of(context).pop();
+    }
+  }
+
+  /// 选合并目标。取消返回 null，不产生副作用。
+  ///
+  /// 不用通用的文字选项弹层：分类在这套界面里一直是**带图标**出现的
+  /// （分类网格、管理页、明细），到这里突然只剩一行行名字会让用户
+  /// 要靠文字回想自己那几个自定义分类长得什么样。
+  Future<Category?> _pickMergeTarget(
+    Category source,
+    List<Category> targets,
+  ) {
+    final registry = _registry;
+    final text = YounumText.of(context);
+    final colors = YounumColors.of(context);
+    return showModalBottomSheet<Category>(
+      context: context,
+      backgroundColor: colors.washColor,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  YounumDimens.pageHorizontal,
+                  0,
+                  YounumDimens.pageHorizontal,
+                  8,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    Text('合并到哪个分类？', style: text.sheetTitle),
+                    const SizedBox(height: 4),
+                    YounumMutedText(
+                      '只有同一层级的分类能合并。「${source.name}」上的账目会全部归到选中的那个。',
+                    ),
+                  ],
+                ),
+              ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: targets.length,
+                  itemBuilder: (context, index) {
+                    final option = targets[index];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: YounumDimens.pageHorizontal,
+                      ),
+                      child: YounumListRow(
+                        title: option.name,
+                        iconKey: option.iconKey ??
+                            YounumIcons.defaultCategoryIconKey,
+                        imagePath: registry.imagePathOf(option),
+                        showDivider: index != targets.length - 1,
+                        semanticLabel: '合并到${option.name}',
+                        onTap: () => Navigator.of(sheetContext).pop(option),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 删除 / 归档这个分类（指南 3.5.8：**分类删除默认归档**）。
   ///
   /// 说清楚「变的是什么、不变的是什么」：用户以为删掉分类会连账一起没，
@@ -773,6 +910,24 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                   : (_processing ? '图片处理中…' : (_isEditing ? '保存图标' : '保存分类')),
               onPressed: (_saving || _processing) ? null : _save,
             ),
+
+            // 合并（指南 3.5.8）。放在删除 / 归档之前：
+            // 比起「删掉一个分类」，用户更常想要的其实是「这两个其实是一回事」。
+            if (_isEditing && _editingCategory != null) ...<Widget>[
+              const SizedBox(height: YounumDimens.gapLg),
+              PrimaryAction(
+                label: _saving ? '正在合并…' : '合并到其他分类',
+                style: YounumActionStyle.plain,
+                onPressed: (_saving || _processing || _mergeBlockedReason != null)
+                    ? null
+                    : _merge,
+              ),
+              YounumPillNote(
+                _mergeBlockedReason ??
+                    '把「${_editingCategory!.name}」上的账目全部归到另一个同层级的分类，'
+                        '然后把空掉的它归档。不能撤销。',
+              ),
+            ],
 
             // 删除 / 归档（指南 3.5.8）。只对已有分类显示 ——
             // 还在新建的东西没什么可删的。

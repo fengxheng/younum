@@ -8,10 +8,15 @@
 | 层级 | 命令 | 结果 |
 | --- | --- | --- |
 | 静态检查 | `flutter analyze` | 零告警 |
-| 单元 + 界面测试 | `flutter test` | **583 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **47 passed** |
+| 单元 + 界面测试 | `flutter test` | **598 passed**（1 个联网用例默认跳过） |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed** |
+| 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 调试包 | `flutter build apk --debug` | 成功 |
-| 发布包 | `flutter build apk --release` | 成功（52.3 MB，含全部 ABI） |
+| 发布包 | `flutter build apk --release` + 真机冷启动 + 截屏 | 成功（67.2 MB，含全部 ABI），能正常进引导页 |
+
+⚠️ 最后一行是这一轮新加的：`flutter build apk --release` **必须真的装到真机上
+点开看一眼**。R8 只在 release 里跑，`flutter analyze` 与 debug 构建都发现不了
+「反射构造被裁掉」这类问题（见 `DECISIONS.md` 67 节）。
 
 ## 2. 测试都覆盖了什么
 
@@ -32,8 +37,14 @@
 * **在线升级**：GitHub 响应的各种残缺形态（没有 APK、tag 里没带 build number、
   根本不是对象）、版本号解析、忽略语义（只忽略这一版，更高版本照旧提示）、
   以及**「查不到」绝不能被说成「已是最新」** —— 规则、控制器、界面三层各有用例。
+* **分类**：新建真的落库、同级重名被拒且不写、改名保留稳定 ID、图标可换可恢复、
+  图片图标的完整链路、删除默认归档且能从「已归档」恢复、历史引用不受影响；
+  **合并**单独一组：规则（同层级 / 目标不能已归档 / 源不能还有细分用途）、
+  真的把分配迁过去、同一笔拆给两个分类时金额相加不撞唯一索引、
+  退款分配改指向且合计不变、被拒时一行都不写。真机上另有 3 条走真实 SQL。
 * **真机 SQLite**：事务原子性、外键与唯一约束、迁移链、导入暂存/提交/撤回、
-  退款关联、图标资源、进程被杀后的导入恢复。测试库与正式库隔离。
+  退款关联、图标资源、分类合并（唯一索引撞车 + ON DELETE RESTRICT）、
+  进程被杀后的导入恢复。测试库与正式库隔离。
 
 ## 3. 真实账单验证（用真文件跑过）
 

@@ -120,6 +120,107 @@ final class InMemoryLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<int> migrateAllocations({
+    required int sourceCategoryId,
+    required int targetCategoryId,
+  }) async {
+    _throwIfFailing();
+    var affected = 0;
+
+    // 撞车时源那一项会被并进目标那一项：记下映射，最后一次性改退款分配。
+    final merged = <int, int>{};
+
+    for (final entry in _allocations.entries.toList()) {
+      final items = entry.value;
+      if (!items.any((item) => item.categoryId == sourceCategoryId)) continue;
+      affected++;
+
+      final target =
+          items.where((item) => item.categoryId == targetCategoryId).firstOrNull;
+      if (target == null) {
+        _allocations[entry.key] = <Allocation>[
+          for (final item in items)
+            item.categoryId == sourceCategoryId
+                ? Allocation(
+                    id: item.id,
+                    transactionId: item.transactionId,
+                    categoryId: targetCategoryId,
+                    amountCents: item.amountCents,
+                  )
+                : item,
+        ];
+        continue;
+      }
+
+      // 与真机实现同样的处理：金额相加、删掉源那一项（指南 3.5.1
+      // 要求分配合计等于原金额，相加正好保持这一点）。
+      var extra = 0;
+      final kept = <Allocation>[];
+      for (final item in items) {
+        if (item.categoryId != sourceCategoryId) {
+          kept.add(item);
+          continue;
+        }
+        extra += item.amountCents;
+        merged[item.id] = target.id;
+      }
+      _allocations[entry.key] = <Allocation>[
+        for (final item in kept)
+          if (item.id == target.id)
+            Allocation(
+              id: item.id,
+              transactionId: item.transactionId,
+              categoryId: item.categoryId,
+              amountCents: item.amountCents + extra,
+            )
+          else
+            item,
+      ];
+    }
+
+    if (merged.isNotEmpty) {
+      final collapsed = <RefundAllocation>[];
+      for (final refund in _refundAllocations) {
+        final movedTo = merged[refund.originalAllocationId];
+        if (movedTo == null) {
+          collapsed.add(refund);
+          continue;
+        }
+        final existing = collapsed
+            .where(
+              (item) =>
+                  item.refundLinkId == refund.refundLinkId &&
+                  item.originalAllocationId == movedTo,
+            )
+            .firstOrNull;
+        if (existing == null) {
+          collapsed.add(
+            RefundAllocation(
+              id: refund.id,
+              refundLinkId: refund.refundLinkId,
+              originalAllocationId: movedTo,
+              amountCents: refund.amountCents,
+            ),
+          );
+          continue;
+        }
+        final index = collapsed.indexOf(existing);
+        collapsed[index] = RefundAllocation(
+          id: existing.id,
+          refundLinkId: existing.refundLinkId,
+          originalAllocationId: existing.originalAllocationId,
+          amountCents: existing.amountCents + refund.amountCents,
+        );
+      }
+      _refundAllocations
+        ..clear()
+        ..addAll(collapsed);
+    }
+
+    return affected;
+  }
+
+  @override
   Future<List<CategoryIconAsset>> iconAssets() async =>
       _iconAssets.values.toList()..sort((a, b) => a.id.compareTo(b.id));
 
