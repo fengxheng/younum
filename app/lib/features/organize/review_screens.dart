@@ -166,8 +166,8 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
             child: Column(
               children: <Widget>[
                 YounumTileIcon(
-                  iconKey: registry.iconFor(displayCategory).iconKey,
-                  imagePath: registry.iconFor(displayCategory).imagePath,
+                  iconKey: registry.iconKeyOf(displayCategory) ??
+                      YounumIcons.defaultCategoryIconKey,
                   size: 46,
                 ),
                 const SizedBox(height: YounumDimens.gap),

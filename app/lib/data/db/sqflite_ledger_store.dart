@@ -191,6 +191,28 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<Category> saveCategory(Category category) async {
+    final db = await _db;
+    if (category.id == Category.idUnassigned) {
+      // 新建：不写 id，交给 AUTOINCREMENT。
+      final values = _categoryValues(category)..remove('id');
+      final id = await db.insert('category', values);
+      return category.copyWith(id: id);
+    }
+
+    final updated = await db.update(
+      'category',
+      _categoryValues(category)..remove('id'),
+      where: 'id = ?',
+      whereArgs: <Object?>[category.id],
+    );
+    if (updated != 1) {
+      throw StateError('分类不存在：${category.id}');
+    }
+    return category;
+  }
+
+  @override
   Future<LedgerTransaction?> transactionById(int transactionId) async {
     final db = await _db;
     final rows = await db.query(

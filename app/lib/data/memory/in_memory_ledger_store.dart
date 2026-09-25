@@ -86,8 +86,36 @@ final class InMemoryLedgerStore implements LedgerStore {
 
   @override
   Future<List<Category>> categories({required int ledgerId}) async =>
+      // 与 SQL 实现同一顺序：一级在前，然后按 sort_order、id。
+      // 之前这里只按 sort_order 排，子分类会和一级分类交错，
+      // 界面按这个顺序铺网格就会时对时错。
       _categories.values.toList()
-        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+        ..sort((a, b) {
+          final byParent = (a.parentId ?? -1).compareTo(b.parentId ?? -1);
+          if (byParent != 0) return byParent;
+          final byOrder = a.sortOrder.compareTo(b.sortOrder);
+          if (byOrder != 0) return byOrder;
+          return a.id.compareTo(b.id);
+        });
+
+  @override
+  Future<Category> saveCategory(Category category) async {
+    _throwIfFailing();
+    final saved = category.id == Category.idUnassigned
+        ? category.copyWith(id: _nextCategoryId())
+        : category;
+    _categories[saved.id] = saved;
+    return saved;
+  }
+
+  /// 分类没有账本维度，ID 只要在本进程内唯一即可。
+  int _nextCategoryId() {
+    var candidate = 1;
+    for (final id in _categories.keys) {
+      if (id >= candidate) candidate = id + 1;
+    }
+    return candidate;
+  }
 
   @override
   Future<LedgerDataset> dataset({

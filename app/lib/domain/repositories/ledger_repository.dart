@@ -14,6 +14,7 @@ import '../models/ledger_transaction.dart';
 import '../models/review_session_record.dart';
 import '../models/year_month.dart';
 import '../rules/allocation_rules.dart';
+import '../rules/category_rules.dart';
 import '../rules/month_insights.dart';
 import '../rules/month_overview.dart';
 import '../rules/refund_rules.dart';
@@ -120,6 +121,28 @@ final class ReviewFailed extends ReviewOutcome {
   const ReviewFailed(this.error);
 
   final Object error;
+}
+
+/// 分类写操作的结果。
+///
+/// 不复用 [ReviewOutcome]：那一套带的是「整理会话快照」，而分类改动
+/// 与队列、月报都无关，硬塞进去只会让两边都别扭。
+sealed class CategoryWriteResult {
+  const CategoryWriteResult();
+}
+
+/// 保存成功，带回落库后的分类。
+final class CategorySaved extends CategoryWriteResult {
+  const CategorySaved(this.category);
+
+  final Category category;
+}
+
+/// 被规则拒绝或保存失败，[message] 直接给用户看。
+final class CategoryRejected extends CategoryWriteResult {
+  const CategoryRejected(this.message);
+
+  final String message;
 }
 
 /// 账本仓库。
@@ -877,6 +900,76 @@ final class LedgerRepository {
   /// 按 ID 取一笔记录。只读场景用（比如把原消费的商户名显示出来）。
   Future<LedgerTransaction?> transactionById(int transactionId) =>
       _store.transactionById(transactionId);
+
+  /// 新建一个分类。
+  ///
+  /// 名字校验与同级重名走 [CategoryRules]；重名这里会**明确拒绝**，
+  /// 而不是让数据库的唯一索引抛出来 —— 那句话是给用户看的。
+  Future<CategoryWriteResult> createCategory({
+    required int ledgerId,
+    required String name,
+    required String iconKey,
+    int? parentId,
+  }) async {
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      final siblings = <Category>[
+        for (final category in all)
+          if (category.parentId == parentId) category,
+      ];
+
+      final error = CategoryRules.validateName(name: name, siblings: siblings);
+      if (error != null) return CategoryRejected(error.message);
+
+      // 排到同级最后，而不是插在最前面 —— 用户新建的分类多半是补充性质的。
+      var sortOrder = 0;
+      for (final sibling in siblings) {
+        if (sibling.sortOrder >= sortOrder) sortOrder = sibling.sortOrder + 1;
+      }
+
+      final created = await _store.saveCategory(
+        Category(
+          id: Category.idUnassigned,
+          parentId: parentId,
+          name: name.trim(),
+          iconType: CategoryIconType.builtin,
+          iconKey: iconKey,
+          sortOrder: sortOrder,
+          isBuiltin: false,
+        ),
+      );
+      return CategorySaved(created);
+    } catch (error) {
+      return CategoryRejected('分类没有保存成功：$error');
+    }
+  }
+
+  /// 改一个分类的图标。
+  ///
+  /// 只改图标（指南 14.3）：名称、ID、分类关系与金额都不动。
+  /// 图标按**分类 ID** 存，所以以后改名也不会把图标弄丢。
+  Future<CategoryWriteResult> setCategoryIcon({
+    required int ledgerId,
+    required int categoryId,
+    required String iconKey,
+  }) async {
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      for (final category in all) {
+        if (category.id != categoryId) continue;
+        final saved = await _store.saveCategory(
+          category.copyWith(
+            iconType: CategoryIconType.builtin,
+            iconKey: iconKey,
+          ),
+        );
+        return CategorySaved(saved);
+      }
+      return const CategoryRejected('找不到这个分类，可能已经被删掉了');
+    } catch (error) {
+      return CategoryRejected('图标没有保存成功：$error');
+    }
+  }
 
   /// 建立退款与原消费的关联。
   ///

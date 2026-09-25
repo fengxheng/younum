@@ -147,6 +147,57 @@ void main() {
     });
   });
 
+  group('分类落库（指南 3.5.8 / 14.3）', () {
+    test('新建分类与图标改动，重开数据库仍然在', () async {
+      final repository = _repositoryFor(store);
+
+      final created = await repository.createCategory(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        name: '养花',
+        iconKey: 'leaf',
+      );
+      expect(created, isA<CategorySaved>(), reason: '$created');
+      final categoryId = (created as CategorySaved).category.id;
+      expect(
+        await repository.setCategoryIcon(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          categoryId: categoryId,
+          iconKey: 'coffee',
+        ),
+        isA<CategorySaved>(),
+      );
+
+      // 关掉再按同一份数据库打开 —— 这就是「重启之后还在」。
+      await store.close();
+      store = SqfliteLedgerStore(databasePath: databasePath);
+
+      final categories = await store.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      );
+      final saved = categories.firstWhere(
+        (category) => category.name == '养花',
+      );
+      expect(saved.id, categoryId, reason: 'ID 必须稳定，否则历史分配会对不上');
+      expect(saved.iconKey, 'coffee');
+      expect(saved.isBuiltin, isFalse);
+      expect(saved.archived, isFalse);
+    });
+
+    test('同级重名被拒，数据库里不多一条', () async {
+      final repository = _repositoryFor(store);
+      final before = await countOf(await openRaw(), 'category');
+
+      final result = await repository.createCategory(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        name: '餐饮',
+        iconKey: 'leaf',
+      );
+
+      expect(result, isA<CategoryRejected>());
+      expect(await countOf(await openRaw(), 'category'), before);
+    });
+  });
+
   group('外键真的在生效', () {
     test('外键开关已打开：关联指向不存在的交易会失败', () async {
       // 这一条同时证明了 `PRAGMA foreign_keys = ON` 确实执行了 ——

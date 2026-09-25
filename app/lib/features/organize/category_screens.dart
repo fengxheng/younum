@@ -13,7 +13,8 @@ import '../../core/designsystem/younum_colors.dart';
 import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
-import '../../data/sample/sample_data.dart';
+import '../../domain/models/category.dart';
+import '../../domain/rules/category_rules.dart';
 import 'category_registry.dart';
 import 'review_session.dart';
 
@@ -35,20 +36,52 @@ class AllCategoriesScreen extends StatefulWidget {
 }
 
 class _AllCategoriesScreenState extends State<AllCategoriesScreen> {
-  late String _selectedCategory =
-      _isBuiltin(widget.args.currentCategory) ? widget.args.currentCategory! : '餐饮';
+  /// 选中的一级分类名。null 表示还没点过，按「当前分类或第一个」算。
+  String? _selectedCategory;
+
+  /// 选中的细分用途。
   String? _selectedSubcategory;
 
-  static bool _isBuiltin(String? name) =>
-      name != null && SampleData.categories.any((c) => c.name == name);
-
   /// 最终生效的选择：细分用途优先。
-  String get _effective => _selectedSubcategory ?? _selectedCategory;
+  String _effective(String selectedName) => _selectedSubcategory ?? selectedName;
 
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final registry = CategoryRegistryScope.of(context);
+    final roots = registry.roots;
+
+    if (roots.isEmpty) {
+      // 分类还没读出来（或者真的一个都没有）：给出解释，而不是一片空白。
+      return YounumScreen(
+        title: '选择用途',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text('生活，不止一种分类', style: text.screenTitle),
+            const SizedBox(height: YounumDimens.gapLg),
+            YounumMutedText(
+              registry.isLoaded ? '这个账本还没有可用的分类。' : '正在读取分类…',
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 当前分类在列表里就用它，否则从第一个开始 ——
+    // 以前这里写死「餐饮」，分类一旦改名就选不中了。
+    final current = widget.args.currentCategory;
+    final selectedName = _selectedCategory ??
+        (current != null && registry.byName(current) != null
+            ? current
+            : roots.first.name);
+    final children = registry.childrenOf(
+      registry.byName(selectedName)?.id ?? 0,
+    );
+    final customRoots = <Category>[
+      for (final category in roots)
+        if (!category.isBuiltin) category,
+    ];
 
     return YounumScreen(
       title: '选择用途',
@@ -60,84 +93,91 @@ class _AllCategoriesScreenState extends State<AllCategoriesScreen> {
           YounumMutedText('先选大类，也可以进一步记录细分用途。'),
           const SizedBox(height: YounumDimens.gapLg),
           CategoryGrid(
-            items: SampleData.categories
-                .map(
-                  (category) => YounumCategoryItem(
-                    name: category.name,
-                    iconKey: registry
-                        .iconFor(category.name, fallbackIconKey: category.iconKey)
-                        .iconKey,
-                    imagePath: registry.iconFor(category.name).imagePath,
-                  ),
-                )
-                .toList(growable: false),
-            selectedName: _selectedCategory,
+            items: <YounumCategoryItem>[
+              for (final category in roots)
+                YounumCategoryItem(
+                  name: category.name,
+                  iconKey:
+                      category.iconKey ?? YounumIcons.defaultCategoryIconKey,
+                ),
+            ],
+            selectedName: selectedName,
             onSelected: (name) => setState(() {
               _selectedCategory = name;
               _selectedSubcategory = null;
             }),
           ),
-          YounumSectionHeader(title: '$_selectedCategory · 细分用途'),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: SampleData.diningSubcategories
-                .map(
-                  (name) => YounumChip(
-                    label: name,
-                    selected: _selectedSubcategory == name,
+          YounumSectionHeader(title: '$selectedName · 细分用途'),
+          if (children.isEmpty)
+            const YounumPillNote('这个分类还没有细分用途，直接用它就好。')
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                for (final child in children)
+                  YounumChip(
+                    label: child.name,
+                    selected: _selectedSubcategory == child.name,
+                    leadingIconKey: child.iconKey,
                     onTap: () => setState(
-                      () => _selectedSubcategory = _selectedSubcategory == name ? null : name,
+                      () => _selectedSubcategory =
+                          _selectedSubcategory == child.name ? null : child.name,
                     ),
                   ),
-                )
-                .toList(growable: false),
-          ),
-          const YounumDivider(),
-          YounumSectionHeader(
-            title: '我的分类',
-            trailing: YounumPressable(
-              onTap: () => context.open(AppRoutes.categoryManage),
-              semanticLabel: '管理分类图标',
-              borderRadius: BorderRadius.circular(YounumDimens.radiusControlSmall),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-                child: Text(
-                  '管理图标 ›',
-                  style: text.label.copyWith(color: YounumColors.of(context).primaryColor),
+              ],
+            ),
+          if (customRoots.isNotEmpty) ...<Widget>[
+            const YounumDivider(),
+            YounumSectionHeader(
+              title: '我的分类',
+              trailing: YounumPressable(
+                onTap: () => context.open(AppRoutes.categoryManage),
+                semanticLabel: '管理分类图标',
+                borderRadius:
+                    BorderRadius.circular(YounumDimens.radiusControlSmall),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+                  child: Text(
+                    '管理图标 ›',
+                    style: text.label
+                        .copyWith(color: YounumColors.of(context).primaryColor),
+                  ),
                 ),
               ),
             ),
-          ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: registry.customNames
-                .map(
-                  (name) => YounumChip(
-                    label: name,
-                    selected: _selectedSubcategory == name,
-                    leadingIconKey: registry.iconFor(name).iconKey,
-                    leadingImagePath: registry.iconFor(name).imagePath,
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                for (final category in customRoots)
+                  YounumChip(
+                    label: category.name,
+                    selected: _selectedSubcategory == category.name,
+                    leadingIconKey: category.iconKey,
                     onTap: () => setState(
-                      () => _selectedSubcategory = _selectedSubcategory == name ? null : name,
+                      () => _selectedSubcategory =
+                          _selectedSubcategory == category.name
+                              ? null
+                              : category.name,
                     ),
                   ),
-                )
-                .toList(growable: false),
-          ),
+              ],
+            ),
+          ],
           const SizedBox(height: YounumDimens.gapXl),
           PrimaryAction(
-            label: '使用此分类 · $_effective',
+            label: '使用此分类 · ${_effective(selectedName)}',
             onPressed: () {
               switch (widget.args.purpose) {
                 case CategoryPickPurpose.card:
-                  ReviewSessionScope.of(context).select(_effective);
+                  ReviewSessionScope.of(context).select(_effective(selectedName));
                   Navigator.of(context).pop();
                 case CategoryPickPurpose.detail:
                 case CategoryPickPurpose.splitItem:
                   // 返回选中值给调用方，而不是替它决定后续跳转。
-                  Navigator.of(context).pop(_effective);
+                  Navigator.of(context).pop(_effective(selectedName));
               }
             },
           ),
@@ -162,23 +202,6 @@ class CategoryManageScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final registry = CategoryRegistryScope.of(context);
-
-    final entries = <YounumCategoryItem>[
-      ...SampleData.categories.map(
-        (category) => YounumCategoryItem(
-          name: category.name,
-          iconKey: registry.iconFor(category.name, fallbackIconKey: category.iconKey).iconKey,
-          imagePath: registry.iconFor(category.name).imagePath,
-        ),
-      ),
-      ...registry.customNames.map(
-        (name) => YounumCategoryItem(
-          name: name,
-          iconKey: registry.iconFor(name).iconKey,
-          imagePath: registry.iconFor(name).imagePath,
-        ),
-      ),
-    ];
 
     return YounumScreen(
       title: '分类管理',
@@ -215,20 +238,26 @@ class CategoryManageScreen extends StatelessWidget {
               return Wrap(
                 spacing: spacing,
                 runSpacing: spacing,
-                children: entries
-                    .map(
-                      (entry) => SizedBox(
-                        width: width,
-                        child: _ManageCategoryCard(
-                          entry: entry,
-                          onTap: () => context.open(
-                            AppRoutes.categoryEditor,
-                            arguments: CategoryEditorArgs(categoryName: entry.name),
+                children: <Widget>[
+                  for (final category in registry.roots)
+                    SizedBox(
+                      width: width,
+                      child: _ManageCategoryCard(
+                        entry: YounumCategoryItem(
+                          name: category.name,
+                          iconKey: category.iconKey ??
+                              YounumIcons.defaultCategoryIconKey,
+                        ),
+                        onTap: () => context.open(
+                          AppRoutes.categoryEditor,
+                          arguments: CategoryEditorArgs(
+                            categoryId: category.id,
+                            categoryName: category.name,
                           ),
                         ),
                       ),
-                    )
-                    .toList(growable: false),
+                    ),
+                ],
               );
             },
           ),
@@ -241,8 +270,8 @@ class CategoryManageScreen extends StatelessWidget {
             ),
           ),
           const YounumDemoNote(
-            '设计走查：图标修改会立即在分类网格与本页生效。'
-            '阶段 4 接入系统 Photo Picker 与私有文件写入后，重启也会保留。',
+            '分类与图标存在本机数据库里，重启之后仍然在；改图标不会改动'
+            '消费金额、分类关系与整理进度。图片图标还没做（只支持预设线条图标）。',
           ),
         ],
       ),
@@ -337,30 +366,23 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
       TextEditingController(text: widget.args.categoryName ?? '');
 
   late String _draftIconKey;
-  String? _draftImagePath;
   String? _errorText;
   String _statusMessage = '';
 
-  /// 图片处理中必须禁用保存（指南 14.3）。
-  ///
-  /// 首版只支持预设图标，因此恒为 false；阶段 4 接入 Photo Picker 后
-  /// 由异步解码过程控制。
-  final bool _processing = false;
+  /// 正在写库。写完之前按钮要保持不可点（指南 14.3）。
+  bool _saving = false;
 
-  bool get _isEditing => widget.args.categoryName != null;
+  bool get _isEditing => widget.args.categoryId != null;
 
   @override
   void initState() {
     super.initState();
-    final registry = _registry;
-    final config = _isEditing
-        ? registry.iconFor(
-            widget.args.categoryName!,
-            fallbackIconKey: SampleData.iconKeyFor(widget.args.categoryName!),
-          )
-        : const CategoryIconConfig.builtin(YounumIcons.defaultCategoryIconKey);
-    _draftIconKey = config.iconKey;
-    _draftImagePath = config.imagePath;
+    // 读当前的已提交图标作为草稿起点；草稿只有按「保存」才会写库。
+    final categoryId = widget.args.categoryId;
+    _draftIconKey = categoryId == null
+        ? YounumIcons.defaultCategoryIconKey
+        : _registry.byId(categoryId)?.iconKey ??
+              YounumIcons.defaultCategoryIconKey;
   }
 
   @override
@@ -377,47 +399,49 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
 
   /// 是否存在未保存的草稿。
   bool get _isDirty {
-    if (!_isEditing) return false;
-    final committed = _registry.iconFor(
-      widget.args.categoryName!,
-      fallbackIconKey: SampleData.iconKeyFor(widget.args.categoryName!),
-    );
-    return committed.iconKey != _draftIconKey ||
-        committed.imagePath != _draftImagePath;
+    final categoryId = widget.args.categoryId;
+    if (categoryId == null) return false;
+    final committed = _registry.byId(categoryId)?.iconKey;
+    return committed != null && committed != _draftIconKey;
   }
 
+  /// 名称校验走规则层：界面与仓库用同一份判断，
+  /// 不会出现「界面放行、写库被拒」这种两套说法。
   bool _validateName(String name) {
-    if (name.isEmpty) {
-      setState(() => _errorText = '请先填写分类名称');
-      return false;
-    }
-    // 名称限 1–12 个文字、数字、空格或短横线，与原型校验一致。
-    final pattern = RegExp(r'^[\p{L}\p{N} _-]{1,12}$', unicode: true);
-    if (!pattern.hasMatch(name)) {
-      setState(() => _errorText = '名称限 1–12 个文字、数字、空格或短横线');
-      return false;
-    }
-    final builtinNames = SampleData.categories.map((c) => c.name);
-    if (!_isEditing && _registry.exists(name, builtinNames)) {
-      setState(() => _errorText = '这个分类已经存在');
-      return false;
-    }
-    setState(() => _errorText = null);
-    return true;
+    final error = CategoryRules.validateName(
+      name: name,
+      siblings: _registry.roots,
+    );
+    setState(() => _errorText = error?.message);
+    return error == null;
   }
 
   Future<void> _save() async {
-    if (_processing) return;
-    final name = _isEditing ? widget.args.categoryName! : _nameController.text.trim();
-    if (!_validateName(name)) return;
+    if (_saving) return;
+    final registry = _registry;
+    final categoryId = widget.args.categoryId;
+    if (categoryId == null && !_validateName(_nameController.text)) return;
 
-    final config = CategoryIconConfig.builtin(_draftIconKey);
-    if (_isEditing) {
-      _registry.saveIcon(name, config);
-    } else {
-      _registry.createCategory(name, config);
-    }
+    setState(() => _saving = true);
+    final ok = categoryId == null
+        ? await registry.create(
+            name: _nameController.text.trim(),
+            iconKey: _draftIconKey,
+          )
+        : await registry.setIcon(
+            categoryId: categoryId,
+            iconKey: _draftIconKey,
+          );
     if (!mounted) return;
+    setState(() => _saving = false);
+
+    if (!ok) {
+      // 失败要说清原因，而且**不能**返回上一页 —— 否则用户以为存上了。
+      setState(
+        () => _errorText = registry.lastFailure ?? '没有保存成功，可以重试',
+      );
+      return;
+    }
     showYounumToast(context, _isEditing ? '分类图标已保存' : '分类已保存');
     Navigator.of(context).pop();
   }
@@ -473,7 +497,6 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                 alignment: Alignment.center,
                 child: CategoryIconView(
                   iconKey: _draftIconKey,
-                  imagePath: _draftImagePath,
                   size: 42,
                   color: colors.primaryColor,
                 ),
@@ -517,7 +540,6 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                 );
                 setState(() {
                   _draftIconKey = key;
-                  _draftImagePath = null;
                   _statusMessage = '图标已预览，保存后生效';
                 });
               },
@@ -540,10 +562,9 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
               label: '恢复默认图标',
               style: YounumActionStyle.plain,
               onPressed: () => setState(() {
-                _draftIconKey = _isEditing
-                    ? SampleData.iconKeyFor(widget.args.categoryName!)
-                    : YounumIcons.defaultCategoryIconKey;
-                _draftImagePath = null;
+                _draftIconKey = CategoryRegistry.defaultIconKeyOf(
+                  widget.args.categoryName,
+                );
                 _statusMessage = '已恢复默认图标，保存后生效';
               }),
             ),
@@ -558,7 +579,7 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
               ),
             PrimaryAction(
               label: _isEditing ? '保存图标' : '保存分类',
-              onPressed: _processing ? null : _save,
+              onPressed: _saving ? null : _save,
             ),
           ],
         ),

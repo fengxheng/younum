@@ -66,12 +66,7 @@ class _YounumAppState extends State<YounumApp> {
     ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
   );
   late final CategoryRegistry _registry = CategoryRegistry(
-    initial: <String, CategoryIconConfig>{
-      // 演示账本预置两个自定义分类，让「我的分类」有内容可看。
-      '宠物': const CategoryIconConfig.builtin('heart'),
-      '学习成长': const CategoryIconConfig.builtin('file'),
-    },
-    customNames: <String>['宠物', '学习成长'],
+    repository: widget.ledgerRepository,
   );
 
   @override
@@ -80,6 +75,10 @@ class _YounumAppState extends State<YounumApp> {
     // 账本模式存在偏好里，启动时按它把会话接到对应账本。
     widget.appStateController.addListener(_syncLedgerMode);
     _review.useLedger(isDemo: widget.appStateController.isDemoLedger);
+    // 分类是界面上到处都要用的（网格、明细、月报），启动就读一次。
+    _registry.load(
+      ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
+    );
   }
 
   /// 进入 / 退出演示账本时整体重载会话。

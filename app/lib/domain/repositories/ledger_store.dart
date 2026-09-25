@@ -67,6 +67,16 @@ abstract interface class LedgerStore {
   /// 账本的分类（含归类的）。
   Future<List<Category>> categories({required int ledgerId});
 
+  /// 新增或更新一个分类，返回落库后的分类。
+  ///
+  /// 新建时用 [Category.idUnassigned]，实现负责分配 ID。
+  /// 分类没有账本维度（指南 3.2 的 `Category` 只有父级关系），
+  /// 所以这里不需要 ledgerId —— 两个账本共享同一套分类。
+  ///
+  /// 同级重名会被唯一索引拦下（`idx_category_parent_name`），
+  /// 调用方应当先用 `CategoryRules` 给出人能看懂的原因。
+  Future<Category> saveCategory(Category category);
+
   /// 取账本的数据集。
   ///
   /// [months] 为 null 表示取全部交易；给定月份时，额外带上**关联到这些月份

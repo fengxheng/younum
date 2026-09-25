@@ -49,9 +49,19 @@ class ImportSourceArgs {
 
 /// 分类图标编辑器参数。
 class CategoryEditorArgs {
-  const CategoryEditorArgs({required this.categoryName, this.returnRoute});
+  const CategoryEditorArgs({
+    this.categoryId,
+    this.categoryName,
+    this.returnRoute,
+  });
 
   /// 为 null 表示新建分类；非 null 表示只编辑该分类的图标。
+  ///
+  /// 用 **ID** 而不是名字：名字只是展示用的，图标按 ID 存，
+  /// 这样改名（指南 3.5.8 要求 ID 稳定）不会把图标弄丢。
+  final int? categoryId;
+
+  /// 标题与提示文案用的名字。
   final String? categoryName;
 
   /// 保存后返回的路由，用于「管理图标」与「分类管理」两个入口。

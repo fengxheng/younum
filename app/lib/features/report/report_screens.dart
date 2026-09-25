@@ -469,15 +469,9 @@ class BreakdownScreen extends StatelessWidget {
                       ),
                     ),
                     YounumTileIcon(
-                      iconKey: registry
-                          .iconFor(
-                            categories[index].categoryName,
-                            fallbackIconKey:
-                                YounumIcons.defaultCategoryIconKey,
-                          )
-                          .iconKey,
-                      imagePath:
-                          registry.iconFor(categories[index].categoryName).imagePath,
+                      iconKey:
+                          registry.iconKeyOf(categories[index].categoryName) ??
+                          YounumIcons.defaultCategoryIconKey,
                     ),
                   ],
                 ),
@@ -904,12 +898,8 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                     '${StatisticsTime.formatShort(visible[index].occurredAtMs)} · '
                     '${_categoryOf(visible[index]) ?? _natureLabel(visible[index].nature)}'
                     '${visible[index].reviewStatus == ReviewStatus.deferred ? ' · 稍后处理' : ''}',
-                iconKey: registry
-                    .iconFor(
-                      _categoryOf(visible[index]) ?? '',
-                      fallbackIconKey: YounumIcons.defaultCategoryIconKey,
-                    )
-                    .iconKey,
+                iconKey: registry.iconKeyOf(_categoryOf(visible[index]) ?? '') ??
+                    YounumIcons.defaultCategoryIconKey,
                 trailingText: _signedAmount(visible[index]),
                 onTap: () => context.open(
                   AppRoutes.transactionDetail,

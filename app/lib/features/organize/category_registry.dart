@@ -1,94 +1,142 @@
 import 'package:flutter/widgets.dart';
 
 import '../../core/designsystem/younum_icons.dart';
-
-/// 一个分类的图标配置。
-///
-/// `iconType` 的区分方式与指南 14.4.1 一致：内置键与图片资源 ID 分开表达，
-/// 数据库里**不**保存 Bitmap / Base64 大对象。
-class CategoryIconConfig {
-  const CategoryIconConfig.builtin(this.iconKey)
-      : imagePath = null,
-        isImage = false;
-
-  const CategoryIconConfig.image(this.imagePath)
-      : iconKey = YounumIcons.defaultCategoryIconKey,
-        isImage = true;
-
-  final String iconKey;
-
-  /// 应用私有文件目录下的相对路径。阶段 4 写入真实资源后填充。
-  final String? imagePath;
-
-  final bool isImage;
-
-  @override
-  bool operator ==(Object other) =>
-      other is CategoryIconConfig &&
-      other.iconKey == iconKey &&
-      other.imagePath == imagePath &&
-      other.isImage == isImage;
-
-  @override
-  int get hashCode => Object.hash(iconKey, imagePath, isImage);
-}
+import '../../data/seed/demo_ledger_seed.dart';
+import '../../domain/models/category.dart';
+import '../../domain/repositories/ledger_repository.dart';
 
 /// 分类与图标的**唯一**来源。
 ///
 /// 指南 14.4.7：分类网格、分类管理、明细、分类统计、导出视图都从这里解析，
 /// 避免「一页变了另一页还显示旧图」。
 ///
-/// 阶段 1 是内存实现（走查用）。阶段 2 增加图标资源模型与迁移，
-/// 阶段 4 接入系统 Photo Picker 与私有文件写入后，把 [_save] 换成事务写入即可，
-/// 调用方无需改动。
+/// 它现在读写的是**数据库里的 `category` 表**。以前是内存里的两份表
+/// （名字 → 图标、自定义名字列表），有两个真实缺陷：
+///
+/// 1. 用户新建的分类只存在内存里 —— 重启就没了，而且**整理时根本选不到**：
+///    分配要的是真实的分类 ID，而那条分类在库里不存在。
+/// 2. 图标按**名字**索引 —— 一旦改名，图标会跟着丢；指南 3.5.8 要求
+///    「重命名保留稳定 ID」，名字本来就不该被当作键。
+///
+/// 图标只按分类 ID 存（`category.icon_key`），图片资源（`CategoryIconAsset`
+/// 与私有文件生命周期）还没做，界面上如实说明。
 class CategoryRegistry extends ChangeNotifier {
-  CategoryRegistry({Map<String, CategoryIconConfig>? initial, List<String>? customNames})
-      : _icons = <String, CategoryIconConfig>{...?initial},
-        _customNames = <String>[...?customNames];
+  CategoryRegistry({required this.repository});
 
-  final Map<String, CategoryIconConfig> _icons;
-  final List<String> _customNames;
+  final LedgerRepository repository;
 
-  /// 用户创建的分类名。
-  List<String> get customNames => List<String>.unmodifiable(_customNames);
+  /// 出厂图标：内置分类在种子里定义的那一个。
+  ///
+  /// 「恢复默认图标」要回得到**出厂值**，而不是库里当前的值 ——
+  /// 后者已经被用户改过了。用户新建的分类没有出厂图标，回退到默认叶片。
+  static String defaultIconKeyOf(String? name) {
+    if (name == null) return YounumIcons.defaultCategoryIconKey;
+    for (final category in DemoLedgerSeed.categories()) {
+      if (category.name == name) {
+        return category.iconKey ?? YounumIcons.defaultCategoryIconKey;
+      }
+    }
+    return YounumIcons.defaultCategoryIconKey;
+  }
 
-  /// 解析某个分类的图标。未配置过则使用 [fallbackIconKey]。
-  CategoryIconConfig iconFor(String categoryName, {String? fallbackIconKey}) {
-    final configured = _icons[categoryName];
-    if (configured != null) return configured;
-    return CategoryIconConfig.builtin(
-      fallbackIconKey ?? YounumIcons.defaultCategoryIconKey,
+  List<Category> _categories = const <Category>[];
+  String? _lastFailure;
+  bool _loaded = false;
+
+  /// 账本 ID。分类本身不按账本划分，这里只为调仓库时带上参数；
+  /// 记住它，调用方（界面）就不用自己拼 `isDemo ? 1 : 2`。
+  int _ledgerId = 0;
+
+  List<Category> get categories => List<Category>.unmodifiable(_categories);
+
+  bool get isLoaded => _loaded;
+
+  /// 最近一次写失败的原因（成功时清空）。
+  String? get lastFailure => _lastFailure;
+
+  /// 一级分类（网格用），未归档。
+  List<Category> get roots => <Category>[
+        for (final category in _categories)
+          if (category.isRoot && !category.archived) category,
+      ];
+
+  /// 某个一级分类下的细分用途。
+  List<Category> childrenOf(int parentId) => <Category>[
+        for (final category in _categories)
+          if (category.parentId == parentId && !category.archived) category,
+      ];
+
+  Category? byId(int id) {
+    for (final category in _categories) {
+      if (category.id == id) return category;
+    }
+    return null;
+  }
+
+  /// 按名字找分类：明细、月报这些地方手上只有名字，只能这样查。
+  Category? byName(String name) {
+    for (final category in _categories) {
+      if (category.name == name) return category;
+    }
+    return null;
+  }
+
+  /// 某个分类名对应的图标键。找不到返回 null，由调用方决定回退到什么。
+  String? iconKeyOf(String name) => byName(name)?.iconKey;
+
+  /// 从数据库读一遍。
+  Future<void> load({required int ledgerId}) async {
+    _ledgerId = ledgerId;
+    _categories = await repository.categories(ledgerId: ledgerId);
+    _loaded = true;
+    notifyListeners();
+  }
+
+  /// 新建分类。失败时 [lastFailure] 里是给用户看的原因。
+  Future<bool> create({required String name, required String iconKey}) async {
+    return _apply(
+      await repository.createCategory(
+        ledgerId: _ledgerId,
+        name: name,
+        iconKey: iconKey,
+      ),
     );
   }
 
-  /// 分类是否存在（内置或自定义）。
-  bool exists(String name, Iterable<String> builtinNames) =>
-      builtinNames.contains(name) || _customNames.contains(name);
+  /// 改一个分类的图标。只改图标：名称、ID、分类关系与金额都不动（指南 14.3）。
+  Future<bool> setIcon({
+    required int categoryId,
+    required String iconKey,
+  }) async {
+    return _apply(
+      await repository.setCategoryIcon(
+        ledgerId: _ledgerId,
+        categoryId: categoryId,
+        iconKey: iconKey,
+      ),
+    );
+  }
 
-  /// 保存图标草稿。
+  /// 把写库结果并进内存列表，再通知一次。
   ///
-  /// 只有调用到这里，草稿才变成已提交配置 —— 选中新图标和恢复默认都只改草稿
-  /// （指南 14.3）。
-  void saveIcon(String categoryName, CategoryIconConfig config) {
-    _icons[categoryName] = config;
-    notifyListeners();
+  /// 不重新查库：新分类带回了排序值（排在同级最后），就地替换/追加即可。
+  bool _apply(CategoryWriteResult result) {
+    switch (result) {
+      case CategorySaved(:final category):
+        _categories = <Category>[
+          for (final item in _categories)
+            if (item.id != category.id) item,
+          category,
+        ];
+        _lastFailure = null;
+        notifyListeners();
+        return true;
+      case CategoryRejected(:final message):
+        _lastFailure = message;
+        notifyListeners();
+        return false;
+    }
   }
-
-  /// 新建分类并同时设置图标。
-  void createCategory(String name, CategoryIconConfig config) {
-    if (!_customNames.contains(name)) _customNames.add(name);
-    _icons[name] = config;
-    notifyListeners();
-  }
-
-  /// 恢复默认图标（内置叶片）。
-  void resetIcon(String categoryName) {
-    _icons.remove(categoryName);
-    notifyListeners();
-  }
-
-  /// 该分类是否使用过自定义配置。
-  bool hasCustomIcon(String categoryName) => _icons.containsKey(categoryName);
 }
 
 /// 把 [CategoryRegistry] 提供给子树。
@@ -114,3 +162,4 @@ class CategoryRegistryScope extends InheritedNotifier<CategoryRegistry> {
     return scope!.notifier!;
   }
 }
+
