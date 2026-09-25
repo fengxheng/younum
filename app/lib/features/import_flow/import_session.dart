@@ -306,6 +306,22 @@ final class ImportSession extends ChangeNotifier {
     await _stage();
   }
 
+  /// 接纳一份从系统「分享」进来的文件。
+  ///
+  /// 与 [stageDocument] 的唯一区别是**来源要按内容认**：分享进来的文件没有
+  /// 「用户选了哪个入口」这个信息，而来源要进同源去重键。认不出来就当通用表格
+  /// （`manual`），**绝不猜** —— 猜错的后果是同一笔被算成两份来源，
+  /// 或者被悄悄合并掉。
+  ///
+  /// 正在忙（选文件 / 解析 / 提交中）时直接返回 false，什么都不改：
+  /// 半截状态里插一份新文件，会让在跑的那次解析拿到别人的字节。
+  Future<bool> stageSharedDocument(PickedDocument document) async {
+    if (isBusy) return false;
+    useSource(repository.sniffImportSource(document.bytes));
+    await stageDocument(document);
+    return true;
+  }
+
   /// 换一个编码重新解析当前文件。
   ///
   /// 编码探测是启发式（见 `text_decoding.dart` 的局限说明），所以必须给用户

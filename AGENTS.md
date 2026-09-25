@@ -190,6 +190,7 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 | --- | --- |
 | release 包**点开图标什么都没发生**，没有白屏、没有 flutter 日志 | R8 把反射实例化的类裁掉了。看 `AndroidRuntime` 的 `FATAL EXCEPTION`；保留规则在 `android/app/proguard-rules.pro`。**debug 构建永远看不出来** |
 | 真机上「按钮点了没反应」 | `adb shell input tap` 被手势竞技场丢掉，改用 `input swipe x y x y 140` |
+| 换了 `input swipe` 还是点不动任何东西（但 `input keyevent` 有效） | 有些小米/红米**整个屏蔽注入的点击**（`tap` 与 `swipe` 都不进应用，系统自己的窗口却能点到）。先在开发者选项里打开「USB 调试（安全设置）」；开不了就只能人工点，或用 widget 测试顶住接线 |
 | 同一段文本匹配到两个节点（点到了标题） | 页面标题与按钮文案常常一样；按 `class="android.widget.Button"` 或 `enabled` 区分，或取 `bounds` 自己算坐标 |
 | MIUI 安装失败 `INSTALL_FAILED_USER_RESTRICTED` | 先 `input keyevent KEYCODE_WAKEUP` + `svc power stayon true` 再重试 |
 | 覆盖安装要清数据 | 换了签名（debug ↔ release）就等于换了应用。同签名覆盖安装**不会**丢数据 |

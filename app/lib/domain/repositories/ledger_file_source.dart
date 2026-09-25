@@ -83,6 +83,16 @@ abstract interface class LedgerFileSource {
   /// URI 失效时返回 [PickFailed] 且 `needsReselect` 为真。
   Future<PickOutcome> reread(String uri);
 
+  /// 系统「分享」进来、还没被处理掉的那份文件。
+  ///
+  /// 返回 **null 表示没有这件事**，而不是失败：启动时与每次回到前台都会问
+  /// 一次，绝大多数时候答案就是「没有」。真的读不出来（太大、权限失效、文件被
+  /// 删了）才回 [PickFailed]，让界面能如实说清。
+  ///
+  /// 这是「一次性」的：取走之后同一份分享不会再被取到第二次，
+  /// 否则用户每次切回应用都会重新导一遍同一份文件。
+  Future<PickOutcome?> takeSharedFile();
+
   /// 释放读取授权。丢弃批次时调用。
   ///
   /// 实现必须是**幂等**的：重复释放、从未授权过都不算失败。
@@ -105,6 +115,13 @@ final class UnsupportedFileSource implements LedgerFileSource {
   @override
   Future<PickOutcome> reread(String uri) async =>
       const PickFailed('这个平台上还不能选择本地文件');
+
+  /// 这个平台不会被分享唤起，所以永远没有待处理的分享。
+  ///
+  /// 注意是 **null**（没有）而不是 [PickFailed]（失败）：桌面与测试环境
+  /// 每次都回「失败」的话，界面上会莫名其妙地反复报错。
+  @override
+  Future<PickOutcome?> takeSharedFile() async => null;
 
   @override
   Future<void> release(String uri) async {}

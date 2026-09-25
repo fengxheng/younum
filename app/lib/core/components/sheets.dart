@@ -136,6 +136,85 @@ Future<bool> showConfirmSheet({
   return result ?? false;
 }
 
+/// 只有一件事要告诉用户的提示层。
+///
+/// 与 [ConfirmSheet] 的区别：这里**没有选择**，所以只有一个按钮 —— 给用户
+/// 两个都一样的选项等于骗他。用在「分享进来的一份文件没能导入」这种场合：
+/// 必须说清原因，但用户在这一步也无处可去。
+///
+/// 为什么不用 toast：「这看起来不是账单」这种话要带上看懂了才做得对的下一步，
+/// 两秒钟的浮条放不下，也很容易被划过去 —— 那用户就只会觉得「分享过来没反应」。
+class NoticeSheet extends StatelessWidget {
+  const NoticeSheet({
+    super.key,
+    required this.title,
+    required this.description,
+    this.confirmLabel = '知道了',
+    this.tone = YounumCircleTone.error,
+  });
+
+  final String title;
+  final String description;
+  final String confirmLabel;
+  final YounumCircleTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = YounumText.of(context);
+    return SingleChildScrollView(
+      // ⚠️ 滚动要包在**整块弹层外面**：YounumSheetSurface 里那一层 Column
+      // 给子节点的最大高度没有扣掉顶部抓手（22+4），子节点一旦吃满，
+      // 表面自己就溢出。包在里面时实测溢出 0.273px —— 就是那几像素。
+      child: YounumSheetSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Center(
+              child: YounumCircleSymbol(
+                icon: YounumIcons.alert,
+                tone: tone,
+                diameter: YounumDimens.circleSymbolSmall,
+              ),
+            ),
+            const SizedBox(height: YounumDimens.gapLg),
+            Text(title, textAlign: TextAlign.center, style: text.sheetTitle),
+            const SizedBox(height: YounumDimens.gapSm),
+            YounumMutedText(description, textAlign: TextAlign.center),
+            const SizedBox(height: YounumDimens.gapXl),
+            PrimaryAction(
+              label: confirmLabel,
+              style: YounumActionStyle.secondary,
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹出 [NoticeSheet]，等用户看完点掉。
+Future<void> showNoticeSheet({
+  required BuildContext context,
+  required String title,
+  required String description,
+  String confirmLabel = '知道了',
+  YounumCircleTone tone = YounumCircleTone.error,
+}) async {
+  await showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    showDragHandle: false,
+    builder: (_) => NoticeSheet(
+      title: title,
+      description: description,
+      confirmLabel: confirmLabel,
+      tone: tone,
+    ),
+  );
+}
+
 /// 轻量提示条。
 ///
 /// 用于「已放入稍后处理」「先选择用途，再向右滑确认」这类即时反馈，

@@ -727,4 +727,98 @@ void main() {
       expect(snapshot.dataset.transactions, hasLength(3));
     });
   });
+
+  group('分享进来的文件', () {
+    /// 一整块 OLE2 头。真正的老式 `.xls` 长这样，而我们**不实现** BIFF 解析。
+    Uint8List ole2Bytes() => Uint8List.fromList(<int>[
+      0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    test('老式 .xls 如实说读不了，并给出下一步', () async {
+      // 为什么值得写：认不出来的后果是实的 —— 那些二进制字节会被当成文本硬解，
+      // 用户看到的是乱码，还被领到字段映射页对着乱码指列。
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: '平安银行交易明细.xls',
+        bytes: ole2Bytes(),
+        sourceNamespace: 'manual',
+      );
+
+      expect(result, isA<ImportStageRejected>());
+      final message = (result as ImportStageRejected).message;
+      expect(message, contains('另存为'), reason: '要说清用户做得到的那一步');
+      expect(message, contains('.xlsx'));
+    });
+
+    test('老式 .xls 认的是**内容**，不是后缀', () async {
+      // 改名叫 .csv 也一样：这是防「换个后缀就能骗过判断」。
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: '明细.csv',
+        bytes: ole2Bytes(),
+        sourceNamespace: 'manual',
+      );
+
+      expect((result as ImportStageRejected).message, contains('另存为'));
+    });
+
+    test('按内容认来源：微信 / 支付宝 / 通用', () {
+      // 微信：说明行里有「微信」。
+      expect(repository.sniffImportSource(_bytes(_bill)), 'wechat');
+
+      // 支付宝：说明行里有「支付宝」，且**数据行里的关键词不能带偏它**
+      // （表头本身没有「支付宝」两个字，只能靠表头之前的说明行）。
+      const alipay = '''
+支付宝交易记录明细查询
+账号:[test@example.com]
+交易时间,交易分类,交易对方,商品说明,收/支,金额(元),交易状态,交易订单号
+2026-09-23 18:09:20,餐饮美食,天际美食荟,餐费,支出,20.00,交易成功,2026092322001
+''';
+      expect(repository.sniffImportSource(_bytes(alipay)), 'alipay');
+
+      // 认不出来就是通用表格 —— 宁可漏认（去重时多问一句），不可错认。
+      expect(repository.sniffImportSource(_bytes(_noIdBill)), 'manual');
+    });
+
+    test('读不了的文件不会被硬说成某个来源', () {
+      // 一份看不懂的东西（老式 .xls / 空文件）：来源只能是通用表格。
+      // 这里若返回 wechat/alipay，用户的分账口径会被一份根本不是账单的
+      // 文件污染。
+      expect(repository.sniffImportSource(ole2Bytes()), 'manual');
+      expect(repository.sniffImportSource(Uint8List(0)), 'manual');
+    });
+
+    test('分享进来的微信账单与从入口导入的算**同一个来源**', () async {
+      // 这条是分享这条路最容易错的地方：命名空间参与同源去重键，
+      // 认错了（例如一律当 manual）就会出现「先分享一次、再从微信入口导一次」，
+      // 同一个单号只能报成「疑似重复」，用户得一组一组确认。
+      final shared = await repository.stageImport(
+        ledgerId: real,
+        fileName: '微信支付账单.csv',
+        bytes: _bytes(_bill),
+        sourceNamespace: repository.sniffImportSource(_bytes(_bill)),
+        sourceAccount: '零钱',
+      );
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: (shared as ImportStaged).preview.batchId,
+      );
+
+      final again = await repository.stageImport(
+        ledgerId: real,
+        fileName: '2026-09.csv',
+        bytes: _bytes(_bill),
+        sourceNamespace: 'wechat',
+        sourceAccount: '零钱',
+      );
+
+      expect(
+        (again as ImportStaged).preview.duplicateCount,
+        3,
+        reason: '3 笔消费都要被认成同源重复，而不是疑似重复',
+      );
+      expect(again.preview.suspectedCount, 0);
+    });
+  });
 }

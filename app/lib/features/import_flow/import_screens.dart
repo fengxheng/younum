@@ -71,7 +71,9 @@ class ImportSourceScreen extends StatelessWidget {
                 ),
                 YounumListRow(
                   title: '通用表格',
-                  subtitle: 'CSV，手动匹配列名',
+                  // 支持的是三种后缀，但**判据是内容不是后缀**：老式 .xls
+                  // （真正的 BIFF 格式）读不了，那时会明确让用户另存一份。
+                  subtitle: 'CSV / XLS / XLSX，手动匹配列名',
                   icon: YounumIcons.settings,
                   iconTone: YounumTileTone.purple,
                   trailingWidget: const _RowChevron(),
@@ -349,7 +351,7 @@ class _UploadScreenState extends State<UploadScreen> {
                   const SizedBox(height: YounumDimens.gap),
                   Text('把账单带到这里', style: text.sectionTitle),
                   const SizedBox(height: 4),
-                  YounumMutedText('CSV · 最大 64 MB'),
+                  YounumMutedText('CSV / XLS / XLSX · 最大 64 MB'),
                   const SizedBox(height: YounumDimens.gap),
                   PrimaryAction(
                     label: '选择账单文件',

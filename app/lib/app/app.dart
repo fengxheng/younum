@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+import '../core/components/primitives.dart';
+import '../core/components/sheets.dart';
 import '../core/preferences/app_state_store.dart';
 import '../core/preferences/reminder_controller.dart';
 import '../core/preferences/reminder_store.dart';
@@ -15,6 +17,7 @@ import '../domain/repositories/poster_ports.dart';
 import '../core/preferences/update_store.dart';
 import '../domain/repositories/reminder_scheduler.dart';
 import '../domain/repositories/update_ports.dart';
+import '../domain/rules/update_rules.dart';
 import '../features/export/export_scope.dart';
 import '../features/import_flow/import_screens.dart';
 import '../features/import_flow/import_session.dart';
@@ -120,6 +123,15 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
 
   /// 通知点进来时要跳页，必须能拿到 Navigator。
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  /// 正在处理一份分享进来的文件。
+  ///
+  /// 回到前台时会问两次（resume + 500ms 补问），而原生侧是「取走即清」：
+  /// 没有这道闸，两次问会撞在一起，或者在解析大文件时又插进来一次。
+  bool _sharedBusy = false;
+
+  /// 启动时的升级提示已经弹过了（同一次启动只弹一次）。
+  bool _promptedUpdate = false;
   late final ReviewSession _review = ReviewSession(
     repository: widget.ledgerRepository,
   );
@@ -164,9 +176,17 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
       _update.pruneSkipped();
       _update.check();
     }
+    // 查完真的有新版本要**告诉**用户 —— 只提示一次，且忽略过的版本不提示。
+    _update.addListener(_promptUpdateIfAvailable);
     // 点通知进来时要落到整理页（指南 8.2：通知跳转到需要整理的月份）。
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingRoute());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _openPendingRoute();
+      // 分享进来的文件：冷启动时 intent 里就带着它。
+      await _consumeSharedFile();
+      // 静默检查可能在首帧之前就查完了，那时还没有 context 可以弹层。
+      _promptUpdateIfAvailable();
+    });
   }
 
   @override
@@ -174,9 +194,14 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     // 应用已经在后台时点通知，走的是 onNewIntent + 回到前台，两条路都要接。
     if (state != AppLifecycleState.resumed) return;
     _openPendingRoute();
+    // 分享也是这样：应用在后台时被分享，回来时要从新 intent 里取。
+    _consumeSharedFile();
     // onNewIntent 有时比 resume 晚到一步（真机上碰到过），再问一次就不会漏。
-    // 路由取走即清，所以重复问不会多跳一页。
-    Timer(const Duration(milliseconds: 500), _openPendingRoute);
+    // 路由取走即清、分享取走即清，所以重复问不会多跳一页、多导一份。
+    Timer(const Duration(milliseconds: 500), () {
+      _openPendingRoute();
+      _consumeSharedFile();
+    });
   }
 
   /// 取走通知带的路由并跳页。
@@ -203,6 +228,137 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     // 先回到根，避免用户还停在某个详情页里时切了标签却看不见。
     _navigatorKey.currentState?.popUntil((route) => route.isFirst);
     _tabs.syncFromRoute(target);
+  }
+
+  /// 有没有一份从系统「分享」进来的文件，有就走导入流程。
+  ///
+  /// 冷启动与每次回到前台都会问一次：原生侧「取走即清」，所以问多少次都
+  /// 只是问一遍；没有待处理的分享时它回 null，**不是**失败。
+  Future<void> _consumeSharedFile() async {
+    if (_sharedBusy) return;
+    _sharedBusy = true;
+    try {
+      await _adoptSharedFile();
+    } finally {
+      _sharedBusy = false;
+    }
+  }
+
+  Future<void> _adoptSharedFile() async {
+    if (_navigatorKey.currentState == null) return;
+
+    final PickOutcome? outcome;
+    try {
+      outcome = await widget.ledgerFileSource.takeSharedFile();
+    } on Object catch (error) {
+      // 读不到就当没有这一步：分享进来的东西不该把应用弄崩，
+      // 也不该拦住用户本来要做的事。
+      debugPrint('取分享进来的文件时出错：$error');
+      return;
+    }
+    if (!mounted) return;
+
+    switch (outcome) {
+      // 绝大多数时候是这里：没有待处理的分享。
+      case null:
+      case PickCanceled():
+        return;
+      case PickFailed(:final message):
+        await _showShareProblem(title: '这份文件没能读进来', description: message);
+      case DocumentPicked(:final document):
+        await _importSharedDocument(document);
+    }
+  }
+
+  /// 把一份分享进来的文件走完导入的前半段。
+  ///
+  /// 顺序与「选文件」那条路一致：**先挂解析页、再开始解析**。反过来的话，
+  /// 解析可能在页面挂上之前就结束，用户看到的是一个停住不动的转圈。
+  Future<void> _importSharedDocument(PickedDocument document) async {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return;
+
+    if (_import.isBusy) {
+      // 半截状态里插一份新文件，会让还在跑的那次解析拿到别人的字节。
+      // 宁可说清楚，也不默默丢掉用户刚分享的东西。
+      await _showShareProblem(
+        title: '这次没能导入这份文件',
+        description: '上一次导入还没走完（正在解析或提交）。等它结束之后再分享一次就好。',
+        tone: YounumCircleTone.primary,
+      );
+      return;
+    }
+
+    // 分享进来时用户可能停在任意一页：先把页面栈收回到根，
+    // 否则导入流程会盖在一堆旧页面上，返回时一层层弹很莫名其妙。
+    navigator.popUntil((route) => route.isFirst);
+    // 不 await：这个 Future 要等解析页被替换掉（成功）或弹回去（失败）才完成，
+    // 而解析现在就该开始了。
+    final flow = navigator.pushNamed(AppRoutes.parsing);
+    await _import.stageSharedDocument(document);
+    await flow;
+    if (!mounted) return;
+
+    // 失败时解析页会自己弹回来（它不负责解释原因）。用户是被分享唤起过来
+    // 的，主页上不会有人告诉他发生了什么，所以要在这里把话说清楚。
+    if (_import.phase == ImportPhase.failed) {
+      await _showShareProblem(
+        title: '这份文件没能导入',
+        description: _import.errorMessage ?? '没能读懂这份文件',
+      );
+    }
+  }
+
+  Future<void> _showShareProblem({
+    required String title,
+    required String description,
+    YounumCircleTone tone = YounumCircleTone.error,
+  }) async {
+    final context = _navigatorKey.currentState?.overlay?.context;
+    if (context == null) return;
+    await showNoticeSheet(
+      context: context,
+      title: title,
+      description: description,
+      tone: tone,
+    );
+  }
+
+  /// 启动时查到新版本就提示一次。
+  ///
+  /// 三条约束：
+  ///
+  /// * 同一次启动**只提示一次**（不然每次回到前台都会弹）；
+  /// * 用户自己点的「检查更新」不弹 —— 他已经在那一页上看着结果了；
+  /// * 点过「忽略这个版本」的不弹，由 `UpdateRules.shouldPrompt` 挡住
+  ///   （此时阶段是 [UpdatePhase.skipped]），出现更高的版本时才会再提。
+  void _promptUpdateIfAvailable() {
+    if (_promptedUpdate) return;
+    if (_update.userAsked) return;
+    if (_update.phase != UpdatePhase.available) return;
+    final info = _update.available;
+    if (info == null) return;
+    // 首帧之前没有可以弹层的 context；首帧之后那次调用会补上。
+    final context = _navigatorKey.currentState?.overlay?.context;
+    if (context == null) return;
+
+    _promptedUpdate = true;
+    unawaited(_askAboutUpdate(context, info));
+  }
+
+  Future<void> _askAboutUpdate(BuildContext context, UpdateInfo info) async {
+    final choice = await showUpdatePromptSheet(context: context, info: info);
+    if (!mounted) return;
+    switch (choice) {
+      case UpdatePromptChoice.update:
+        await _navigatorKey.currentState?.pushNamed(AppRoutes.update);
+      case UpdatePromptChoice.skip:
+        // 写进偏好：同一个版本不再打扰，出现更高版本再说。
+        await _update.skipCurrent();
+      case UpdatePromptChoice.later || null:
+        // 「以后再说」**什么都不记**：下次启动还会提醒。
+        break;
+    }
   }
 
   /// 进入 / 退出演示账本时整体重载会话。
@@ -242,6 +398,7 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.appStateController.removeListener(_syncLedgerMode);
+    _update.removeListener(_promptUpdateIfAvailable);
     _tabs.dispose();
     _review.dispose();
     _import.dispose();

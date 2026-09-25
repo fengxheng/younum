@@ -48,7 +48,7 @@ flutter test test/manual/live_update_test.dart --dart-define=YOUNUM_LIVE=1
 
 ```text
 test/
-├── *_test.dart                    58 个测试文件（下面逐个说明）
+├── *_test.dart                    59 个测试文件（下面逐个说明）
 ├── support/
 │   ├── ledger_fixtures.dart       公开夹具：只用指南 10.1 的固定基准，不含真实账单
 │   └── fake_file_source.dart      可控的文件来源（选到了什么 / 取消 / 失败）
@@ -136,7 +136,8 @@ integration_test/
 | `report_coverage_widget_test.dart` | 月报页的「确认本月范围完整」入口 |
 | `share_export_widget_test.dart` | 隐私开关必须影响**文件**，不是屏幕遮罩 |
 | `reminder_widget_test.dart` | 提醒设置页：拿不到权限时不能显示「已开启」 |
-| `update_widget_test.dart` | 检查更新页：按钮不贴在一起、查不到不能写成已是最新 |
+| `update_widget_test.dart` | 检查更新页：按钮不贴在一起、查不到不能写成已是最新；**启动时的新版本提示**也在这一组（只弹一次、忽略过的版本不弹、出现更高版本再提、「以后再说」不写偏好、Release 正文那种长度与字号 2.0 下不溢出） |
+| `share_import_widget_test.dart` | 系统「分享一份账单到有数」：落到确认导入页、认不出表头去映射页、老式 `.xls` 与读不了的文件要说清原因、同一份分享**只导一次** |
 
 ### 3.4 夹具与手动测试
 

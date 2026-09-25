@@ -34,10 +34,19 @@ final class FakeFileSource implements LedgerFileSource {
   /// 让 pick / reread 表现为用户取消。
   bool cancel;
 
+  /// 系统分享进来的那一份。
+  ///
+  /// null 表示**没有**待处理的分享（不是失败）—— 真实实现也是这个语义，
+  /// 所以测试里必须能表达「没有」。
+  PickOutcome? shared;
+
   /// 记录调用，供断言。
   final List<String> releasedUris = <String>[];
   int pickCount = 0;
   int rereadCount = 0;
+
+  /// 取走分享的次数。它必须是**一次性**的，否则每次回到前台都会重导一遍。
+  int sharedTakeCount = 0;
 
   @override
   Future<bool> isAvailable() async => available;
@@ -52,6 +61,15 @@ final class FakeFileSource implements LedgerFileSource {
   Future<PickOutcome> reread(String uri) async {
     rereadCount++;
     return _outcome();
+  }
+
+  @override
+  Future<PickOutcome?> takeSharedFile() async {
+    sharedTakeCount++;
+    final pending = shared;
+    // 取走即清：与原生侧一致，同一份分享不会被导第二次。
+    shared = null;
+    return pending;
   }
 
   @override

@@ -75,8 +75,11 @@ storeFile=D:\\dev\\younum\\keystore\\younum_keystore.jks
 * ⚠️ **keystore 与两个密码必须另存一份**（U 盘、密码管理器）。丢了以后这个应用
   再也发不出能覆盖安装的更新，用户只能卸载重装。
 * 密码不要贴进聊天、工单、提交信息；`key.properties` 也永远不要提交。
-* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.2.1+4`）。**在线升级只看
+* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.3.0+6`）。**在线升级只看
   `+` 后面的 build number（versionCode）**，所以每次发布都要让它 +1。
+  ⚠️ `+` 后面的数字 **只增不减**：它是 versionCode，比当前安装的小就不会被
+  当成新版本（也不会送更新提示），Android 也不让低 versionCode 覆盖安装。
+  所以发 `1.3.0` 时用的是 `+6` 而不是 `+1` —— 理由见 `DECISIONS.md` 72 节。
 * 还没做的：确认 `com.younum.app` 未被占用（上架前要查）。
 
 ## 5. 怎么发一个「应用内能升级到」的版本
@@ -138,12 +141,13 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 ```powershell
 Set-Location app
 # 1. 改版本号：versionName 给人看，+ 后面的 build number 必须比上一版大
-#    （已发布过 1.1.0+2、1.2.0+3、1.2.1+5；下一个至少是 1.2.2+6）
+#    （已发布过 1.1.0+2、1.2.0+3、1.2.1+5、1.3.0+6；下一个至少是 1.3.1+7）
 flutter build apk --release
 # 2. 先把标签推上去（不能靠网页/API 替你建）
-git tag 'v1.2.2+6'; git push origin 'v1.2.2+6'
+#    标签名里的 + 用引号包住，别让它被当成 refspec 的强制前缀
+git tag 'v1.3.1+7'; git push origin 'v1.3.1+7'
 # 3. 在 GitHub 上 New release：选那个已有标签，**先存为草稿**,
-#    把 app/build/app/outputs/flutter-apk/app-release.apk 拖进去，
+#    把 app/build/app/outputs/flutter-apk/app-release.apk 拖进去,
 #    然后再点 Publish release（不要勾 pre-release）
 ```
 

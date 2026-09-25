@@ -192,42 +192,11 @@ extension ImportWorkflow on LedgerRepository {
     //
     // 两条路最终都产出同一种「行 × 列」表格，所以下面的表头识别、字段映射、
     // 逐行标准化、去重判断完全共用 —— 下游根本不需要知道文件是哪种格式。
-    final CsvTable table;
-    final String format;
-    final String encodingLabel;
-
-    if (XlsxReader.looksLikeXlsx(bytes)) {
-      final (xlsx, xlsxError) = XlsxReader.read(bytes);
-      if (xlsxError != null) {
-        return ImportStageRejected(xlsxError.message);
-      }
-      table = CsvTable(
-        rows: xlsx!.rows,
-        delimiter: '',
-        hasTrailingNewline: false,
-      );
-      format = 'XLSX';
-      // xlsx 内部固定是 UTF-8 的 XML，不存在「猜编码」这件事。
-      encodingLabel = 'XLSX';
-    } else {
-      // 传了 encoding 就按它解（用户在核对页上手工指定的）；不传就探测。
-      final (decoded, decodeError) = TextDecoding.decode(bytes, force: encoding);
-      if (decodeError != null || decoded == null) {
-        return ImportStageRejected(_decodeMessage(decodeError!));
-      }
-
-      final (csv, csvError) = CsvParser.parse(decoded.text);
-      if (csvError != null) {
-        return ImportStageRejected(_csvMessage(csvError));
-      }
-      if (csv == null || csv.isEmpty) {
-        return ImportStageRejected('这份文件里没有读到任何一行');
-      }
-
-      table = csv;
-      format = 'CSV';
-      encodingLabel = decoded.encoding.label;
-    }
+    final read = _readTable(bytes, encoding: encoding);
+    final table = read.table;
+    if (table == null) return ImportStageRejected(read.error!);
+    final format = read.format;
+    final encodingLabel = read.encodingLabel;
 
     if (table.isEmpty) {
       return ImportStageRejected('这份文件里没有读到任何一行');
@@ -488,6 +457,67 @@ extension ImportWorkflow on LedgerRepository {
     );
   }
 
+  /// 按**内容**认这份文件属于哪个来源（`wechat` / `alipay` / `manual`）。
+  ///
+  /// 为什么需要它：从系统分享进来的文件没有「用户选的是哪个入口」这个信息，
+  /// 而来源命名空间要参与同源去重键。认不出来一律当通用表格 —— 猜错的后果是
+  /// 同一笔被算成两份来源（只能报成「疑似重复」让用户一组一组确认），
+  /// 或者更糟：被悄悄合并掉。
+  String sniffImportSource(Uint8List bytes) {
+    if (bytes.isEmpty) return 'manual';
+    final table = _readTable(bytes, encoding: null).table;
+    if (table == null || table.isEmpty) return 'manual';
+    // 表头识别与真正解析用的是同一个函数，不会出现「认来源时说它是微信账单、
+    // 解析时又当通用 CSV」这种自相矛盾。
+    return ImportRules.sourceNamespaceOf(ImportRules.detectHeader(table));
+  }
+
+  /// 把文件字节读成「行 × 列」表格；CSV 与 XLSX 两条路在这里汇合。
+  ///
+  /// ⚠️ 抽出来是因为有**两处**要用它：[stageImport] 真正解析，以及
+  /// [sniffImportSource] 先认一下这是哪家的账单。两处必须是同一份判据，
+  /// 否则会出现「认来源时说是微信账单、解析时又当通用 CSV」这种自相矛盾。
+  _TableRead _readTable(Uint8List bytes, {TextEncoding? encoding}) {
+    if (XlsxReader.looksLikeXlsx(bytes)) {
+      final (xlsx, xlsxError) = XlsxReader.read(bytes);
+      if (xlsxError != null) return _TableRead(error: xlsxError.message);
+      return _TableRead(
+        table: CsvTable(
+          rows: xlsx!.rows,
+          delimiter: '',
+          hasTrailingNewline: false,
+        ),
+        format: 'XLSX',
+        // xlsx 内部固定是 UTF-8 的 XML，不存在「猜编码」这件事。
+        encodingLabel: 'XLSX',
+      );
+    }
+
+    // 老式 `.xls` 不是「编码猜错了的 CSV」，它是另一种容器格式。
+    // 不拦下来的话，那些字节会被当文本硬解，用户看到的是乱码 + 字段映射页。
+    if (XlsxReader.looksLikeLegacyXls(bytes)) {
+      return const _TableRead(error: legacyXlsMessage);
+    }
+
+    // 传了 encoding 就按它解（用户在核对页上手工指定的）；不传就探测。
+    final (decoded, decodeError) = TextDecoding.decode(bytes, force: encoding);
+    if (decodeError != null || decoded == null) {
+      return _TableRead(error: _decodeMessage(decodeError!));
+    }
+
+    final (csv, csvError) = CsvParser.parse(decoded.text);
+    if (csvError != null) return _TableRead(error: _csvMessage(csvError));
+    if (csv == null || csv.isEmpty) {
+      return const _TableRead(error: '这份文件里没有读到任何一行');
+    }
+
+    return _TableRead(
+      table: csv,
+      format: 'CSV',
+      encodingLabel: decoded.encoding.label,
+    );
+  }
+
   /// 提交一个已暂存的批次。**一个事务**写入正式账。
   ///
   /// 只提交 `included` 且状态是「新增」的行；用户可以在核对页上改这些取值。
@@ -667,6 +697,40 @@ extension ImportWorkflow on LedgerRepository {
     CsvUnterminatedQuote(:final line, :final column) =>
       '第 $line 行第 $column 列的引号没有闭合，文件可能被截断了',
   };
+}
+
+/// 老式 `.xls` 的说明。
+///
+/// 有数读的是 xlsx（zip + XML）与 CSV 文本；老式 `.xls` 是 OLE2 二进制容器，
+/// 里面装的是 BIFF 记录 —— 那是另一套解析器，本工程不实现（理由与
+/// docs/DECISIONS.md 第 37 节「XLSX 自己读，不引电子表格库」同一个：
+/// 宁可说清，也不为了一个后缀引一个黑盒进来）。
+///
+/// 文案要说**用户做得到的那一步**：另存为 xlsx 或 CSV，然后再导一次。
+const String legacyXlsMessage =
+    '这是老版本的 Excel 文件（.xls），有数读不了它。'
+    '请在表格软件里「另存为」.xlsx 或 CSV，再把另存出来的那份导进来。';
+
+/// [ImportWorkflow._readTable] 的结果。
+final class _TableRead {
+  const _TableRead({
+    this.table,
+    this.format = '',
+    this.encodingLabel = '',
+    this.error,
+  });
+
+  /// 读出来的表格；失败时为 null，此时 [error] 一定有值。
+  final CsvTable? table;
+
+  /// `CSV` 或 `XLSX`。按**内容**判断出来的，不是看后缀名。
+  final String format;
+
+  /// 实际采用的编码名（CSV）或容器格式（XLSX）。
+  final String encodingLabel;
+
+  /// 可以直接给用户看的一句话。
+  final String? error;
 }
 
 /// 文件内容哈希（FNV-1a 64 位）。

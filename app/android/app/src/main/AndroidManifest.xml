@@ -58,6 +58,46 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!--
+                「分享账单到有数」：其他应用（微信、文件管理器、网盘…）把一份
+                CSV / XLS / XLSX 发给有数时，系统按 MIME 找到这个过滤器。
+
+                ⚠️ 为什么带上 application/octet-stream：很多发送方只知道文件名、
+                报不出类型（微信分享文件就是这样），不带这一条的话用户在最常见
+                的那条路径上**看不到有数**。代价是有数会出现在更多分享列表里，
+                所以内容真伪由 Dart 侧按**内容**判断，不是靠 MIME ——
+                不是账单就如实说「这看起来不是账单」，绝不硬导。
+                图片、PDF、文本（text/plain）**没有**声明，不会被误拦。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/csv"/>
+                <data android:mimeType="text/comma-separated-values"/>
+                <data android:mimeType="application/csv"/>
+                <data android:mimeType="application/vnd.ms-excel"/>
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>
+                <data android:mimeType="application/octet-stream"/>
+            </intent-filter>
+            <!--
+                文件管理器里「用有数打开」：ACTION_VIEW + content://（Android 7
+                起分享方几乎只会给 content:// 了）。scheme 与 mimeType 在每个
+                <data> 里成对写清楚，避免属性组合出别的含义。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="content" android:mimeType="text/csv"/>
+                <data android:scheme="content" android:mimeType="text/comma-separated-values"/>
+                <data android:scheme="content" android:mimeType="application/csv"/>
+                <data android:scheme="content" android:mimeType="application/vnd.ms-excel"/>
+                <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>
+                <data android:scheme="content" android:mimeType="application/octet-stream"/>
+                <data android:scheme="file" android:mimeType="text/csv"/>
+                <data android:scheme="file" android:mimeType="text/comma-separated-values"/>
+                <data android:scheme="file" android:mimeType="application/vnd.ms-excel"/>
+                <data android:scheme="file" android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

@@ -72,6 +72,23 @@ final class SystemFileSource implements LedgerFileSource {
   }
 
   @override
+  Future<PickOutcome?> takeSharedFile() async {
+    try {
+      // 原生侧返回 null 表示「没有待处理的分享」，不是失败。
+      final shared = await _channel.invokeMapMethod<String, Object?>(
+        'consumeSharedFile',
+      );
+      if (shared == null) return null;
+      return _outcomeOf(shared);
+    } on MissingPluginException {
+      // 桌面或 Web：没有这条通道，也就是没有分享进来的文件。
+      return null;
+    } on PlatformException catch (error) {
+      return _failureOf(error);
+    }
+  }
+
+  @override
   Future<void> release(String uri) async {
     try {
       await _channel.invokeMethod<void>('releaseDocument', <String, Object?>{

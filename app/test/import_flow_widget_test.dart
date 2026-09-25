@@ -162,6 +162,25 @@ void main() {
   }
 
   group('选文件', () {
+    testWidgets('导入页要如实写出支持的格式（CSV / XLS / XLSX）', (tester) async {
+      // 文案与能力必须一致：只说 CSV 会让拿着 .xlsx 账单的人以为自己导不了。
+      await pumpApp(tester);
+      await tester.tap(find.text('导入月账单').first);
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('CSV / XLS / XLSX'), findsOneWidget);
+
+      await tester.tap(find.text('通用表格'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('CSV / XLS / XLSX'),
+        findsOneWidget,
+        reason: '选文件那一页也要写清楚，而且不能把上限说丢',
+      );
+      expect(find.textContaining('最大 64 MB'), findsOneWidget);
+    });
+
     testWidgets('设备不支持选择文件时，点下去要说清原因', (tester) async {
       fileSource.available = false;
       await pumpApp(tester);

@@ -4,8 +4,11 @@ import '../../core/components/buttons.dart';
 import '../../core/components/primitives.dart';
 import '../../core/components/progress.dart';
 import '../../core/components/screen_scaffold.dart';
+import '../../core/components/sheets.dart';
 import '../../core/designsystem/younum_dimens.dart';
+import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
+import '../../domain/rules/update_rules.dart';
 import 'update_controller.dart';
 
 /// 检查更新（在线升级）。
@@ -207,3 +210,90 @@ class _UpdateScreenState extends State<UpdateScreen> {
     );
   }
 }
+/// 用户在启动提示里选了什么。
+///
+/// 「忽略这个版本」与「以后再说」是**两件不同的事**，所以不能合成一个按钮：
+/// 前者写进偏好、同一个版本不再打扰（下一个版本还会提）；后者只是这次不装，
+/// 下次启动还会问。合成一个的后果是：要么用户被反复打扰，要么他想下次再说
+/// 却被永久静音。
+enum UpdatePromptChoice {
+  /// 去「检查更新」页下载并安装。
+  update,
+
+  /// 忽略这个版本：同一个版本不再提示，直到出现更高的版本。
+  skip,
+
+  /// 以后再说：什么都不记，下次启动还会提醒。
+  later,
+}
+
+/// 启动时发现新版本的提示层。
+///
+/// 为什么用弹层而不是页面：用户是为了别的事打开应用的，把他直接推到
+/// 「检查更新」页等于替他决定了这次要干什么。弹层只说「有新版本」，
+/// 主动权还在他手上。
+///
+/// 返回 `null`（划掉弹层）与 [UpdatePromptChoice.later] 同义：什么都不做。
+Future<UpdatePromptChoice?> showUpdatePromptSheet({
+  required BuildContext context,
+  required UpdateInfo info,
+}) => showModalBottomSheet<UpdatePromptChoice>(
+  context: context,
+  backgroundColor: Colors.transparent,
+  isScrollControlled: true,
+  showDragHandle: false,
+  builder: (sheetContext) {
+    final text = YounumText.of(sheetContext);
+    void choose(UpdatePromptChoice choice) =>
+        Navigator.of(sheetContext).pop(choice);
+    return SingleChildScrollView(
+      // ⚠️ 滚动包在**整块弹层外面**：更新说明是 GitHub Release 正文的原文，
+      // 写多长由发布的人决定。实测：按真实长度的一份说明，不可滚动时溢出
+      // 293px，「以后再说」直接被挤出屏幕。包在里面还差表面抓手那几像素，
+      // 所以范围要盖住整个 YounumSheetSurface（与 NoticeSheet 同一个处理）。
+      child: YounumSheetSurface(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            const Center(
+              child: YounumCircleSymbol(
+                icon: YounumIcons.download,
+                diameter: YounumDimens.circleSymbolSmall,
+              ),
+            ),
+            const SizedBox(height: YounumDimens.gapLg),
+            Text(
+              '有新版本 ${info.versionName}',
+              textAlign: TextAlign.center,
+              style: text.sheetTitle,
+            ),
+            const SizedBox(height: YounumDimens.gapSm),
+            YounumMutedText(
+              // 没写更新说明时不能空着 —— 那样用户不知道点「去更新」会得到什么。
+              info.notes.isEmpty ? '新版本已经发布，装不装由你决定。' : info.notes,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: YounumDimens.gapXl),
+            PrimaryAction(
+              label: '去更新',
+              trailingArrow: true,
+              onPressed: () => choose(UpdatePromptChoice.update),
+            ),
+            const SizedBox(height: YounumDimens.gap),
+            PrimaryAction(
+              label: '忽略这个版本',
+              style: YounumActionStyle.plain,
+              onPressed: () => choose(UpdatePromptChoice.skip),
+            ),
+            const SizedBox(height: YounumDimens.gap),
+            PrimaryAction(
+              label: '以后再说',
+              style: YounumActionStyle.secondary,
+              onPressed: () => choose(UpdatePromptChoice.later),
+            ),
+          ],
+        ),
+      ),
+    );
+  },
+);

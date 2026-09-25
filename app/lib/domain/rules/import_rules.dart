@@ -337,6 +337,14 @@ enum DuplicateVerdict {
 /// 跨来源比对用的一笔记录：发生在什么时候、来自哪份账单。
 typedef ImportSourceStamp = ({int occurredAtMs, String sourceNamespace});
 
+/// 微信支付与支付宝的平台名。
+///
+/// 只定义一次：它同时是界面上的展示文案（[HeaderGuess.platformName]）与
+/// 来源命名空间的判据（[ImportRules.sourceNamespaceOf]）。两处各写一遍字符串，
+/// 迟早会对不上 —— 而「对不上」的后果是同一份账单被当成两个来源。
+const String wechatPlatformName = '微信支付';
+const String alipayPlatformName = '支付宝';
+
 abstract final class ImportRules {
   /// 扫描表头时最多往下看多少行。
   ///
@@ -470,18 +478,34 @@ abstract final class ImportRules {
     if (profile != null) return profile.name;
 
     final joined = headers.join('|');
-    if (joined.contains('微信')) return '微信支付';
-    if (joined.contains('支付宝')) return '支付宝';
+    if (joined.contains('微信')) return wechatPlatformName;
+    if (joined.contains('支付宝')) return alipayPlatformName;
 
     // 表头本身看不出平台时，看看表头之前那些说明行。
     final before = table.rows
         .take(headerRowIndex < 0 ? 0 : headerRowIndex)
         .expand((row) => row)
         .join('|');
-    if (before.contains('微信')) return '微信支付';
-    if (before.contains('支付宝')) return '支付宝';
+    if (before.contains('微信')) return wechatPlatformName;
+    if (before.contains('支付宝')) return alipayPlatformName;
     return null;
   }
+
+  /// 一份账单该归到哪个来源命名空间（`wechat` / `alipay` / `manual`）。
+  ///
+  /// 为什么需要它：命名空间参与同源去重键（见 [stableKeyOf]），而**从系统
+  /// 分享进来的文件**没有「用户选的是哪个入口」这个信息，只能按内容认。
+  /// 认错了的代价是实的：同一份微信账单「分享一次 + 从入口导一次」会被
+  /// 当成两份不同来源，同一个单号只能报成「疑似重复」，用户得一组一组确认。
+  ///
+  /// 认不出来一律 `manual`（通用表格）—— **宁可当通用表格，也不猜**。
+  static String sourceNamespaceOf(HeaderGuess guess) => switch (
+    guess.platformName
+  ) {
+    wechatPlatformName => 'wechat',
+    alipayPlatformName => 'alipay',
+    _ => 'manual',
+  };
 
   // ---------------------------------------------------------------------------
   // 行解析

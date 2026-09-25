@@ -114,6 +114,34 @@ abstract final class XlsxReader {
     return true;
   }
 
+  /// OLE2 复合文档的魔数。真正的老式 `.xls`（BIFF）就是一个 OLE2 容器。
+  ///
+  /// 为什么单独认它：这类文件本工程**读不了**（BIFF 是另一套解析器），
+  /// 但它也不是「编码猜错了的 CSV」。交给文本解码只会得到一句看不懂的话，
+  /// 或者更糟 —— 把二进制当文本硬解出一堆乱码，再进字段映射页让用户
+  /// 对着乱码指列。认出来才能直接告诉他该做什么。
+  static const List<int> ole2Magic = <int>[
+    0xD0,
+    0xCF,
+    0x11,
+    0xE0,
+    0xA1,
+    0xB1,
+    0x1A,
+    0xE1,
+  ];
+
+  /// 这个字节串看起来是不是老式 `.xls`（OLE2 复合文档）。
+  ///
+  /// 同样看**内容**而不是后缀：改名叫 `.csv` 的老式 Excel 文件也认得出。
+  static bool looksLikeLegacyXls(List<int> bytes) {
+    if (bytes.length < ole2Magic.length) return false;
+    for (var index = 0; index < ole2Magic.length; index++) {
+      if (bytes[index] != ole2Magic[index]) return false;
+    }
+    return true;
+  }
+
   /// 读一份 xlsx。
   static (XlsxTable?, XlsxError?) read(List<int> bytes) {
     if (!looksLikeXlsx(bytes)) return (null, const XlsxNotZip());

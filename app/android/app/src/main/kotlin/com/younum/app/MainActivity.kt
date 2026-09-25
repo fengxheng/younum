@@ -134,6 +134,16 @@ class MainActivity : FlutterActivity() {
      */
     private var pendingRoute: String? = null
 
+    /**
+     * 从系统「分享 / 用其他应用打开」进来、还没被 Dart 取走的那个文件。
+     *
+     * 不在这里读字节：读文件是 IO，要放在 [fileExecutor] 上，而且只有 Dart
+     * 真的来要的时候才读 —— 用户可能根本没想把它导进来。
+     *
+     * 取走即清（见 `consumeSharedFile`）：不清的话每次回到前台都会重导一遍。
+     */
+    private var pendingSharedUri: Uri? = null
+
     private class PendingGallerySave(
         val result: MethodChannel.Result,
         val bytes: ByteArray,
@@ -148,7 +158,8 @@ class MainActivity : FlutterActivity() {
 
         // 冷启动：如果这次启动是点通知进来的，先把路由记下来等价 Dart 来取。
         pendingRoute = intent?.getStringExtra(ReminderWorker.EXTRA_ROUTE)
-
+        // 冷启动：也可能是「分享一份账单到有数」。
+        captureShared(intent)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -181,6 +192,20 @@ class MainActivity : FlutterActivity() {
                             result.error("bad_arguments", "缺少 uri", null)
                         } else {
                             readInto(result, Uri.parse(uri))
+                        }
+                    }
+
+                    // 系统分享进来的那份文件。**没有就回 null**（不是错误）：
+                    // 启动与每次回到前台都会问一次，绝大多数时候答案就是「没有」。
+                    "consumeSharedFile" -> {
+                        val uri = pendingSharedUri
+                        pendingSharedUri = null
+                        if (uri == null) {
+                            result.success(null)
+                        } else {
+                            // 与「选文件」走同一段读取代码：大小上限、持久化授权、
+                            // 错误码的语义两边必须一致，不能有两个脾气不同的读取器。
+                            readInto(result, uri)
                         }
                     }
 
@@ -477,6 +502,60 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         val route = intent.getStringExtra(ReminderWorker.EXTRA_ROUTE)
         if (!route.isNullOrBlank()) pendingRoute = route
+        // 应用已经在跑时被分享：同样要接住，否则「分享过来没反应」。
+        captureShared(intent)
+    }
+
+    /**
+     * 这个应用不用深链，路由完全由自己接（通知的 extras、分享的文件）。
+     *
+     * ⚠️ 必须显式关掉：Flutter 已默认开启 deep linking，而「用有数打开一份账单」
+     * 是 `ACTION_VIEW` + `content://` 的 intent —— 引擎会把它当成深链推进
+     * 路由表，于是用户先看到一个「未知路由 /document/1234」的页面，
+     * 真正的导入反而要自己再找一遍。
+     */
+    override fun shouldHandleDeeplinking(): Boolean = false
+
+    /**
+     * 把「分享 / 用其他应用打开」的 intent 里的文件记下来。
+     *
+     * 只认 [Intent.ACTION_SEND] 与 [Intent.ACTION_VIEW]：启动器的 `ACTION_MAIN`
+     * 会带上别的 data，不能一看到 data 就当文件。
+     *
+     * MIME 在这里**不判真伪**：清单里已经声明了 CSV / XLS / XLSX 的几种子类型，
+     * 但很多发送方（尤其是微信）只会报 `application/octet-stream`，写死就会让
+     * 用户在分享列表里根本看不到有数。内容是不是账单，交给 Dart 侧按**内容**
+     * 判断（指南 4.2.3：不能仅依据后缀或 MIME 就信任文件）。
+     */
+    private fun captureShared(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_VIEW) return
+        val uri = sharedUriOf(intent) ?: return
+        val scheme = uri.scheme
+        if (scheme != "content" && scheme != "file") return
+        pendingSharedUri = uri
+    }
+
+    /**
+     * 从各种发送方的写法里把文件 URI 取出来。
+     *
+     * 三种都真实存在：文件管理器里「用其他应用打开」走 `data`，标准的
+     * 分享走 `EXTRA_STREAM`，部分应用（包括一些国产 IM）只往 `ClipData` 里放。
+     */
+    private fun sharedUriOf(intent: Intent): Uri? {
+        intent.data?.let { return it }
+        // Android 13 起 getParcelableExtra(String) 已弃用，但 FlutterActivity 的
+        // API 面下这是可用且最小的做法（与 onActivityResult 同一个理由）。
+        //
+        // ⚠️ 类型参数必须写出来：这个重载的返回类型是平台类型 `T!`，
+        // 光靠 `is Uri` 推不出 `T`，Kotlin 会直接编译不过（release 构建时才炸）。
+        @Suppress("DEPRECATION")
+        val stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        if (stream != null) return stream
+        val clip = intent.clipData
+        if (clip != null && clip.itemCount > 0) return clip.getItemAt(0).uri
+        return null
     }
 
     private fun handleReminderStatus(result: MethodChannel.Result) {
