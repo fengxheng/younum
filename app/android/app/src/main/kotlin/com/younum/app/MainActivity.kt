@@ -88,6 +88,14 @@ class MainActivity : FlutterActivity() {
         /** 下载缓冲区大小。8KB 是 HttpURLConnection 的常用值。 */
         private const val DOWNLOAD_BUFFER = 8 * 1024
 
+        /**
+         * 数据库口令（加密用）。单独一条通道。
+         *
+         * ⚠️ 这条通道回的是**口令本身**，因此它不出现在日志里、
+         * 也不做任何持久化 —— 只交给 Dart 侧去开库。
+         */
+        private const val SECURITY_CHANNEL = "com.younum.app/security"
+
         /** 每月提醒的通道名。与文件通道分开：两件事互不相干。 */
         private const val REMINDER_CHANNEL = "com.younum.app/reminder"
 
@@ -273,6 +281,29 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // 数据库口令（加密）。与文件、提醒、升级都无关，单独一条。
+        val keyStore = DatabaseKeyStore(filesDir)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SECURITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // 取数据库口令。第一次调用会生成并由 Keystore 包住。
+                    // 取不出来时**报错而不是造一把新的** —— 后者会让用户在
+                    // 毫无察觉的情况下看到空账本，那看起来就像账单被删了。
+                    "databasePassphrase" -> {
+                        try {
+                            result.success(keyStore.getOrCreatePassphrase())
+                        } catch (error: DatabaseKeyUnavailable) {
+                            result.error("key_unavailable", error.message, null)
+                        } catch (error: Exception) {
+                            Log.d(TAG, "取数据库口令失败：${error.message}")
+                            result.error("key_unavailable", "取不到数据库口令", null)
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     /**

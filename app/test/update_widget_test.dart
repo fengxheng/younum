@@ -168,6 +168,36 @@ void main() {
 
     expect(installer.openedSettings, isTrue);
   });
+
+  testWidgets('按钮之间不许贴在一起（真机上看着像叠在一起）', (tester) async {
+    // 这条是从真机截图来的：两个同色实底按钮首尾相接时，圆角处会出现一条
+    // 「蝴蝶结」接缝，看上去就是两块叠在一起。间距不是装饰，是把两个可点区域
+    // 在视觉上分开 —— 所以这里量的是**矩形之间有没有留空隙**。
+    source.result = UpdateFound(info(2));
+    installer.canInstallAllowed = false;
+    await pumpApp(tester);
+    await openUpdate(tester);
+
+    final rects = <Rect>[
+      for (var i = 0; i < tester.widgetList<PrimaryAction>(find.byType(PrimaryAction)).length; i++)
+        tester.getRect(find.byType(PrimaryAction).at(i)),
+    ];
+    expect(rects.length, greaterThanOrEqualTo(3), reason: '这一页应有多个操作按钮');
+
+    for (var i = 0; i < rects.length; i++) {
+      for (var j = i + 1; j < rects.length; j++) {
+        final a = rects[i];
+        final b = rects[j];
+        // 纵向相邻的两个按钮：下面那个的顶边必须在上面那个的底边之下，且留出空隙。
+        final gap = b.top - a.bottom;
+        expect(
+          gap,
+          greaterThan(0),
+          reason: '第 ${i + 1} 个与第 ${j + 1} 个按钮重叠了（gap=$gap）',
+        );
+      }
+    }
+  });
 }
 
 final class _FakeSource implements UpdateSource {

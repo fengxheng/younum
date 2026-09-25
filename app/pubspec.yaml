@@ -20,6 +20,7 @@ dependencies:
   # 只用来拼数据库文件路径；sqflite 本身就依赖它，这里显式声明。
   path: ^1.9.1
   charset: ^2.0.1
+  sqflite_sqlcipher: ^3.4.1
 
 dev_dependencies:
   flutter_test:

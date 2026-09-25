@@ -148,6 +148,14 @@ class _UpdateScreenState extends State<UpdateScreen> {
             ),
           ],
 
+          // ⚠️ 每个按钮前面都要留间距。
+          //
+          // 两个同色实底按钮如果贴在一起，圆角处会出现一条「蝴蝶结」接缝，
+          // 看上去就像两块叠在一起（真机上就是这么被发现的：这一页在
+          // 「系统没允许安装」时，上面那个次要按钮和下面的「检查更新」
+          // 正好首尾相接）。间距不是装饰，是让两个可点区域在视觉上分开。
+          const SizedBox(height: YounumDimens.gapSm),
+
           if (info != null) ...<Widget>[
             PrimaryAction(
               label: phase == UpdatePhase.installing ? '正在下载…' : '下载并安装',
@@ -169,6 +177,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
                   ? null
                   : () => controller.skipCurrent(),
             ),
+            const SizedBox(height: YounumDimens.gapSm),
           ],
 
           PrimaryAction(
@@ -182,6 +191,8 @@ class _UpdateScreenState extends State<UpdateScreen> {
                     await _refreshInstallPermission();
                   },
           ),
+
+          const SizedBox(height: YounumDimens.gapSm),
 
           if (controller.message != null && phase != UpdatePhase.installing)
             YounumPillNote(controller.message!),
