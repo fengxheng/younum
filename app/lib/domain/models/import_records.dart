@@ -254,6 +254,15 @@ enum ImportRowStatus {
     ImportRowStatus.imported => 'IMPORTED',
   };
 
+  /// 中文名。导出导入异常明细时写进「状态」列，界面上也用同一个说法。
+  String get label => switch (this) {
+    newRow => '新增',
+    duplicate => '重复',
+    invalid => '无效',
+    skipped => '已跳过',
+    imported => '已导入',
+  };
+
   bool get isProblem =>
       this == ImportRowStatus.duplicate || this == ImportRowStatus.invalid;
 }

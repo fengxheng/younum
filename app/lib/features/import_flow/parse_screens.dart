@@ -17,7 +17,10 @@ import '../../core/time/statistics_time.dart';
 import '../../domain/models/import_records.dart';
 import '../../domain/models/year_month.dart';
 import '../../domain/repositories/import_workflow.dart';
+import '../../domain/repositories/document_saver.dart';
 import '../../domain/rules/import_rules.dart';
+import '../export/export_files.dart';
+import '../export/export_scope.dart';
 import 'import_session.dart';
 
 // -----------------------------------------------------------------------------
@@ -1033,6 +1036,18 @@ class ImportErrorScreen extends StatelessWidget {
           ),
           const SizedBox(height: YounumDimens.gapSm),
           PrimaryAction(
+            // 导出的是**全部**有问题的行，不是上面列出的前 50 条 ——
+            // 界面上列不下，但用户拿回去修文件时需要的是一份完整的清单。
+            label: '导出异常明细',
+            style: YounumActionStyle.secondary,
+            onPressed: () => _exportProblems(context, invalid),
+          ),
+          const YounumPillNote(
+            '导出的 CSV 带行号与原因，还带上出事那一行的原文，'
+            '方便你回原文件里搜到它。',
+          ),
+          const SizedBox(height: YounumDimens.gapSm),
+          PrimaryAction(
             label: '换一份文件',
             style: YounumActionStyle.secondary,
             onPressed: () {
@@ -1045,3 +1060,36 @@ class ImportErrorScreen extends StatelessWidget {
     );
   }
 }
+
+/// 导出导入异常明细。
+///
+/// 走系统的「创建文档」流程（这是数据文件，位置该由用户自己挑）；
+/// 取消不提示成功，失败如实说明原因。
+Future<void> _exportProblems(BuildContext context, List<ImportRow> rows) async {
+  if (rows.isEmpty) {
+    showYounumToast(context, '没有需要导出的异常行');
+    return;
+  }
+
+  final saver = ExportScope.of(context).documentSaver;
+  if (!await saver.isAvailable()) {
+    if (!context.mounted) return;
+    showYounumToast(context, '这个平台上还不能保存文件');
+    return;
+  }
+
+  final outcome = await saveProblemCsv(saver: saver, rows: rows);
+  if (!context.mounted) return;
+
+  switch (outcome) {
+    case DocumentSaved(:final name):
+      showYounumToast(context, '已保存：$name');
+    case SaveCanceled():
+      // 取消不是错误，也不是成功。
+      break;
+    case SaveFailed(:final message):
+      showYounumToast(context, message);
+  }
+}
+
+

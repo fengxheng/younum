@@ -8,6 +8,7 @@ library;
 
 import 'dart:typed_data';
 
+import '../../domain/models/import_records.dart';
 import '../../domain/models/ledger_dataset.dart';
 import '../../domain/models/year_month.dart';
 import '../../domain/repositories/document_saver.dart';
@@ -71,3 +72,23 @@ Future<SaveOutcome> savePoster({
     PosterRenderFailed(:final message) => SaveFailed(message),
   };
 }
+
+/// `有数_导入异常明细.csv`。
+///
+/// 不带批次名：系统「创建文档」流程里用户自己就能改名，而批次名往往是
+/// 「微信支付账单(202609).xlsx」这种带括号的文件名，塞进来反而不好认。
+String problemCsvFileName() => '有数_导入异常明细.csv';
+
+/// 保存导入异常明细。
+///
+/// [rows] 必须是**全部**有问题的行 —— 界面上只列前几十条，导出的意义就是
+/// 让用户拿着完整清单回原文件里逐条修。
+Future<SaveOutcome> saveProblemCsv({
+  required DocumentSaver saver,
+  required List<ImportRow> rows,
+}) => saver.save(
+  fileName: problemCsvFileName(),
+  mimeType: 'text/csv',
+  bytes: ExportRules.problemCsvBytes(rows),
+);
+

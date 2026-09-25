@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import '../../core/money/money.dart';
 import '../../core/time/statistics_time.dart';
+import '../models/import_records.dart';
 import '../models/ledger_dataset.dart';
 import '../models/year_month.dart';
 
@@ -220,4 +221,60 @@ abstract final class ExportRules {
   /// 写文件用的字节：UTF-8。BOM 已经在文本里，编码后就是 `EF BB BF`。
   static Uint8List detailCsvBytes(List<ExportRow> rows) =>
       Uint8List.fromList(utf8.encode(detailCsv(rows)));
+
+  // ---------------------------------------------------------------------------
+  // 导入异常明细
+  // ---------------------------------------------------------------------------
+
+  /// 导入异常明细的列。行号是给用户回原文件里定位用的。
+  static const List<String> problemHeader = <String>[
+    '行号',
+    '状态',
+    '原因',
+    '原始内容',
+  ];
+
+  /// 一行在导出文件里的状态文案。
+  ///
+  /// 「疑似重复」的行状态仍是「新增」（它本来就是「默认保留、只要用户确认」），
+  /// 靠 issue 上的前缀认出来 —— 与核对页的判断保持一致。
+  static String problemStatusOf(ImportRow row) {
+    final issue = row.issue ?? '';
+    if (row.status == ImportRowStatus.newRow &&
+        issue.startsWith(suspectedDuplicateIssuePrefix)) {
+      return suspectedDuplicateIssuePrefix;
+    }
+    return row.status.label;
+  }
+
+  /// 把有问题的行导出成 CSV。
+  ///
+  /// [rows] 应该是**全部**有问题的行，不是界面上列出的前几条 ——
+  /// 导出的意义就在于让用户能拿着完整清单回去修文件。
+  static String problemCsv(List<ImportRow> rows) {
+    final sorted = <ImportRow>[...rows]
+      ..sort((a, b) => a.rowNumber.compareTo(b.rowNumber));
+
+    final buffer = StringBuffer()
+      ..write(bom)
+      ..write(problemHeader.map(csvCell).join(','))
+      ..write(lineEnding);
+    for (final row in sorted) {
+      buffer
+        ..write(row.rowNumber)
+        ..write(',')
+        ..write(csvCell(problemStatusOf(row)))
+        ..write(',')
+        ..write(csvCell(row.issue ?? ''))
+        ..write(',')
+        // 原始内容整行回放：用户拿它就能在原文件里搜到那一行。
+        ..write(csvCell(row.rawText ?? ''))
+        ..write(lineEnding);
+    }
+    return buffer.toString();
+  }
+
+  /// 写文件用的字节（UTF-8，带 BOM）。
+  static Uint8List problemCsvBytes(List<ImportRow> rows) =>
+      Uint8List.fromList(utf8.encode(problemCsv(rows)));
 }

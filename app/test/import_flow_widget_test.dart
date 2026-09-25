@@ -9,6 +9,7 @@ import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
+import 'package:younum/domain/repositories/document_saver.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
 
@@ -79,13 +80,14 @@ void main() {
     themeController.dispose();
   });
 
-  Future<void> pumpApp(WidgetTester tester) async {
+  Future<void> pumpApp(WidgetTester tester, {DocumentSaver? saver}) async {
     await tester.pumpWidget(
       YounumApp(
         themeController: themeController,
         appStateController: appStateController,
         ledgerRepository: repository,
         ledgerFileSource: fileSource,
+        documentSaver: saver ?? const UnsupportedDocumentSaver(),
       ),
     );
     await tester.pumpAndSettle();
@@ -127,6 +129,21 @@ void main() {
         matching: find.text(label),
       ),
     );
+    await tester.pumpAndSettle();
+  }
+
+  /// 点一个可能在折叠线以下的按钮。
+  ///
+  /// 异常页要列几十行，按钮被挤到屏幕外。`tester.tap` 对屏幕外的控件只是
+  /// 「点了个空」，不会报错 —— 测试会以「什么都没发生」的形式失败。
+  Future<void> tapActionBelowFold(WidgetTester tester, String label) async {
+    final finder = find.descendant(
+      of: find.byType(PrimaryAction),
+      matching: find.text(label),
+    );
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.tap(finder);
     await tester.pumpAndSettle();
   }
 
@@ -251,4 +268,100 @@ void main() {
       expect(find.text('还没有导入过账单'), findsOneWidget);
     });
   });
+
+  group('导入异常明细的导出', () {
+    /// 55 行坏行 + 2 行好行。55 是有意的：异常页面上只列前 50 行。
+    String billWithProblems(int badRows) {
+      final buffer = StringBuffer()
+        ..writeln('微信支付账单明细')
+        ..writeln('交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注')
+        ..writeln('2026-09-23 14:26:00,商户消费,老王牛肉面,牛肉面,支出,¥28.00,零钱,支付成功,4200001,M1001,/')
+        ..writeln('2026-09-24 09:02:11,商户消费,地铁公司,地铁,支出,¥5.00,零钱,支付成功,4200002,M1002,/');
+      for (var i = 0; i < badRows; i++) {
+        // 时间写得看不懂 —— 这是真实的「行级异常」之一。
+        buffer.writeln('9/3,商户消费,某店,某物,支出,¥1.00,零钱,支付成功,9$i,M9$i,/');
+      }
+      return buffer.toString();
+    }
+
+    testWidgets('界面上只列前 50 行，导出的是完整清单', (tester) async {
+      const badRows = 55;
+      fileSource
+        ..bytes = bytesOf(billWithProblems(badRows))
+        ..name = '2026-09.csv';
+      final saver = _RecordingSaver();
+
+      await pumpApp(tester, saver: saver);
+      await openUploadScreen(tester);
+      await tapAction(tester, '选择账单文件');
+
+      // 核对页上从「需要检查的记录」进异常页。
+      await tester.tap(find.text('需要检查的记录'));
+      await tester.pumpAndSettle();
+      expect(find.text('有 $badRows 行需要检查'), findsOneWidget);
+      expect(find.textContaining('还有 5 行没有列出来'), findsOneWidget);
+
+      await tapActionBelowFold(tester, '导出异常明细');
+
+      expect(saver.requests, hasLength(1), reason: '导出只该走一次系统保存');
+      final request = saver.requests.single;
+      expect(request.fileName, endsWith('_导入异常明细.csv'));
+      expect(request.mimeType, 'text/csv');
+
+      // 真正要守的那条：界面上列不下，导出的必须一行不少。
+      final text = utf8.decode(request.bytes);
+      final lines = text.trim().split('\r\n');
+      expect(lines.first, '行号,状态,原因,原始内容');
+      expect(lines, hasLength(badRows + 1), reason: '表头 + 全部异常行');
+      expect(
+        lines.where((line) => line.contains('无效')).length,
+        badRows,
+        reason: '界面上列不下的那 5 行，文件里必须有',
+      );
+    });
+  });
+}
+
+/// 记录「存了什么」，供断言。
+///
+/// 真实的实现要走系统「创建文档」界面，测试里没人能替用户点 —— 这也是把
+/// 保存做成端口的原因之一。
+final class _RecordingSaver implements DocumentSaver {
+  final List<_SaveRequest> requests = <_SaveRequest>[];
+
+  /// 让保存返回什么。
+  SaveOutcome outcome = const DocumentSaved(name: '有数_导入异常明细.csv');
+
+  @override
+  Future<bool> isAvailable() async => true;
+
+  @override
+  Future<SaveOutcome> save({
+    required String fileName,
+    required String mimeType,
+    required Uint8List bytes,
+  }) async {
+    requests.add(
+      _SaveRequest(fileName: fileName, mimeType: mimeType, bytes: bytes),
+    );
+    return outcome;
+  }
+
+  @override
+  Future<SaveOutcome> saveImageToGallery({
+    required String fileName,
+    required Uint8List bytes,
+  }) async => const SaveFailed('这份测试不涉及相册');
+}
+
+final class _SaveRequest {
+  _SaveRequest({
+    required this.fileName,
+    required this.mimeType,
+    required this.bytes,
+  });
+
+  final String fileName;
+  final String mimeType;
+  final Uint8List bytes;
 }

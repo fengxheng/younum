@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/domain/models/allocation.dart';
 import 'package:younum/domain/models/category.dart';
+import 'package:younum/domain/models/import_records.dart';
 import 'package:younum/domain/models/ledger_dataset.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/models/year_month.dart';
@@ -219,6 +220,65 @@ void main() {
           );
         }
       }
+    });
+  });
+
+  group('导入异常明细', () {
+    ImportRow row(
+      int number, {
+      ImportRowStatus status = ImportRowStatus.invalid,
+      String? issue,
+      String? raw,
+    }) => ImportRow(
+      id: ImportRow.idUnassigned,
+      batchId: ImportBatch.idUnassigned,
+      rowNumber: number,
+      status: status,
+      issue: issue,
+      rawText: raw,
+      included: false,
+    );
+
+    test('表头固定、按行号排序、状态说人话', () {
+      final text = ExportRules.problemCsv(<ImportRow>[
+        row(20, issue: '缺少交易金额', raw: '2026-09-03,某店,,'),
+        row(7, issue: '看不懂的时间格式：9/3'),
+        row(
+          15,
+          status: ImportRowStatus.newRow,
+          issue: '$suspectedDuplicateIssuePrefix：与「pab」那份账单里的一笔金额相同',
+        ),
+      ]);
+
+      expect(text.startsWith(ExportRules.bom), isTrue, reason: 'Excel 打开要不乱码');
+      final lines = text
+          .substring(ExportRules.bom.length)
+          .trim()
+          .split(ExportRules.lineEnding);
+      expect(lines.first, '行号,状态,原因,原始内容');
+      expect(lines[1], startsWith('7,无效,'));
+      expect(
+        lines[2],
+        startsWith('15,疑似重复,'),
+        reason: '疑似重复的行在库里仍是「新增」，导出时要按用户能读懂的说法写',
+      );
+      expect(lines[3], startsWith('20,无效,'));
+    });
+
+    test('原始内容里的危险开头同样会被中和', () {
+      // 原始内容是用户文件里的**任意**文本，防注入不能跳过这一列。
+      final text = ExportRules.problemCsv(<ImportRow>[
+        row(3, issue: '缺少交易金额', raw: '=1+1,某店,12.00'),
+      ]);
+
+      expect(text, contains("'=1+1,某店,12.00"));
+    });
+
+    test('没有异常行时只留表头', () {
+      expect(
+        ExportRules.problemCsv(const <ImportRow>[]),
+        '${ExportRules.bom}行号,状态,原因,原始内容${ExportRules.lineEnding}',
+      );
     });
   });
 
