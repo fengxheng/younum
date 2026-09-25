@@ -15,6 +15,7 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/money/money.dart';
+import '../../core/time/statistics_time.dart';
 import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/ledger_transaction.dart';
@@ -644,6 +645,13 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
   /// 选中的原消费（退款用）。
   int? _originalId;
 
+  /// 这笔退款当前已经关联到的原消费。
+  ///
+  /// 非空时这一页不再是「选一个原消费」，而是「看看现在关联到了谁」：
+  /// 选择器会被预填，确认按钮灰着并指向下面的「取消退款关联」。
+  RefundLink? _link;
+  LedgerTransaction? _linkedOriginal;
+
   final TextEditingController _reasonController = TextEditingController();
 
   @override
@@ -656,6 +664,71 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
       context,
     ).cardFor(widget.transactionId)?.transaction.nature;
     if (current != null && _choices.contains(current)) _nature = current;
+    _loadLink();
+  }
+
+  /// 把「这笔现在关联到了谁」读出来。
+  ///
+  /// 直查而不是从快照里找：快照里的退款连接跟着**原消费所在月份**，
+  /// 跨月时在本月根本看不到。
+  Future<void> _loadLink() async {
+    final session = ReviewSessionScope.of(context);
+    final link = await session.refundLinkOf(widget.transactionId);
+    if (link == null) return;
+    final original = await session.transactionById(link.originalTransactionId);
+    if (!mounted) return;
+    setState(() {
+      _link = link;
+      _linkedOriginal = original;
+      // 预填而不是留一个空选择器：空选择器会让人以为「这笔还没关联」，
+      // 然后顺手选一个原消费，被「已经关联过」挡回来。
+      _originalId = link.originalTransactionId;
+    });
+  }
+
+  String get _linkedLabel {
+    final original = _linkedOriginal;
+    if (original == null) return '原消费';
+    return '${original.merchant} · '
+        '${StatisticsTime.formatShort(original.occurredAtMs)} · '
+        '¥${Money.format(original.amountCents)}';
+  }
+
+  /// 选择器的候选：本月的消费，加上「当前关联的那一笔」。
+  ///
+  /// 跨月退款的原消费不在本月的消费列表里，不特意加上去的话，
+  /// 预填的值会显示成「未知记录」。
+  List<int> _optionsFor(List<ReviewCard> originals) {
+    final ids = <int>[for (final card in originals) card.id];
+    final linkedId = _link?.originalTransactionId;
+    if (linkedId != null && !ids.contains(linkedId)) ids.insert(0, linkedId);
+    return ids;
+  }
+
+  Future<void> _unlink() async {
+    final session = ReviewSessionScope.of(context);
+    final navigator = Navigator.of(context);
+
+    final confirmed = await showConfirmSheet(
+      context: context,
+      title: '取消退款关联？',
+      description:
+          '这笔记录会回到待整理，$_linkedLabel 的月报净消费会变回去，'
+          '退款金额不会再被抵扣。',
+      confirmLabel: '取消关联',
+      cancelLabel: '先不改',
+    );
+    if (!mounted || !confirmed) return;
+
+    setState(() => _saving = true);
+    final ok = await session.unlinkRefund(widget.transactionId);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    showYounumToast(
+      context,
+      ok ? '已取消关联，这笔回到待整理' : session.lastFailure ?? '没有取消成功，可以重试',
+    );
+    if (ok) navigator.maybePop();
   }
 
   @override
@@ -674,8 +747,13 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
         _reasonController.text.trim().isEmpty) {
       return '排除统计需要写明原因，否则以后回看时不知道为什么不算。';
     }
-    if (nature == TransactionNature.refund && _originalId == null) {
-      return '退款要关联到原消费，抵扣才算得对；确实找不到原消费时，请选「暂不计入统计」并写明原因。';
+    if (nature == TransactionNature.refund) {
+      if (_originalId == null) {
+        return '退款要关联到原消费，抵扣才算得对；确实找不到原消费时，请选「暂不计入统计」并写明原因。';
+      }
+      if (_link != null && _originalId == _link!.originalTransactionId) {
+        return '这笔退款已经关联到「$_linkedLabel」。要改成别的原消费，请先按下面的「取消退款关联」。';
+      }
     }
     if (nature == TransactionNature.expense && card.allocations.isEmpty) {
       return '作为消费统计就需要一个用途，请先用「修改用途」或「拆分」把它定下来。';
@@ -717,15 +795,23 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
     if (ok) navigator.maybePop();
   }
 
-  /// 原消费的展示名，形如 `优衣库 · 09.12 · 14:26 · ¥299.00`。
-  static String _originalLabel(List<ReviewCard> cards, int id) {
+  /// 原消费的展示名，形如 `优衣库 · 09.23 · 14:26 · ¥299.00`。
+  ///
+  /// 候选里没有就是 null（跨月关联的原消费不在本月的消费列表里）。
+  static String? _originalLabel(List<ReviewCard> cards, int id) {
     for (final card in cards) {
       if (card.id != id) continue;
       return '${card.merchant} · ${card.dateText} · '
           '¥${Money.format(card.amountCents)}';
     }
-    return '未知记录';
+    return null;
   }
+
+  /// 标签：本月候选里能查到就用卡片，查不到就用直查到的原消费，
+  /// 都查不到才说「未知记录」。
+  String _labelFor(List<ReviewCard> cards, int id) =>
+      _originalLabel(cards, id) ??
+      (_linkedOriginal?.id == id ? _linkedLabel : '未知记录');
 
   @override
   Widget build(BuildContext context) {
@@ -775,8 +861,8 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
           if (_nature == TransactionNature.refund) ...<Widget>[
             const YounumFieldLabel('抵扣哪一笔消费'),
             YounumSelectField<int>(
-              options: <int>[for (final card in originals) card.id],
-              labelBuilder: (id) => _originalLabel(originals, id),
+              options: _optionsFor(originals),
+              labelBuilder: (id) => _labelFor(originals, id),
               selected: _originalId,
               placeholder: '选择原消费',
               semanticLabel: '原消费',
@@ -787,6 +873,19 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
                 '这个月还没有能作为原消费的记录。找不到原消费时，'
                 '请选「暂不计入统计」并写明原因。',
               ),
+            if (_link != null) ...<Widget>[
+              const SizedBox(height: YounumDimens.gapSm),
+              YounumPanel(
+                padding: EdgeInsets.zero,
+                child: YounumListRow(
+                  title: '取消退款关联',
+                  subtitle: '这笔回到待整理，原消费的月报净消费变回去',
+                  icon: YounumIcons.link,
+                  trailingWidget: const _Chevron(),
+                  onTap: _unlink,
+                ),
+              ),
+            ],
           ],
           if (_nature == TransactionNature.excluded) ...<Widget>[
             const YounumFieldLabel('不计入统计的原因'),

@@ -195,6 +195,54 @@ final class InMemoryLedgerStore implements LedgerStore {
       _transactions[transactionId];
 
   @override
+  Future<RefundLink?> refundLinkOf(int refundTransactionId) async =>
+      _linkOf(refundTransactionId);
+
+  @override
+  Future<bool> unlinkRefund({
+    required int refundTransactionId,
+    required ReviewSessionRecord session,
+  }) async {
+    _throwIfFailing();
+    if (!_unlinkRefundInPlace(refundTransactionId)) return false;
+    _sessions[_sessionKey(session.ledgerId, session.month)] = session;
+    return true;
+  }
+
+  RefundLink? _linkOf(int refundTransactionId) {
+    for (final link in _refundLinks) {
+      if (link.refundTransactionId == refundTransactionId) return link;
+    }
+    return null;
+  }
+
+  /// 解除关联，不管会话 —— 调用方决定要不要存会话。
+  ///
+  /// 撤回导入（指南 3.5.7）与用户主动解除走的就是同一段：
+  /// 删连接、删挂在连接上的退款分配、退款回到「不知道这是什么」。
+  bool _unlinkRefundInPlace(int refundTransactionId) {
+    final link = _linkOf(refundTransactionId);
+    if (link == null) return false;
+
+    _refundLinks.removeWhere((item) => item.id == link.id);
+    // 退款分配是挂在连接上的附属物，连接没了它就无所指。
+    _refundAllocations.removeWhere((item) => item.refundLinkId == link.id);
+
+    final current = _transactions[refundTransactionId];
+    if (current != null) {
+      // 回到「不知道这是什么」：性质是导入时猜的，链接是用户后来加的，
+      // 两个都撒掉，剩下的交给下一次整理。
+      _transactions[refundTransactionId] = current.copyWith(
+        nature: TransactionNature.unknown,
+        reviewStatus: ReviewStatus.pending,
+        clearExcludeReason: true,
+        version: current.version + 1,
+      );
+    }
+    return true;
+  }
+
+  @override
   Future<int> insertTransaction(LedgerTransaction transaction) async {
     final key = transaction.dedupeKey;
     if (key != null) {
@@ -675,6 +723,7 @@ final class InMemoryLedgerStore implements LedgerStore {
     final deleted = <int>[];
     final shared = <int>[];
     final edited = <int>[];
+    final unlinked = <int>[];
     for (final transactionId in referenced) {
       final others = _origins.values.where(
         (origin) =>
@@ -695,7 +744,20 @@ final class InMemoryLedgerStore implements LedgerStore {
         continue;
       }
       deleted.add(transactionId);
+
+      // 指南 3.5.7：原消费要删掉，但不要连带删掉它的退款 ——
+      // 退款可能是另一份账单导进来的，解除关联让它回到待核对就行。
+      final linkedRefunds = <int>[
+        for (final link in _refundLinks)
+          if (link.originalTransactionId == transactionId)
+            link.refundTransactionId,
+      ];
+      unlinked.addAll(linkedRefunds);
       if (dryRun) continue;
+
+      for (final refundId in linkedRefunds) {
+        _unlinkRefundInPlace(refundId);
+      }
       _transactions.remove(transactionId);
       _allocations.remove(transactionId);
     }
@@ -706,6 +768,7 @@ final class InMemoryLedgerStore implements LedgerStore {
         deletedTransactionIds: deleted,
         sharedTransactionIds: shared,
         editedTransactionIds: edited,
+        unlinkedRefundIds: unlinked,
       );
     }
 
@@ -725,6 +788,7 @@ final class InMemoryLedgerStore implements LedgerStore {
       deletedTransactionIds: deleted,
       sharedTransactionIds: shared,
       editedTransactionIds: edited,
+      unlinkedRefundIds: unlinked,
     );
   }
 

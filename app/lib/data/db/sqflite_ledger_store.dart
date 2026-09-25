@@ -488,6 +488,72 @@ final class SqfliteLedgerStore implements LedgerStore {
   }
 
   @override
+  Future<RefundLink?> refundLinkOf(int refundTransactionId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'refund_link',
+      where: 'refund_transaction_id = ?',
+      whereArgs: <Object?>[refundTransactionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _refundLinkFrom(rows.first);
+  }
+
+  @override
+  Future<bool> unlinkRefund({
+    required int refundTransactionId,
+    required ReviewSessionRecord session,
+  }) async {
+    final db = await _db;
+    var unlinked = false;
+    await db.transaction((txn) async {
+      unlinked = await _unlinkRefundIn(txn, refundTransactionId);
+      if (!unlinked) return;
+      await _writeSession(txn, session);
+    });
+    return unlinked;
+  }
+
+  /// 解除关联，不管会话 —— 调用方决定要不要存会话。
+  ///
+  /// `refund_allocation` 挂在连接上（`ON DELETE CASCADE`），连接删了它自己就没；
+  /// `txn` 那一行改回「待核对 + 不知道这是什么」。
+  Future<bool> _unlinkRefundIn(
+    DatabaseExecutor txn,
+    int refundTransactionId,
+  ) async {
+    final rows = await txn.query(
+      'refund_link',
+      columns: <String>['id'],
+      where: 'refund_transaction_id = ?',
+      whereArgs: <Object?>[refundTransactionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+
+    await txn.delete(
+      'refund_link',
+      where: 'refund_transaction_id = ?',
+      whereArgs: <Object?>[refundTransactionId],
+    );
+    await txn.rawUpdate(
+      '''
+      UPDATE txn
+      SET nature = ?, review_status = ?, exclude_reason = NULL,
+          version = version + 1
+      WHERE id = ?
+      ''',
+      <Object?>[
+        TransactionNature.unknown.storageValue,
+        ReviewStatus.pending.storageValue,
+        refundTransactionId,
+      ],
+    );
+    return true;
+  }
+
+  @override
   Future<bool> saveDetails({
     required LedgerTransaction before,
     required String? note,
@@ -1224,6 +1290,7 @@ final class SqfliteLedgerStore implements LedgerStore {
       final deleted = <int>[];
       final shared = <int>[];
       final edited = <int>[];
+      final unlinked = <int>[];
       for (final transactionId in owned) {
         final others = await txn.query(
           'transaction_origin',
@@ -1263,7 +1330,26 @@ final class SqfliteLedgerStore implements LedgerStore {
         }
 
         deleted.add(transactionId);
+
+        // 指南 3.5.7：原消费要删，但不要连带删掉它的退款 ——
+        // 退款可能是另一份账单导进来的。先解除关联（否则
+        // `refund_link.original_transaction_id` 的 ON DELETE RESTRICT
+        // 会让整次撤回失败），把退款恢复待核对，再删原消费。
+        final linked = await txn.query(
+          'refund_link',
+          columns: <String>['refund_transaction_id'],
+          where: 'original_transaction_id = ?',
+          whereArgs: <Object?>[transactionId],
+        );
+        final linkedRefunds = <int>[
+          for (final row in linked) row['refund_transaction_id']! as int,
+        ];
+        unlinked.addAll(linkedRefunds);
         if (dryRun) continue;
+
+        for (final refundId in linkedRefunds) {
+          await _unlinkRefundIn(txn, refundId);
+        }
         // allocation 那边有 ON DELETE CASCADE，但只可能是空的（上面已经挡过）。
         await txn.delete(
           'txn',
@@ -1278,6 +1364,7 @@ final class SqfliteLedgerStore implements LedgerStore {
           deletedTransactionIds: deleted,
           sharedTransactionIds: shared,
           editedTransactionIds: edited,
+          unlinkedRefundIds: unlinked,
         );
       }
 
@@ -1308,6 +1395,7 @@ final class SqfliteLedgerStore implements LedgerStore {
         deletedTransactionIds: deleted,
         sharedTransactionIds: shared,
         editedTransactionIds: edited,
+        unlinkedRefundIds: unlinked,
       );
     });
   }

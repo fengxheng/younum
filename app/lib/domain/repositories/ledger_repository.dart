@@ -833,6 +833,51 @@ final class LedgerRepository {
     );
   }
 
+  /// 解除一笔退款的关联（指南 3.5.7），退款回到待核对。
+  ///
+  /// 与 [linkRefundAndResolve] 对称：也是一次写入 —— 删连接、把退款改回
+  /// `unknown` + 待整理、保存会话。**没有连接时明确拒绝**，而不是默默成功：
+  /// 用户点的那句「取消关联」如果什么都没取消，ta 应当知道。
+  ///
+  /// 退款不会出现在返回值里靠手写队列项 —— 它变回待整理之后，
+  /// [loadSnapshot] 的 reconcile 会把它算回队列，与「新导入一笔待整理」同理。
+  Future<ReviewOutcome> unlinkRefund({
+    required int ledgerId,
+    required int refundTransactionId,
+  }) async {
+    final refund = await _store.transactionById(refundTransactionId);
+    if (refund == null) return const ReviewRejected('找不到这笔退款记录');
+
+    final link = await _store.refundLinkOf(refundTransactionId);
+    if (link == null) {
+      return const ReviewRejected('这笔退款没有关联原消费，不需要解除');
+    }
+
+    final month = refund.month;
+    final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
+
+    return _run(
+      () => _store.unlinkRefund(
+        refundTransactionId: refundTransactionId,
+        session: snapshot.record,
+      ),
+      ledgerId: ledgerId,
+      month: month,
+    );
+  }
+
+  /// 一笔退款当前的关联（没有则是 null）。
+  ///
+  /// 给「详情页要显示这笔退款抵扣到了哪一笔」用。直查而不是从数据集里找：
+  /// 数据集里的连接是跟着**原消费所在月份**来的，跨月退款在原消费不在本月
+  /// 时就找不到，而这里问的正是「这笔退款」。
+  Future<RefundLink?> refundLinkOf(int refundTransactionId) =>
+      _store.refundLinkOf(refundTransactionId);
+
+  /// 按 ID 取一笔记录。只读场景用（比如把原消费的商户名显示出来）。
+  Future<LedgerTransaction?> transactionById(int transactionId) =>
+      _store.transactionById(transactionId);
+
   /// 建立退款与原消费的关联。
   ///
   /// 规则全部来自 [RefundRules]，与单元测试共用同一份实现。

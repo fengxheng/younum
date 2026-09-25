@@ -531,6 +531,63 @@ void main() {
         isEmpty,
       );
     });
+
+    test('撤回把原消费删掉时，退款不被连带删掉，而是解除关联回到待核对', () async {
+      // 指南 3.5.7 说的正是这种情况：撤回原消费，但还有一笔独立来源的退款
+      // 关联着它。退款不能跟着消失（它可能是另一份账单导进来的），
+      // 连接也不能留着（会指向一笔已经不存在的消费）。
+      final staged = await stage();
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      final dataset = await repository.dataset(ledgerId: real);
+      final original = dataset.transactions.firstWhere(
+        (transaction) => transaction.merchant == '老王牛肉面',
+      );
+
+      final refundId = await store.insertTransaction(
+        original.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 老王牛肉面',
+          nature: TransactionNature.income,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-revert-1',
+        ),
+      );
+      expect(
+        await repository.linkRefundAndResolve(
+          ledgerId: real,
+          month: month,
+          refundTransactionId: refundId,
+          originalTransactionId: original.id,
+        ),
+        isA<ReviewSucceeded>(),
+      );
+
+      // 预览就要说清退款会怎样，而且预览本身不能动数据。
+      final preview = await repository.previewRevert(
+        batchId: staged.preview.batchId,
+      );
+      expect(preview.deletedTransactionIds, contains(original.id));
+      expect(preview.unlinkedRefundIds, <int>[refundId]);
+      expect(
+        await store.refundLinkOf(refundId),
+        isNotNull,
+        reason: '预览什么都不能改',
+      );
+
+      final reverted = await repository.revertImport(
+        batchId: staged.preview.batchId,
+      );
+      expect(reverted.unlinkedRefundIds, <int>[refundId]);
+
+      expect(await store.transactionById(original.id), isNull, reason: '原消费该删');
+      final refund = (await store.transactionById(refundId))!;
+      expect(refund.nature, TransactionNature.unknown);
+      expect(refund.reviewStatus, ReviewStatus.pending, reason: '指南 3.5.7：恢复待核对');
+      expect(await store.refundLinkOf(refundId), isNull);
+    });
   });
 
   group('人工字段映射', () {

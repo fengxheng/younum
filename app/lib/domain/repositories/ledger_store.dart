@@ -163,6 +163,30 @@ abstract interface class LedgerStore {
     required ReviewSessionRecord session,
   });
 
+  /// 取一笔退款当前的关联（没有则是 null）。
+  ///
+  /// 为什么需要单独的查询：`dataset()` 里的 `refundLinks` 是**跟着原消费
+  /// 所属月份**带出来的，所以「我想知道**这笔退款**关联到了谁」这种反方向
+  /// 的问问不到（跨月时更问不到：连原消费在哪个月都不知道，就没法组月份集）。
+  /// `refund_link.refund_transaction_id` 上有唯一索引，这里是个直查。
+  Future<RefundLink?> refundLinkOf(int refundTransactionId);
+
+  /// 解除退款关联（指南 3.5.7），退款**回到待核对**。
+  ///
+  /// 与 [linkRefundAndResolve] 对称，也是**一个事务**里做完：
+  /// 删掉连接（及其退款分配）、把退款改回 `unknown` + `PENDING`、保存会话。
+  ///
+  /// 性质为什么改回 `unknown` 而不是留着 `refund`：原始账单里那笔钱的
+  /// 性质本来就不是我们定的（导入时多为 `income`），解除关联意味着
+  /// 「这一笔到底是什么，需要重新看」，猜一个不如不猜 —— 而且留着 `refund`
+  /// 会让它在整理页里显得像一笔已经处理好的退款。
+  ///
+  /// 返回 false 表示本来就没有连接（或版本冲突），此时什么都不写。
+  Future<bool> unlinkRefund({
+    required int refundTransactionId,
+    required ReviewSessionRecord session,
+  });
+
   /// 保存详情页的修改：备注，以及（可选的）用途变更。
   ///
   /// 两件事必须在**一个事务**里完成，否则撤销只能还原一半 ——
@@ -335,6 +359,7 @@ final class ImportRevert {
     required this.deletedTransactionIds,
     required this.sharedTransactionIds,
     required this.editedTransactionIds,
+    this.unlinkedRefundIds = const <int>[],
   });
 
   /// 被删掉的交易：只有这一个批次引用，并且用户还没动过。
@@ -346,13 +371,22 @@ final class ImportRevert {
   /// 保留下来的交易：用户已经分过类或改过，不能再悄悄抹掉。
   final List<int> editedTransactionIds;
 
+  /// 因为原消费被删掉而解除关联、回到待核对的退款（指南 3.5.7）。
+  ///
+  /// 它们**不会被删**：退款可能是另一份账单导进来的，撤回消费的那份账单
+  /// 不能连带把别人的钱也抹掉。
+  final List<int> unlinkedRefundIds;
+
   int get deletedCount => deletedTransactionIds.length;
 
   int get keptCount =>
       sharedTransactionIds.length + editedTransactionIds.length;
 
+  int get unlinkedRefundCount => unlinkedRefundIds.length;
+
   @override
   String toString() =>
       'ImportRevert(删除 $deletedCount, 共享保留 ${sharedTransactionIds.length}, '
-      '已整理保留 ${editedTransactionIds.length})';
+      '已整理保留 ${editedTransactionIds.length}, '
+      '解除退款关联 ${unlinkedRefundIds.length})';
 }

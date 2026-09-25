@@ -386,6 +386,32 @@ class ReviewSession extends ChangeNotifier {
     );
   }
 
+  /// 解除一笔退款的关联（指南 3.5.7），退款回到待整理。
+  Future<bool> unlinkRefund(int refundTransactionId) async {
+    if (_committing) return false;
+    final ledgerId = _ledgerId;
+    if (ledgerId == null) return false;
+
+    return _commit(
+      () => repository.unlinkRefund(
+        ledgerId: ledgerId,
+        refundTransactionId: refundTransactionId,
+      ),
+    );
+  }
+
+  /// 这笔退款现在关联到了谁（没有关联则是 null）。
+  ///
+  /// 直查而不是从快照里找：快照里的退款连接是跟着**原消费所在月份**
+  /// 带出来的，跨月退款在原消费不在本月时就找不到 —— 而这里问的正是
+  /// 「这笔退款」关联到了谁。
+  Future<RefundLink?> refundLinkOf(int refundTransactionId) =>
+      repository.refundLinkOf(refundTransactionId);
+
+  /// 按 ID 取一笔记录（只读：显示原消费的商户名这类）。
+  Future<LedgerTransaction?> transactionById(int transactionId) =>
+      repository.transactionById(transactionId);
+
   /// 稍后处理。不增加完成数。
   Future<bool> deferCurrent() async {
     if (_committing) return false;

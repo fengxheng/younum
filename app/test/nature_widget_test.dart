@@ -4,10 +4,12 @@ import 'package:younum/app/app.dart';
 import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/components/screen_scaffold.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
+import 'package:younum/core/time/statistics_time.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
+import 'package:younum/domain/models/ledger_source.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
@@ -204,5 +206,88 @@ void main() {
     expect(link.refundTransactionId, firstCardId);
     expect(link.originalTransactionId, isNot(firstCardId));
   });
+
+  testWidgets('已关联的退款：预填原消费、说清不能再关联、能取消关联', (WidgetTester tester) async {
+    // 先造一笔已关联的退款 —— 这是上一块做出来的能力，这一块要做它的反向。
+    final original = (await repository.loadSnapshot(
+      ledgerId: ledgerId,
+      month: DemoLedgerSeed.month,
+    )).current!;
+    final refundId = await store.insertTransaction(
+      LedgerTransaction(
+        id: LedgerTransaction.idUnassigned,
+        ledgerId: ledgerId,
+        occurredAtMs: StatisticsTime.epochMsFor(2026, 9, 25, 12),
+        amountCents: 1000,
+        merchant: '退款 · 某笔消费',
+        nature: TransactionNature.income,
+        reviewStatus: ReviewStatus.pending,
+        timeZone: StatisticsTime.timeZone,
+        sourceNamespace: LedgerSource.alipay,
+        sourceTransactionId: 'unlink-ui-1',
+      ),
+    );
+    expect(
+      await repository.linkRefundAndResolve(
+        ledgerId: ledgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: original.id,
+      ),
+      isA<ReviewSucceeded>(),
+    );
+
+    await tester.pumpWidget(
+      YounumApp(
+        themeController: themeController,
+        appStateController: appStateController,
+        ledgerRepository: repository,
+        ledgerFileSource: const UnsupportedFileSource(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 已处理的记录不在整理队列里，从「查看全部明细」进去。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppBottomBar),
+        matching: find.text('整理'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is YounumIconButton &&
+            widget.semanticLabel == '查看全部明细',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退款 · 某笔消费').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设为转账 / 收入 / 不计入'));
+    await tester.pumpAndSettle();
+
+    // 预填原消费，而不是留一个空选择器让人以为「这笔还没关联」。
+    expect(inNature(find.textContaining('MANNER COFFEE')), findsWidgets);
+    // 并且说清：现在这个状态不能再提交，要改关联得先取消关联。
+    expect(inNature(find.textContaining('已经关联到')), findsOneWidget);
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    expect((await store.transactionById(refundId))!.nature, TransactionNature.refund);
+
+    // 取消关联：先问一句，再真的断。
+    await tester.tap(inNature(find.text('取消退款关联')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消关联'));
+    await tester.pumpAndSettle();
+
+    expect(await store.refundLinkOf(refundId), isNull);
+    final refund = (await store.transactionById(refundId))!;
+    expect(refund.nature, TransactionNature.unknown);
+    expect(refund.reviewStatus, ReviewStatus.pending, reason: '指南 3.5.7：恢复待核对');
+  });
 }
+
+
 

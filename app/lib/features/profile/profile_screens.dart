@@ -254,6 +254,9 @@ class _ImportHistoryScreenState extends State<ImportHistoryScreen> {
 
     final lines = <String>[
       if (impact.deletedCount > 0) '移除 ${impact.deletedCount} 笔这次导入的记录',
+      if (impact.unlinkedRefundCount > 0)
+        '${impact.unlinkedRefundCount} 笔退款会解除关联并回到待整理'
+            '（退款本身不会被删掉）',
       if (impact.sharedTransactionIds.isNotEmpty)
         '保留 ${impact.sharedTransactionIds.length} 笔 —— 另一份账单也需要它们',
       if (impact.editedTransactionIds.isNotEmpty)
@@ -280,7 +283,8 @@ class _ImportHistoryScreenState extends State<ImportHistoryScreen> {
       result.deletedCount == 0
           ? '已撤回，没有记录需要移除'
           : '已撤回，移除 ${result.deletedCount} 笔'
-                '${result.keptCount > 0 ? '，保留 ${result.keptCount} 笔' : ''}',
+                '${result.keptCount > 0 ? '，保留 ${result.keptCount} 笔' : ''}'
+                '${result.unlinkedRefundCount > 0 ? '，${result.unlinkedRefundCount} 笔退款回到待整理' : ''}',
     );
   }
 }

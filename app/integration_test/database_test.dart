@@ -810,6 +810,57 @@ void main() {
       )).single;
       expect(augustRow['nature'], 'EXPENSE', reason: '原消费的性质不该被改');
     });
+
+    test('解除关联：连接真的删掉，退款回到待核对', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final current = snapshot.current!;
+      await repository.confirm(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: current.id,
+        categoryId: SeedCategoryIds.food,
+      );
+
+      final refundId = await store.insertTransaction(
+        (await store.transactionById(current.id))!.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 某笔消费',
+          amountCents: 1000,
+          nature: TransactionNature.refund,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-unlink-1',
+        ),
+      );
+      expect(
+        await repository.linkRefundAndResolve(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          month: DemoLedgerSeed.month,
+          refundTransactionId: refundId,
+          originalTransactionId: current.id,
+        ),
+        isA<ReviewSucceeded>(),
+      );
+
+      final outcome = await repository.unlinkRefund(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        refundTransactionId: refundId,
+      );
+      expect(outcome, isA<ReviewSucceeded>(), reason: '$outcome');
+
+      final db = await openRaw();
+      expect(await countOf(db, 'refund_link'), 0);
+      final row = (await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[refundId],
+      )).single;
+      expect(row['nature'], TransactionNature.unknown.storageValue);
+      expect(row['review_status'], ReviewStatus.pending.storageValue);
+    });
   });
 
   group('结构迁移', () {
@@ -1311,6 +1362,61 @@ void main() {
       final db = await openRaw();
       expect(await countOf(db, 'allocation'), 1, reason: '用户做的分类不能因为撤回导入而消失');
       expect(await countOf(db, 'txn'), 7, reason: '6 笔演示 + 1 笔保留下来的');
+    });
+
+    test('撤回原消费时先解除退款关联，不会被外键挡住', () async {
+      // 指南 3.5.7。`refund_link.original_transaction_id` 是 ON DELETE RESTRICT：
+      // 不先断连接，整次撤回会直接报外键错误 —— 用户看到的就是「撤不回去」。
+      final repository = _repositoryFor(store);
+      final staged = await stageImport(repository, 'wechat.csv');
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+
+      final dataset = await repository.dataset(ledgerId: real);
+      final original = dataset.transactions.firstWhere(
+        (transaction) => transaction.merchant == '老王牛肉面',
+      );
+      final refundId = await store.insertTransaction(
+        original.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 老王牛肉面',
+          nature: TransactionNature.income,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-revert-1',
+        ),
+      );
+      expect(
+        await repository.linkRefundAndResolve(
+          ledgerId: real,
+          month: billedMonth,
+          refundTransactionId: refundId,
+          originalTransactionId: original.id,
+        ),
+        isA<ReviewSucceeded>(),
+      );
+
+      final reverted = await repository.revertImport(
+        batchId: staged.preview.batchId,
+      );
+      expect(reverted.deletedTransactionIds, contains(original.id));
+      expect(reverted.unlinkedRefundIds, <int>[refundId]);
+
+      final db = await openRaw();
+      expect(await countOf(db, 'refund_link'), 0);
+      final rows = await db.query(
+        'txn',
+        where: 'id = ?',
+        whereArgs: <Object?>[refundId],
+      );
+      expect(rows, hasLength(1), reason: '退款不能被连带删掉');
+      expect(rows.single['nature'], TransactionNature.unknown.storageValue);
+      expect(
+        rows.single['review_status'],
+        ReviewStatus.pending.storageValue,
+        reason: '指南 3.5.7：恢复待核对',
+      );
     });
   });
 }
