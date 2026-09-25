@@ -1599,3 +1599,25 @@ release 显式写上 `isMinifyEnabled = true` + `proguardFiles(...)`，规则两
 那一轮的 logcat 里同时有 `MainActivity EXITING` + `DeadObjectException`，
 更像 MIUI 在那次安装/启动时把 Activity 掐掉了。结论已按实测改写，
 不再把它当成渲染后端的问题。
+
+### 事后补记（同一天）：**线上那个 `v1.1.0+2` 本身就是坏的**
+
+要验「旧版能升级到新版」，就得先在真机上装一个**能跑**的旧版。
+于是把线上 Release 里那份 `v1.1.0+2` 的 APK 下下来装上去试 ——
+**同一台机器、同一个崩溃**：`NoSuchMethodException:
+androidx.work.impl.WorkDatabase_Impl.<init>`，点开图标什么也不发生。
+
+也就是说：在 771a445 之前构建的**所有** release 包都打不开，
+不光是本地那一份。这条推论只能靠「真的装上点一下」得到，
+构建日志、安装输出里的 `Success`、以及 `flutter analyze` 都不会提示任何异常。
+
+两个直接后果：
+
+1. **已经下载过 v1.1.0+2 的人拿到的是一个点不开的应用**，而且因为进不去，
+   它也读不到新版本 —— 只能手动重新安装。
+2. **升级路径不能拿线上那份旧包来验**。因此验升级时用的是
+   `git worktree add <tmp> v1.1.0+2` 从 tag 重建的版本：把
+   `proguard-rules.pro` 和那两行 R8 配置补上再构建。
+   **版本号刻意不改**（仍是 versionCode 2、签名也是同一把），
+   这样它与 1.2.0+3 之间是真实的「覆盖安装」，升完还能顺便验
+   明文库自动搬成密文那一条。

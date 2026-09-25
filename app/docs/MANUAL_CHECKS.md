@@ -301,9 +301,27 @@ flutter build apk --release
 先 `adb uninstall com.younum.app`，再装**正式签名**的包（命令见 `RELEASE.md`）。
 **卸载会清掉本机数据**（示例账本可以重进）。
 
-- [ ] 装好正式签名的 `1.1.0+2`（GitHub 上已有的那个 Release）
+⚠️ **不要拿线上那份 `v1.1.0+2` 当起点**：它的 release 包与 771a445 之前的所有
+release 包一样，**点开就会死**（R8 删掉了 Room 生成的反射构造；进不去也就点不了
+「检查更新」）。必须从 tag 重建一份修好的：
+
+```powershell
+Set-Location D:\dev\younum
+git worktree add D:\dev\younum-v112 'v1.1.0+2'
+# 把 app\android\key.properties 与 app\android\app\proguard-rules.pro 拷过去，
+# 并在那份 build.gradle.kts 的 release 里加上 isMinifyEnabled = true
+#   + proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+Set-Location D:\dev\younum-v112\app
+flutter build apk --release
+adb install -r build\app\outputs\flutter-apk\app-release.apk
+```
+
+版本号**不要改**（仍是 2、签名也是同一把），这样它和 1.2.0+3 之间才是真实的覆盖安装。
+装好后先造点数据（进示例账本 + 整理一两笔），再发布 1.2.0+3 —— 下一节才有东西可比。
+
+- [ ] 装好**重建的** 1.1.0+2（见本节开头；线上那份点不开，不能用）
 - [ ] 打开「我的」：底部应显示**真实版本号**（`Version 1.1.0`），
-      而不是写死的数字；「检查更新」那一行应显示「已经是最新版本」
+      而不是写死的数字
 - [ ] 点进「检查更新」：当前版本、说明文案、按钮都在；
       注：**预发布（pre-release）只在仓库里一条正式发布都没有时才会被读到** ——
       先问 `/releases/latest`（它不含预发布），404 才退回列表。
