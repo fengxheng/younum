@@ -339,7 +339,10 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 * **拆分过的消费 + 退款**已完成（指南 3.5.5）：拆分消费的退款要求明确
   「抵扣到哪几项、各多少」，分配合计精确等于退款金额，单项不超自己
   （见 `DECISIONS.md` 第 50 节）。
-* **导出**（PNG / CSV）未接入文件写入，点按后如实提示。
+* **导出**：规则层已完成 —— 明细 CSV（BOM + CRLF、文本列防公式注入、金额列保持
+  数字语义）与月报海报内容（`SharePosterSpec`：渲染器只能照着这份清单画，
+  所以「隐藏金额」是**文件层面**成立的，不靠屏幕遮罩）。**尚未接入文件写入与
+  界面**，所以按钮还不能用（见 `DECISIONS.md` 55 节）。
 * 主题页里的预览金额用的是样例数字（仅预览用）。
 
 **阶段 3（导入）已落地的部分**
@@ -360,7 +363,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **429 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **446 passed** |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **40 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
