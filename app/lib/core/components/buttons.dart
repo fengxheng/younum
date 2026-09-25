@@ -195,26 +195,33 @@ class PlainTextButton extends StatelessWidget {
       onTap: onTap,
       semanticLabel: semanticLabel ?? label,
       borderRadius: BorderRadius.circular(YounumDimens.radiusControlSmall),
-      child: Container(
+      child: ConstrainedBox(
+        // 最小高度 44 保证触控目标（指南 6.3），但**宽度必须贴着内容**。
+        //
+        // 这里原来是 `Container(alignment: Alignment.center)` —— 带 `alignment`
+        // 的 Container 在**有界**宽度下会撑满父级，于是把它放进 `Wrap` 时会占掉
+        // 整行，同一行的其它内容被挤到下一行居中（首页右上角的「9月」就这么
+        // 跑到第二行去了）。放在 `Row` 里时本来就不给宽度上限，所以看不出来。
         constraints: const BoxConstraints(minHeight: 44),
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        alignment: Alignment.center,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          // 图标与文字对齐到同一条水平中线，避免出现偏上 / 偏下的观感。
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: <Widget>[
-            Text(
-              label,
-              style: YounumText.of(context).label.copyWith(color: colors.primaryColor),
-            ),
-            if (trailingIcon != null) ...<Widget>[
-              const SizedBox(width: 4),
-              ExcludeSemantics(
-                child: Icon(trailingIcon, size: iconSize, color: colors.primaryColor),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            // 图标与文字对齐到同一条水平中线，避免出现偏上 / 偏下的观感。
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: <Widget>[
+              Text(
+                label,
+                style: YounumText.of(context).label.copyWith(color: colors.primaryColor),
               ),
+              if (trailingIcon != null) ...<Widget>[
+                const SizedBox(width: 4),
+                ExcludeSemantics(
+                  child: Icon(trailingIcon, size: iconSize, color: colors.primaryColor),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

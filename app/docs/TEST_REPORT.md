@@ -8,7 +8,7 @@
 | 层级 | 命令 | 结果 |
 | --- | --- | --- |
 | 静态检查 | `flutter analyze` | 零告警 |
-| 单元 + 界面测试 | `flutter test` | **540 passed** |
+| 单元 + 界面测试 | `flutter test` | **543 passed** |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **42 passed** |
 | 调试包 | `flutter build apk --debug` | 成功 |
 | 发布包 | `flutter build apk --release` | 成功（52.3 MB，含全部 ABI） |
@@ -82,6 +82,7 @@
 * CSV 是数据导出，**不是**可还原的备份；
 * 提醒的送达时间由系统调度决定，晚几分钟到十几分钟都属正常；
 * 这台设备上 Impeller 会白屏（设备端图形问题），需 `--no-enable-impeller`。
+
 
 
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
+import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/components/transaction_card_stack.dart';
 import 'package:younum/core/designsystem/younum_dimens.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
@@ -152,8 +153,70 @@ void main() {
     });
   });
 
-  group('引导页（三屏）', () {
-    setUp(() async {
+  group('首页头部', () {
+    testWidgets('月份按钮与词标在同一行，并贴着右边', (tester) async {
+      await pumpAppAt(tester, 1.0);
+
+      // 曾经「9月」跑到第二行居中：`PlainTextButton` 用的是
+      // `Container(alignment:)`，在有界宽度下会撑满，放进 `Wrap` 就占掉整行。
+      final wordmark = tester.getCenter(find.text('有数.'));
+      final month = tester.getCenter(find.text('9月'));
+      expect(
+        month.dy,
+        moreOrLessEquals(wordmark.dy, epsilon: 4),
+        reason: '月份应该和词标同一行',
+      );
+
+      // 右边对齐：与「追加导入 +」这类尾部入口的右边缘对齐。
+      // 比的是**按钮**的右边缘，不是文字的：月份按钮后面还有个箭头图标。
+      final monthRight = tester
+          .getBottomRight(
+            find.ancestor(
+              of: find.text('9月'),
+              matching: find.byType(PlainTextButton),
+            ),
+          )
+          .dx;
+      final trailingRight = tester
+          .getBottomRight(
+            find.ancestor(
+              of: find.text('追加导入 +'),
+              matching: find.byType(PlainTextButton),
+            ),
+          )
+          .dx;
+      expect(
+        monthRight,
+        moreOrLessEquals(trailingRight, epsilon: 1),
+        reason: '月份要贴在内容区右边，而不是被挤到中间',
+      );
+    });
+
+    testWidgets('字号 1.25（本机默认）下也在同一行', (tester) async {
+      // 用户真机上就是 1.25，这个比例曾把内容撑到刚好换行 —— 单测默认的 1.0
+      // 反而看不出来。
+      await pumpAppAt(tester, 1.25);
+
+      expect(
+        tester.getCenter(find.text('9月')).dy,
+        moreOrLessEquals(tester.getCenter(find.text('有数.')).dy, epsilon: 4),
+      );
+    });
+
+    testWidgets('字号 2.0 时不溢出、不重叠（同排或换到下一排都可以）', (tester) async {
+      await pumpAppAt(tester, 2.0);
+
+      expect(tester.takeException(), isNull);
+      // 这一档刚好还排得下，窄一点或字号再大就会换行 —— 指南 6.3 允许内容
+      // 自然铺开，只要不跑到词标上面去。
+      expect(
+        tester.getCenter(find.text('9月')).dy,
+        greaterThanOrEqualTo(tester.getCenter(find.text('有数.')).dy - 4),
+      );
+    });
+  });
+
+  group('引导页（三屏）', () {    setUp(() async {
       // 引导页只在**没看过**时出现，所以这里要把它改回去。
       appStateController = await AppStateController.restore(
         InMemoryAppStateStore(),
