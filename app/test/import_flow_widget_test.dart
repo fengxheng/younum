@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
 import 'package:younum/core/components/buttons.dart';
+import 'package:younum/core/components/screen_scaffold.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
@@ -44,6 +45,19 @@ void main() {
   const unknownHeaderBill = '''
 日期戳,摘要,数额
 2026-09-23 14:26:00,老王牛肉面,28.00
+''';
+
+  /// 上一个月（8 月）的账单：用来验「导入的不是正在看的那一个月」。
+  const augustBill = '''
+微信支付账单明细
+微信昵称：[有数测试]
+起始时间：[2026-08-01 00:00:00] 终止时间：[2026-08-31 23:59:59]
+导出时间：[2026-09-01 09:12:03]
+----------------------微信支付账单明细列表--------------------
+交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+2026-08-05 19:12:00,商户消费,楼下小馆,晚饭,支出,¥36.00,零钱,支付成功,4300001,M2001,/
+2026-08-19 08:30:00,商户消费,便利店,牛奶,支出,¥12.00,零钱,支付成功,4300002,M2002,/
+共 2 笔,合计,-48.00,,,,,
 ''';
 
   Uint8List bytesOf(String text) => Uint8List.fromList(utf8.encode(text));
@@ -223,6 +237,73 @@ void main() {
       // 账本里真的有 3 笔。
       final dataset = await repository.dataset(ledgerId: 2);
       expect(dataset.transactions, hasLength(3));
+    });
+
+    testWidgets('提交之后首页与整理页立刻就能看到这批账单（不需要重启）', (tester) async {
+      // 真机上报过：三批账单在「导入记录」里写着「已导入」，
+      // 整理页却还是「这个月还没有账单」—— 杀掉应用重开数据又都在。
+      // 根因是首页/整理/月报各自持有一份已加载的快照，
+      // 而导入只改了数据库，没人让它们重读。
+      await pumpApp(tester);
+      expect(
+        find.text('导入月账单'),
+        findsWidgets,
+        reason: '前提：空账本，首页给的是导入入口',
+      );
+
+      await openUploadScreen(tester);
+      await tapAction(tester, '选择账单文件');
+      await tapAction(tester, '确认导入 3 笔');
+      await tapAction(tester, '开始整理');
+
+      // 整理页：不再是空状态，而是真的列出了那几笔。
+      expect(
+        find.textContaining('这个月还没有账单'),
+        findsNothing,
+        reason: '提交之后快照必须已经重读，不能等重启',
+      );
+      expect(find.textContaining('0 / 3 笔'), findsWidgets);
+      expect(find.text('还剩 3 笔'), findsWidgets);
+      // 队列里当前是哪一笔由整理顺序决定，不写死 —— 只要求它是刚导入的三笔之一。
+      final shownImported = <String>['老王牛肉面', '地铁公司', '早餐铺'].any(
+        (merchant) => find.text(merchant).evaluate().isNotEmpty,
+      );
+      expect(shownImported, isTrue, reason: '整理页要真的列出刚导入的账单');
+
+      // 首页：金额也要立刻出来。
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AppBottomBar),
+          matching: find.text('本月'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('42.00'),
+        findsWidgets,
+        reason: '首页金额与整理页用的是同一份数据',
+      );
+      expect(find.textContaining('3 笔消费'), findsWidgets);
+    });
+
+    testWidgets('导入的是另一个月的账单时，界面跟着走到那个月', (tester) async {
+      // 重读数据还不够：用户导入的可能是**上个月**的账单，
+      // 界面停在原地同样什么都看不到。口径是
+      // 「导入之后看到的 = 重启之后看到的」。
+      fileSource.bytes = bytesOf(augustBill);
+      await pumpApp(tester);
+      await openUploadScreen(tester);
+      await tapAction(tester, '选择账单文件');
+      await tapAction(tester, '确认导入 2 笔');
+      await tapAction(tester, '开始整理');
+
+      expect(
+        find.textContaining('AUGUST, 2026'),
+        findsWidgets,
+        reason: '8 月才是这批账单所在的月份',
+      );
+      expect(find.textContaining('这个月还没有账单'), findsNothing);
+      expect(find.textContaining('0 / 2 笔'), findsWidgets);
     });
 
     testWidgets('退款那笔不会被计入', (tester) async {      await pumpApp(tester);

@@ -395,7 +395,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **598 passed**（含大文件：6 万行解析 + 提交） |
+| 单元测试（包含界面测试） | `flutter test` | **602 passed**（含大文件：6 万行解析 + 提交） |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机 release 包冷启动 | `adb install -r app-release.apk` + `am start` + 截屏 | 正常进引导页（修正 R8 前为「点开即退出」） |
@@ -583,7 +583,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 ## 剩余事项
 
-自动化能覆盖的部分都已经做完（`flutter test` 598 项 + 真机数据库 50 项）。剩下的只有三类：
+自动化能覆盖的部分都已经做完（`flutter test` 602 项 + 真机数据库 50 项）。剩下的只有三类：
 
 1. **只能人工走的**：真机系统文件选择器、相册写入、系统通知设置、六套主题逐页对比度、
    系统字号调到最大、TalkBack、横屏旋转 —— 逐条清单在 `docs/MANUAL_CHECKS.md`，

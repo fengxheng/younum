@@ -8,7 +8,7 @@
 | 层级 | 命令 | 结果 |
 | --- | --- | --- |
 | 静态检查 | `flutter analyze` | 零告警 |
-| 单元 + 界面测试 | `flutter test` | **598 passed**（1 个联网用例默认跳过） |
+| 单元 + 界面测试 | `flutter test` | **602 passed**（1 个联网用例默认跳过） |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 调试包 | `flutter build apk --debug` | 成功 |

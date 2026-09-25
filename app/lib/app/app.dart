@@ -127,6 +127,7 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     repository: widget.ledgerRepository,
     fileSource: widget.ledgerFileSource,
     ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
+    onLedgerChanged: _reloadLedgerViews,
   );
   late final CategoryRegistry _registry = CategoryRegistry(
     repository: widget.ledgerRepository,
@@ -221,6 +222,21 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
   /// 与 `DemoLedgerSeed` 保持一致；这里不直接导入那个文件是为了不让
   /// 应用根部依赖种子数据。
   static int _ledgerIdFor(bool isDemo) => isDemo ? 1 : 2;
+
+  /// 导入提交 / 撤回之后，把「读账本」的会话重读一遍。
+  ///
+  /// 首页、整理、月报、明细读的都是 [ReviewSession] 里那一份已加载的快照，
+  /// 而导入改的是数据库本身 —— 两者之间没有自动联系。不重读，用户提交完
+  /// 回到首页会看到「这个月还没有账单」，以为白导了。
+  ///
+  /// 真机上就是这么报的：三批账单都写着「已导入」，整理页却还是空的，
+  /// 杀掉应用重开数据又都在。所以「界面拿着旧快照」这件事只能在这里补。
+  ///
+  /// `followPreferredMonth` 是另一半：导入的账单可能不是用户正在看的那一个月，
+  /// 那种情况下光重读还是看不到东西。跟着月份走的口径是
+  /// 「导入之后看到的 = 重启之后看到的」。
+  Future<void> _reloadLedgerViews() =>
+      _review.reload(followPreferredMonth: true);
 
   @override
   void dispose() {

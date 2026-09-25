@@ -113,7 +113,17 @@ class ReviewSession extends ChangeNotifier {
   }
 
   /// 重新加载当前账本与月份。
-  Future<void> reload() => load();
+  ///
+  /// [followPreferredMonth] 为真时，**像刚打开应用那样**重新判断该看哪个月
+  /// （有记录就取最新记录所在月，没有就用当前自然月）—— 导入之后要用它。
+  ///
+  /// 为什么导入非要用这一条：用户导入的账单可能不是他正在看的那一个月，
+  /// 光重读数据、不跟着走，界面依旧停在原地，看到的还是「这个月还没有账单」。
+  /// 这条规则的口径很干脆：**导入之后看到的，和重启之后看到的一模一样**。
+  Future<void> reload({bool followPreferredMonth = false}) async {
+    if (followPreferredMonth) _month = null;
+    await load();
+  }
 
   // ---------------------------------------------------------------------------
   // 读取

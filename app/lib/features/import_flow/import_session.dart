@@ -95,7 +95,19 @@ final class ImportSession extends ChangeNotifier {
     required this.repository,
     required this.fileSource,
     required int ledgerId,
+    this.onLedgerChanged,
   }) : _initialLedgerId = ledgerId;
+
+  /// 正式账目被改动之后的回调（提交 / 撤回）。
+  ///
+  /// 为什么必须有它：首页、整理、月报读的都是 [ReviewSession] 里那份
+  /// **已经加载好的**快照。导入改的是数据库，不会自动让那份快照失效 ——
+  /// 不通知它们，用户提交完回到首页会看到「这个月还没有账单」，以为白导了。
+  /// 真机上就这么报过：重启之后数据又都在，说明写库一直是对的，
+  /// 只是界面拿着旧快照。
+  ///
+  /// 只在**提交成功**与**撤回成功**之后调用：只是暂存、预览或取消都不算。
+  final Future<void> Function()? onLedgerChanged;
 
   final LedgerRepository repository;
   final LedgerFileSource fileSource;
@@ -420,11 +432,27 @@ final class ImportSession extends ChangeNotifier {
       );
       _committed = result;
       await loadHistory();
+      await _announceLedgerChanged();
       _setPhase(ImportPhase.committed);
     } on Object catch (error) {
       // 提交是一个事务：失败就是整批没进，不会留下半个批次。
       // 但暂存区还在，用户可以再点一次。
       _fail('保存时出错了：$error');
+    }
+  }
+
+  /// 告诉外面「正式账目变了」。
+  ///
+  /// 刷新失败**不能**反过来把已经成功的提交说成失败 —— 那会让用户以为要重导
+  /// 一遍，而重复导入是他最怕的事。刷新那边的失败会由它自己在界面上如实体现
+  /// （[ReviewSession.loadError]）。
+  Future<void> _announceLedgerChanged() async {
+    final callback = onLedgerChanged;
+    if (callback == null) return;
+    try {
+      await callback();
+    } on Object catch (error) {
+      debugPrint('导入之后刷新账本视图失败（数据本身已经写进去了）：$error');
     }
   }
 
@@ -440,6 +468,7 @@ final class ImportSession extends ChangeNotifier {
           .firstOrNull;
       if (uri != null) await fileSource.release(uri);
       await loadHistory();
+      await _announceLedgerChanged();
       if (_committed?.batch.id == batchId) {
         _setPhase(ImportPhase.reverted);
       } else {

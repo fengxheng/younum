@@ -409,6 +409,52 @@ void main() {
       expect(impact.keptCount, 1, reason: '界面上的说明就是拿这三个数字拼出来的');
     });
 
+    test('提交与撤回之后都会告诉外面「账本变了」', () async {
+      // 首页、整理、月报各自持有一份已加载的快照。导入改的是库，
+      // 不通知它们，用户提交完回到首页会看到「这个月还没有账单」。
+      var notified = 0;
+      session = ImportSession(
+        repository: repository,
+        fileSource: fileSource,
+        ledgerId: real,
+        onLedgerChanged: () async {
+          notified++;
+        },
+      );
+
+      await pickAndSettle();
+      expect(notified, 0, reason: '只是暂存区里放了一份，还没动正式账');
+
+      await session.commit();
+      expect(notified, 1, reason: '提交改了正式账，必须通知一次');
+
+      // 重复点提交不会再写一遍，也不该再通知一次。
+      await session.commit();
+      expect(notified, 1);
+
+      await session.revert(session.committed!.batch.id);
+      expect(notified, 2, reason: '撤回同样改了正式账，同样要通知');
+    });
+
+    test('刷新失败不能说成提交失败：数据已经进去了', () async {
+      session = ImportSession(
+        repository: repository,
+        fileSource: fileSource,
+        ledgerId: real,
+        onLedgerChanged: () async => throw StateError('视图重读炸了'),
+      );
+
+      await pickAndSettle();
+      await session.commit();
+
+      expect(
+        session.phase,
+        ImportPhase.committed,
+        reason: '账已经写进去了，不能因为刷新失败就让用户以为要重导一遍',
+      );
+      expect(session.committed!.count, 3);
+    });
+
     test('撤回后交易消失，批次留在历史里', () async {
       await pickAndSettle();
       await session.commit();
