@@ -33,6 +33,13 @@ Android 记账整理 App。导入月账单 → 逐笔卡片确认用途 → 生�
 
 ## 构建与运行
 
+交付相关的那两份文档：
+
+* **`docs/RELEASE.md`** —— 构建、安装（含 `flutter install` 会装 release 包并
+  卸载旧版的坑）、签名与发布前检查清单；
+* **`docs/TEST_REPORT.md`** —— 各层测试的命令与当前数字、真实账单验证结论、
+  明确未验证的项。
+
 在 `app/` 目录下执行：
 
 ```powershell

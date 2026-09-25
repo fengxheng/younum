@@ -283,9 +283,10 @@ extension ImportWorkflow on LedgerRepository {
     final existing = await dataset(ledgerId: ledgerId);
     final knownStable = <String>{};
     final knownWeak = <String>{};
-    // 金额 → 已知记录。跨来源疑似重复只看同金额的候选，所以按金额分桶，
-    // 不用拿每一行去扫全表。
-    final knownByAmount = <int, List<ImportSourceStamp>>{};
+    // 金额 → 来源 → 已知记录。跨来源疑似重复只看**同金额、别的来源**的候选，
+    // 所以按金额再按来源分两层层桶：不然一份账单里同金额的行一多（真实账单
+    // 里同金额很常见），每行都要扫一遍整桶，大文件上会退化成几十万次比较。
+    final knownByAmount = <int, Map<String, List<ImportSourceStamp>>>{};
     for (final transaction in existing.transactions) {
       final key = transaction.dedupeKey;
       if (key != null) knownStable.add(key);
@@ -296,13 +297,13 @@ extension ImportWorkflow on LedgerRepository {
           amountCents: transaction.amountCents,
         ),
       );
-      (knownByAmount[transaction.amountCents] ??= <ImportSourceStamp>[]).add(
-        ImportRules.stampOf(
-          occurredAtMs: transaction.occurredAtMs,
-          // 手工记的账 / 示例数据没有来源，统一当成「另一类来源」：
-          // 空字符串只和空字符串算同源，不会把两份真实账单误判成同一份。
-          sourceNamespace: transaction.sourceNamespace ?? '',
-        ),
+      _addStamp(
+        knownByAmount,
+        amountCents: transaction.amountCents,
+        // 手工记的账 / 示例数据没有来源，统一当成「另一类来源」：
+        // 空字符串只和空字符串算同源，不会把两份真实账单误判成同一份。
+        sourceNamespace: transaction.sourceNamespace ?? '',
+        occurredAtMs: transaction.occurredAtMs,
       );
     }
 
@@ -369,9 +370,10 @@ extension ImportWorkflow on LedgerRepository {
               ? ImportRules.crossSourceDuplicate(
                   occurredAtMs: result.occurredAtMs,
                   sourceNamespace: sourceNamespace,
-                  sameAmount:
-                      knownByAmount[result.amountCents] ??
-                      const <ImportSourceStamp>[],
+                  sameAmount: _otherSourcesOf(
+                    knownByAmount[result.amountCents],
+                    exclude: sourceNamespace,
+                  ),
                 )
               : null;
 
@@ -402,11 +404,11 @@ extension ImportWorkflow on LedgerRepository {
           if (stableKey != null) knownStable.add(stableKey);
           // 同一文件里后面出现的行也要能和前面比，所以无论什么判定都记进去。
           knownWeak.add(weakKey);
-          (knownByAmount[result.amountCents] ??= <ImportSourceStamp>[]).add(
-            ImportRules.stampOf(
-              occurredAtMs: result.occurredAtMs,
-              sourceNamespace: sourceNamespace,
-            ),
+          _addStamp(
+            knownByAmount,
+            amountCents: result.amountCents,
+            sourceNamespace: sourceNamespace,
+            occurredAtMs: result.occurredAtMs,
           );
 
           if (included) {
@@ -679,4 +681,40 @@ String _hashOf(List<int> bytes) {
     hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
   }
   return hash.toRadixString(16).padLeft(16, '0');
+}
+
+/// 记下「金额 + 来源 → 已知记录」，供跨来源疑似重复比对。
+void _addStamp(
+  Map<int, Map<String, List<ImportSourceStamp>>> index, {
+  required int amountCents,
+  required String sourceNamespace,
+  required int occurredAtMs,
+}) {
+  final bySource = index[amountCents] ??= <String, List<ImportSourceStamp>>{};
+  (bySource[sourceNamespace] ??= <ImportSourceStamp>[]).add(
+    ImportRules.stampOf(
+      occurredAtMs: occurredAtMs,
+      sourceNamespace: sourceNamespace,
+    ),
+  );
+}
+
+/// 取出「同金额、但不是这份来源」的候选。
+///
+/// 同来源的重复交给同源键与弱键处理，这里不用管，所以在建列表时就滤掉 ——
+/// 大文件上这一步省下的是「同金额行数 × 行数」级别的比较。
+List<ImportSourceStamp> _otherSourcesOf(
+  Map<String, List<ImportSourceStamp>>? bySource, {
+  required String exclude,
+}) {
+  if (bySource == null) return const <ImportSourceStamp>[];
+  // ⚠️ 只有「自己这一类」才可以直接返回空。桶里如果恰好只有**另一份来源**，
+  // 那正是跨来源要比的候选，不能跳过（这里写错过一次，被测试当场抓到）。
+  if (bySource.length == 1 && bySource.containsKey(exclude)) {
+    return const <ImportSourceStamp>[];
+  }
+  return <ImportSourceStamp>[
+    for (final entry in bySource.entries)
+      if (entry.key != exclude) ...entry.value,
+  ];
 }
