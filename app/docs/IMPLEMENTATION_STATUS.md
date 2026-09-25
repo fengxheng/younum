@@ -366,7 +366,8 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
 | 单元测试（包含界面测试） | `flutter test` | **513 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **40 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **522 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **42 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
@@ -476,8 +477,9 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   （值是「商户消费」这种），而且排在「收/支」列前面 —— 一加，方向列就会被
   它抢走，微信账单的方向全判错。这条已有回归测试
   （`test/bank_statement_test.dart` 的「微信账单不会误用银行适配器」）。
-* 导入失败与 `COMMITTING` 中途崩溃：`ImportStage.isInFlight` 已经能识别出
-  「上次写到一半」的批次，但还没有启动时扫描并恢复的逻辑。
+* 导入失败与 `COMMITTING` 中途崩溃：启动时会扫描在途批次并按**实际结果**收尾 ——
+  库里已有这批交易就补记为已提交，没有就放回待提交。两种都不会让用户再提交一次
+  而重复入账（见 `DECISIONS.md` 58 节；单测 5 个 + 真机 2 个）。
 * 导入异常明细的导出：导出能力已经就绪（阶段 5 完成），但这个按钮还没做 ——
   与其放一个只弹「暂不可用」的按钮，不如先不做。
   不做一个只弹「暂不可用」的按钮）。

@@ -9,6 +9,7 @@ library;
 import 'dart:typed_data';
 
 import '../models/allocation.dart';
+import '../models/import_records.dart';
 import '../models/category.dart';
 import '../models/category_icon_asset.dart';
 import '../models/ledger.dart';
@@ -237,6 +238,55 @@ final class LedgerRepository {
     // 而「清除本地数据」的承诺是把它们一起清掉（指南 8.3）。
     // 文件都放在应用私有目录下的 category_icons，清空即可，不需要逐个删。
     await _iconFiles.clearAll();
+  }
+
+  /// 启动时扫描「上次提交没写完」的导入批次，按**实际结果**收尾。
+  ///
+  /// 提交是一个事务（`commitImport`），所以进程被杀只可能留下两种局面：
+  ///
+  /// * **什么都没写进去** —— 批次仍停在 `COMMITTING`。放回 `READY`，
+  ///   用户可以照原样再提交一次；
+  /// * **已经写进去了、状态没来得及改** —— 库里已经有属于这个批次的交易。
+  ///   这时必须补记为 `COMMITTED`：否则用户再提交一次就会入两份，
+  ///   而指南明确要求「提交时进程结束后恢复不出现半批数据或重复记录」。
+  ///
+  /// 判断依据是交易上的 `importBatchId` —— 那个字段就是为这件事存在的。
+  /// 返回放回待提交与补记已提交的批次数，供日志与测试核对。
+  Future<({int reopened, int closed})> recoverInterruptedImports() async {
+    var reopened = 0;
+    var closed = 0;
+
+    for (final ledger in await _store.ledgers()) {
+      final batches = await _store.importBatches(ledgerId: ledger.id);
+      final inFlight = <ImportBatch>[
+        for (final batch in batches)
+          if (batch.stage == ImportStage.committing) batch,
+      ];
+      if (inFlight.isEmpty) continue;
+
+      final dataset = await _store.dataset(ledgerId: ledger.id);
+      for (final batch in inFlight) {
+        final written = dataset.transactions.any(
+          (transaction) => transaction.importBatchId == batch.id,
+        );
+        if (written) {
+          await _store.updateImportBatch(
+            batch.copyWith(
+              stage: ImportStage.committed,
+              committedAtMs: batch.committedAtMs ?? _nowMs(),
+            ),
+          );
+          closed++;
+        } else {
+          await _store.updateImportBatch(
+            batch.copyWith(stage: ImportStage.ready),
+          );
+          reopened++;
+        }
+      }
+    }
+
+    return (reopened: reopened, closed: closed);
   }
 
   /// 月度报告：概况 + 洞察 + 趋势 + 有记录的月份 + 完整数据集。

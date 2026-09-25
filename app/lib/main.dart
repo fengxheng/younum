@@ -78,6 +78,20 @@ Future<void> main() async {
   final themeController = await ThemeController.restore(themeStore);
   final appStateController = await AppStateController.restore(appStateStore);
 
+  // 启动时把「上次提交没写完」的导入收尾（指南 10.2 / 阶段 7）。
+  // 库里已经有这批交易就补记为已提交，没有就放回待提交 —— 两种都不能让用户
+  // 再提交一次而重复入账。失败也不影响使用，如实打日志即可。
+  try {
+    final recovery = await repository.recoverInterruptedImports();
+    if (recovery.reopened > 0 || recovery.closed > 0) {
+      debugPrint(
+        '导入恢复：放回待提交 ${recovery.reopened} 批，补记已提交 ${recovery.closed} 批',
+      );
+    }
+  } catch (error) {
+    debugPrint('导入恢复失败（不影响使用）：$error');
+  }
+
   // 选账单文件的能力。
   //
   // 桌面与测试环境没有这条通道，[SystemFileSource.isAvailable] 会返回 false，

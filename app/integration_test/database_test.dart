@@ -1716,6 +1716,81 @@ void main() {
       );
     });
   });
+  group('导入恢复（进程被杀之后）', () {
+    const real = DemoLedgerSeed.realLedgerId;
+
+    final billBytes = Uint8List.fromList(
+      utf8.encode('''
+微信支付账单明细
+交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+2026-09-23 14:26:00,商户消费,老王牛肉面,牛肉面,支出,¥28.00,零钱,支付成功,4200001,M1001,/
+2026-09-24 09:02:11,商户消费,地铁公司,地铁,支出,¥5.00,零钱,支付成功,4200002,M1002,/
+共 2 笔,合计,-33.00,,,,
+'''),
+    );
+
+    Future<ImportStaged> stageAgain(LedgerRepository repository) async {
+      final result = await repository.stageImport(
+        ledgerId: real,
+        fileName: 'wechat.csv',
+        bytes: billBytes,
+        sourceNamespace: 'wechat',
+        sourceAccount: '零钱',
+      );
+      expect(result, isA<ImportStaged>(), reason: '$result');
+      return result as ImportStaged;
+    }
+
+    /// 直接把批次状态改成 COMMITTING，模拟「写到一半进程被杀」。
+    Future<void> knockOut(int batchId) async {
+      final db = await openRaw();
+      await db.update(
+        'import_batch',
+        <String, Object?>{'stage': 'COMMITTING'},
+        where: 'id = ?',
+        whereArgs: <Object?>[batchId],
+      );
+    }
+
+    test('事务还没开始就被杀：放回待提交，可以再提交一次且只入一批', () async {
+      final repository = _repositoryFor(store);
+      final staged = await stageAgain(repository);
+      await knockOut(staged.preview.batchId);
+
+      final recovery = await repository.recoverInterruptedImports();
+      expect(recovery.reopened, 1);
+      expect(recovery.closed, 0);
+
+      final db = await openRaw();
+      final batches = await db.query('import_batch');
+      expect(batches.first['stage'], 'READY');
+
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      expect(await countOf(db, 'txn'), 8, reason: '6 笔演示 + 2 笔导入');
+    });
+
+    test('事务提交成功但状态没改：补记为已提交，一笔都不多', () async {
+      final repository = _repositoryFor(store);
+      final staged = await stageAgain(repository);
+      await repository.commitImport(
+        ledgerId: real,
+        batchId: staged.preview.batchId,
+      );
+      await knockOut(staged.preview.batchId);
+
+      final recovery = await repository.recoverInterruptedImports();
+      expect(recovery.closed, 1);
+      expect(recovery.reopened, 0);
+
+      final db = await openRaw();
+      final batches = await db.query('import_batch');
+      expect(batches.first['stage'], 'COMMITTED');
+      expect(await countOf(db, 'txn'), 8, reason: '一笔都不能多');
+    });
+  });
 }
 
 /// 让集成测试用同一套编排逻辑。
@@ -1723,6 +1798,5 @@ void main() {
 /// 这里刻意不导入界面层：数据库测试验证的是仓库 + SQL，不含 UI。
 LedgerRepository _repositoryFor(SqfliteLedgerStore store) =>
     LedgerRepository(store);
-
 
 
