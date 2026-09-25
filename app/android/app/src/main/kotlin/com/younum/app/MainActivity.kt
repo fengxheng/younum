@@ -1,10 +1,16 @@
 package com.younum.app
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -51,6 +57,12 @@ class MainActivity : FlutterActivity() {
 
         /** 导出文件用的请求码（与选择文件分开，否则分不清回来的是哪个）。 */
         private const val REQUEST_SAVE_DOCUMENT = 0x594F
+
+        /** 申请通知权限用的请求码（同上的理由，单独一个）。 */
+        private const val REQUEST_NOTIFICATION_PERMISSION = 0x5950
+
+        /** 每月提醒的通道名。与文件通道分开：两件事互不相干。 */
+        private const val REMINDER_CHANNEL = "com.younum.app/reminder"
     }
 
     /** 同一时刻只允许一个选择请求。 */
@@ -69,6 +81,9 @@ class MainActivity : FlutterActivity() {
         val bytes: ByteArray,
         val name: String,
     )
+
+    /** 等通知权限结果的请求。 */
+    private var pendingPermission: MethodChannel.Result? = null
 
     /** 文件读写一律在这个线程上做，不占 UI 线程。 */
     private val fileExecutor = Executors.newSingleThreadExecutor()
@@ -138,6 +153,123 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // 每月整理提醒（指南 8.2）。与文件通道分开，两件事互不相干。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, REMINDER_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // 如实上报**实际状态**：权限有没有、系统里通知开没开。
+                    // 设置页拿它显示状态，而不是拿我们自己的开关骗自己。
+                    "status" -> handleReminderStatus(result)
+
+                    "requestPermission" -> handleNotificationPermission(result)
+
+                    "schedule" -> {
+                        val day = call.argument<Int>("day")
+                        val hour = call.argument<Int>("hour")
+                        val minute = call.argument<Int>("minute")
+                        if (day == null || hour == null || minute == null) {
+                            result.error("bad_arguments", "缺少提醒时间", null)
+                        } else {
+                            ReminderWorker.ensureChannel(this)
+                            ReminderWorker.scheduleNext(this, day, hour, minute)
+                            result.success(true)
+                        }
+                    }
+
+                    "cancel" -> {
+                        ReminderWorker.cancel(this)
+                        result.success(true)
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun handleReminderStatus(result: MethodChannel.Result) {
+        // WorkManager 的查询是阻塞式 Future，不能在主线程上等 —— 放到后台线程查完
+        // 再回 UI 线程回复。
+        fileExecutor.execute {
+            val permissionGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            val notificationsEnabled =
+                NotificationManagerCompat.from(this).areNotificationsEnabled()
+
+            val scheduled = try {
+                WorkManager.getInstance(this)
+                    .getWorkInfosForUniqueWork(ReminderWorker.WORK_NAME)
+                    .get()
+                    .any { info: WorkInfo ->
+                        info.state == WorkInfo.State.ENQUEUED || info.state == WorkInfo.State.RUNNING
+                    }
+            } catch (error: Exception) {
+                Log.d(TAG, "查不到提醒任务状态：${error.message}")
+                false
+            }
+
+            runOnUiThread {
+                result.success(
+                    mapOf(
+                        "supported" to true,
+                        "permissionGranted" to permissionGranted,
+                        "notificationsEnabled" to notificationsEnabled,
+                        "scheduled" to scheduled,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * 请求通知权限（Android 13 起为运行时权限）。
+     *
+     * 只在用户**主动打开提醒开关**时调用 —— 启动时不弹，与指南 8.2
+     * 「用户主动开启时，解释用途并按系统版本申请」一致。
+     */
+    private fun handleNotificationPermission(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // 老系统没有这个权限，装上就能发。
+            result.success(true)
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            result.success(true)
+            return
+        }
+        if (pendingPermission != null) {
+            result.error("busy", "已经有一个权限申请在进行中", null)
+            return
+        }
+        ReminderWorker.ensureChannel(this)
+        pendingPermission = result
+        requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQUEST_NOTIFICATION_PERMISSION,
+        )
+    }
+
+    @Deprecated("与 onActivityResult 同理：这是可用的最小做法")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (requestCode != REQUEST_NOTIFICATION_PERMISSION) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+            return
+        }
+        val pending = pendingPermission
+        pendingPermission = null
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        pending?.success(granted)
     }
 
     private fun handlePick(result: MethodChannel.Result, mimeType: String?) {
@@ -458,8 +590,11 @@ class MainActivity : FlutterActivity() {
         pendingPick = null
         pendingSave?.result?.error("detached", "界面已经关闭", null)
         pendingSave = null
+        pendingPermission?.error("detached", "界面已经关闭", null)
+        pendingPermission = null
         fileExecutor.shutdown()
         super.onDestroy()
     }
 }
+
 

@@ -53,6 +53,15 @@ kotlin {
     }
 }
 
+dependencies {
+    // 每月整理提醒的调度（指南 8.2）。
+    //
+    // 选 WorkManager 而不是精确闹钟：这是「提醒你整理账单」，不是日历事件，
+    // 系统省电造成的合理延迟可以接受 —— 换来的是**不必申请精确闹钟权限**。
+    // 通知文案写「约」，与这个取舍一致。
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+}
+
 flutter {
     source = "../.."
 }
