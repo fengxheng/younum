@@ -225,8 +225,7 @@ void main() {
       expect(dataset.transactions, hasLength(3));
     });
 
-    testWidgets('退款那笔不会被计入', (tester) async {
-      await pumpApp(tester);
+    testWidgets('退款那笔不会被计入', (tester) async {      await pumpApp(tester);
       await openUploadScreen(tester);
       await tapAction(tester, '选择账单文件');
 
@@ -266,6 +265,28 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('还没有导入过账单'), findsOneWidget);
+    });
+
+    testWidgets('数据管理页的「导入批次」是真实数量，不是占位符', (tester) async {
+      await pumpApp(tester);
+      await openUploadScreen(tester);
+      await tapAction(tester, '选择账单文件');
+      await tapAction(tester, '确认导入 3 笔');
+
+      // 完成页没有底部导航，先回到有标签的那几页。
+      await tapAction(tester, '开始整理');
+
+      // 我的 → 隐私与数据 → 清除本地数据（这一页就是数据管理）。
+      await tester.tap(find.text('我的').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.textContaining('隐私与数据'));
+      await tester.pumpAndSettle();
+      await tapActionBelowFold(tester, '清除本地数据');
+
+      // 这一行曾经写死成「—」，而批次其实早就有数据了。
+      expect(find.text('导入批次'), findsOneWidget);
+      expect(find.text('1 批'), findsOneWidget);
+      expect(find.text('—'), findsNothing);
     });
   });
 

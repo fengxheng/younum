@@ -275,10 +275,6 @@ class CategoryManageScreen extends StatelessWidget {
               '更换图标不会改动消费金额、分类关系与整理进度。',
             ),
           ),
-          const YounumDemoNote(
-            '分类与图标存在本机数据库里，重启之后仍然在；改图标不会改动'
-            '消费金额、分类关系与整理进度。图片图标还没做（只支持预设线条图标）。',
-          ),
         ],
       ),
     );

@@ -23,8 +23,8 @@ import '../../domain/repositories/ledger_repository.dart';
 /// 2. 图标按**名字**索引 —— 一旦改名，图标会跟着丢；指南 3.5.8 要求
 ///    「重命名保留稳定 ID」，名字本来就不该被当作键。
 ///
-/// 图标只按分类 ID 存（`category.icon_key`），图片资源（`CategoryIconAsset`
-/// 与私有文件生命周期）还没做，界面上如实说明。
+/// 图标只按分类 ID 存（`category.icon_key`）；图片图标存成一个资源行加一份
+/// 应用私有目录里的文件（见 `DECISIONS.md` 第 51、52 节）。
 class CategoryRegistry extends ChangeNotifier {
   CategoryRegistry({required this.repository, ImageFileSource? imageSource})
       : imageSource = imageSource ?? const UnsupportedImageSource();

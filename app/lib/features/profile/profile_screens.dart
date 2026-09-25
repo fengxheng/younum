@@ -690,6 +690,11 @@ class DeleteConfirmScreen extends StatefulWidget {
 class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
   bool _sheetShown = false;
 
+  /// 是否已经请过导入会话去读批次历史。
+  ///
+  /// 只用来避免每帧重复请求，不是缓存 —— 真实数据在 `ImportSession` 里。
+  bool _historyRequested = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -729,6 +734,17 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
     final session = ReviewSessionScope.of(context);
+    // 「导入批次」要显示真实数量，所以进页就把历史读一遍 ——
+    // 这里与「导入记录」页读的是同一个仓库方法，不会出现两处数字对不上。
+    final importSession = ImportSessionScope.of(context);
+    if (!_historyRequested) {
+      _historyRequested = true;
+      // 在 build 期间直接 await 是不行的：靠一帧后的回调去加载，
+      // 加载完 `notifyListeners` 会把这一页重新构建一遍。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) importSession.loadHistory();
+      });
+    }
 
     return YounumScreen(
       title: '数据管理',
@@ -745,11 +761,11 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
                   value:
                       '${session.report?.dataset.transactions.length ?? 0} 笔',
                 ),
-                const YounumLineInfo(
-                  // 导入批次表（import_batch）属于阶段 3，现在还没有数据可数。
-                  // 这里如实留空，不用样例数字充数。
+                YounumLineInfo(
                   label: '导入批次',
-                  value: '—',
+                  // 真实数量，不是占位符：批次表从阶段 3 起就在用，这里的数字
+                  // 与「导入记录」页看到的是同一份数据。
+                  value: '${importSession.history.length} 批',
                 ),
                 YounumLineInfo(
                   label: '有记录的月份',
@@ -758,9 +774,9 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
               ],
             ),
           ),
-          const YounumDemoNote(
-            '清除操作会真实把账本切回空状态（首页回到「从一份账单开始」），'
-            '并保留主题与引导状态。后台导入任务的取消协调在阶段 6 接入。',
+          const YounumNotice(
+            '清除操作会把账本切回空状态（首页回到「从一份账单开始」），'
+            '并保留主题配色与已看过的引导状态。',
           ),
         ],
       ),
