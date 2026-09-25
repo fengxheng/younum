@@ -1429,3 +1429,29 @@ FileProvider 给出 `content://` → 交给系统的安装界面 → 文案写�
 **仍然未验证**：真机上的完整升级（下载 → 系统安装器 → 覆盖安装成功）需要
 **先有正式签名的旧版本装着**，而这台机器上现在是调试签名的包 —— 见
 `MANUAL_CHECKS.md` 第十五节，不要当成已经验过。
+
+补记（同一天）：**预发布也要能读到，但只在没有正式发布时。**
+
+用户建 Release 时勾了「pre-release」，于是 `releases/latest` 一直 404 —— 按定义它
+**不返回预发布**。这不是接口的毛病，是「勾一个复选框」和「整条升级路径能不能用」
+之间隔了一层没人告诉你的约定。
+
+改法是在规则层加一条「从列表里挑」：`UpdateRules.readFromList` 跳过草稿、
+跳过没有 APK 的，取 **build number 最大**的那条（列表顺序不是按版本排的，按第一条取
+会读到旧版本）。调用顺序是：
+
+1. 先问 `/releases/latest` —— 正式发布优先；
+2. 它 404 时才退回 `/releases` 列表。
+
+于是两种情况都成立：仓库里只有预发布时升级照旧能用；一旦发了正式发布，
+预发布就不再打扰用户。命令行验证方式也留下了：
+`flutter test test/manual/live_update_test.dart --dart-define=YOUNUM_LIVE=true`
+（默认跳过，单元测试不该依赖网络）。真跑一次的输出是：
+
+```
+LIVE OK: 1.1.0+2 apk=https://github.com/fengxheng/younum/releases/download/v1.1.0%2B2/app-release.apk
+```
+
+**为什么值得留一个「手动跑」的测试**：单元测试里那份 JSON 是**我编的**，
+线上那份是**真的** —— 字段名、嵌套方式、tag 里的 `+` 被编码成 `%2B`，
+这些只有真跑一次才知道。

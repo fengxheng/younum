@@ -87,6 +87,69 @@ void main() {
     });
   });
 
+  group('从 releases 列表里挑（预发布只有一个正式发布都没有时才算）', () {
+    List<Map<String, Object?>> listOf(
+      List<(String tag, bool draft, bool hasApk)> entries,
+    ) => <Map<String, Object?>>[
+      for (final (tag, draft, hasApk) in entries)
+        <String, Object?>{
+          'tag_name': tag,
+          'draft': draft,
+          'html_url': 'https://github.com/fengxheng/younum/releases/tag/$tag',
+          'assets': hasApk
+              ? <Map<String, Object?>>[
+                  <String, Object?>{'name': 'app-release.apk', 'browser_download_url': 'https://x/$tag.apk'},
+                ]
+              : <Map<String, Object?>>[],
+        },
+    ];
+
+    test('取 build number 最大的那条，而不是列表里的第一条', () {
+      // 列表顺序不是按版本排的，按第一条取会读到旧版本。
+      final result = UpdateRules.readFromList(
+        listOf(<(String, bool, bool)>[
+          ('v1.1.0+2', false, true),
+          ('v1.3.0+9', false, true),
+          ('v1.2.0+5', false, true),
+        ]),
+      );
+
+      expect(result, isA<UpdateFound>());
+      expect((result as UpdateFound).info.versionCode, 9);
+    });
+
+    test('草稿跳过：它对用户不可见，不该拿它提示', () {
+      final result = UpdateRules.readFromList(
+        listOf(<(String, bool, bool)>[
+          ('v2.0.0+20', true, true),
+          ('v1.1.0+2', false, true),
+        ]),
+      );
+      expect((result as UpdateFound).info.versionCode, 2);
+    });
+
+    test('没有 APK 的条目跳过', () {
+      final result = UpdateRules.readFromList(
+        listOf(<(String, bool, bool)>[
+          ('v2.0.0+20', false, false),
+          ('v1.1.0+2', false, true),
+        ]),
+      );
+      expect((result as UpdateFound).info.versionCode, 2);
+    });
+
+    test('空列表或全都不合格：如实说没有发布过', () {
+      expect(UpdateRules.readFromList(<Object?>[]), isA<UpdateUnreadable>());
+      expect(
+        UpdateRules.readFromList(
+          listOf(<(String, bool, bool)>[('v1.0.0+1', true, true)]),
+        ),
+        isA<UpdateUnreadable>(),
+      );
+      expect(UpdateRules.readFromList('不是列表'), isA<UpdateUnreadable>());
+    });
+  });
+
   group('版本号解析', () {
     test('tag 的几种常见写法都能认出来', () {
       expect(UpdateRules.versionCodeOf('v1.1.0+2'), 2);

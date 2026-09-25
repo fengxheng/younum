@@ -79,11 +79,16 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 
 能用的 release 必须同时满足三条：
 
-1. 是 **Release**（在 GitHub 网页上「Draft a new release」），光是 push 一个 tag
-   不算；
+1. 是**已发布**的 Release（在 GitHub 网页上「Draft a new release」之后还要点
+   「Publish release」）：**草稿**对匿名请求完全不可见，光 push 一个 tag 也不算；
 2. tag 里带 **build number**，形如 `v1.1.0+2` —— 比较新旧只看它；
 3. **上传了 `.apk` 资源**（不能只有源码 zip），而且必须是**正式签名**的包：
    升级是「覆盖安装」，签名不一致会被系统直接拒绝。
+
+关于**预发布**：`releases/latest` 按定义**不返回预发布**，所以在「只发过预发布」
+的阶段应用会读不到。应用的顺序是「先问 latest，404 才退回 `releases` 列表」——
+也就是说：只有预发布时升级照旧能用（按 build number 取最大的那条），
+一旦发了正式发布，预发布就不会再打扰用户。
 
 发布步骤：
 
@@ -125,5 +130,6 @@ flutter build apk --release
 的「已知限制」。摘要：提醒的真实送达依赖系统调度（本机验证过，但延迟由系统
 决定）；桌面与 Web 不支持选择文件、保存、提醒；应用私有存储**不等于**
 数据库已加密。
+
 
 

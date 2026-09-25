@@ -58,6 +58,37 @@ final class UpdateUnreadable extends UpdateReadResult {
 
 /// 升级判定。
 abstract final class UpdateRules {
+  /// 从 `releases` **列表**里挑一条可用的版本。
+  ///
+  /// 为什么需要它：GitHub 的 `releases/latest` **不返回预发布**，而发布的人
+  /// 勾一下「pre-release」是很容易的事（这个项目上就发生过）。仓库里只有
+  /// 预发布时，接口会 404，于是「作者还没有发布过正式版本」把整条升级路径
+  /// 堵死 —— 而实际上用户想要的就是那个版本。
+  ///
+  /// 调用方的顺序是「先问 latest，拿不到再退回列表」：一旦有了正式发布，
+  /// 预发布就不会再打扰用户，而只有预发布的阶段也能继续用。
+  ///
+  /// 挑选规则：跳过草稿与读不出来的条目，取 **build number 最大**的那条
+  /// （不是「列表里的第一条」——列表顺序不是按版本排的）。
+  static UpdateReadResult readFromList(Object? json) {
+    if (json is! List) return const UpdateUnreadable('版本信息的格式不对');
+
+    UpdateFound? best;
+    for (final item in json) {
+      if (item is! Map<String, Object?>) continue;
+      // 草稿只对作者可见，不该拿它去提示用户。
+      if (item['draft'] == true) continue;
+
+      final result = readLatest(item);
+      if (result is! UpdateFound) continue;
+      if (best == null || result.info.versionCode > best.info.versionCode) {
+        best = result;
+      }
+    }
+    if (best == null) return const UpdateUnreadable('作者还没有发布过版本');
+    return best;
+  }
+
   /// 从 GitHub `releases/latest` 的响应体里读出最新版本。
   ///
   /// 只认一种「可用」：**带 `.apk` 资源的 release**。没有 APK 的 release

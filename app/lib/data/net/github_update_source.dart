@@ -33,29 +33,28 @@ class GithubUpdateSource implements UpdateSource {
   Uri get latestReleaseUri =>
       Uri.https('api.github.com', '/repos/$owner/$repo/releases/latest');
 
+  /// 列表接口。只在「一条正式发布都没有」时用得上（见 [fetchLatest]）。
+  Uri get releaseListUri =>
+      Uri.https('api.github.com', '/repos/$owner/$repo/releases', {
+        'per_page': '10',
+      });
+
   @override
   Future<UpdateReadResult> fetchLatest() async {
     try {
-      final request = await _client.getUrl(latestReleaseUri).timeout(timeout);
-      request.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
-      // GitHub 要求带 User-Agent，否则直接 403。
-      request.headers.set(HttpHeaders.userAgentHeader, 'younum-app');
-      request.followRedirects = true;
-
-      final response = await request.close().timeout(timeout);
-      if (response.statusCode == HttpStatus.notFound) {
-        // 仓库还没有发过 Release：这不是错误，如实说「还没发布过版本」。
-        await response.drain<void>();
-        return const UpdateUnreadable('作者还没有发布过正式版本');
+      final latest = await _get(latestReleaseUri);
+      switch (latest) {
+        case _HttpBody(:final decoded):
+          return UpdateRules.readLatest(decoded);
+        case _HttpStatus(:final code) when code == HttpStatus.notFound:
+          // `releases/latest` 不返回**预发布**：仓库里只发过预发布时它也是 404。
+          // 所以退回列表看一眼 —— 否则这一阶段整条升级路径都走不通。
+          return await _readFromList();
+        case _HttpStatus(:final code):
+          return UpdateUnreadable('版本信息读不到（HTTP $code）');
+        case _:
+          return const UpdateUnreadable('版本信息的格式不对');
       }
-      if (response.statusCode != HttpStatus.ok) {
-        await response.drain<void>();
-        return UpdateUnreadable('版本信息读不到（HTTP ${response.statusCode}）');
-      }
-
-      final body = await response.transform(utf8.decoder).join().timeout(timeout);
-      final decoded = jsonDecode(body);
-      return UpdateRules.readLatest(decoded);
     } on TimeoutException {
       return const UpdateUnreadable('检查更新超时了，稍后再试');
     } on SocketException {
@@ -68,7 +67,52 @@ class GithubUpdateSource implements UpdateSource {
     }
   }
 
+  Future<UpdateReadResult> _readFromList() async {
+    final listed = await _get(releaseListUri);
+    switch (listed) {
+      case _HttpBody(:final decoded):
+        return UpdateRules.readFromList(decoded);
+      case _HttpStatus(:final code) when code == HttpStatus.notFound:
+        return const UpdateUnreadable('作者还没有发布过版本');
+      case _HttpStatus(:final code):
+        return UpdateUnreadable('版本信息读不到（HTTP $code）');
+      case _:
+        return const UpdateUnreadable('版本信息的格式不对');
+    }
+  }
+
+  /// 发一个 GET，把「响应体」与「状态码」分开返回。
+  Future<Object> _get(Uri uri) async {
+    final request = await _client.getUrl(uri).timeout(timeout);
+    request.headers.set(HttpHeaders.acceptHeader, 'application/vnd.github+json');
+    // GitHub 要求带 User-Agent，否则直接 403。
+    request.headers.set(HttpHeaders.userAgentHeader, 'younum-app');
+    request.followRedirects = true;
+
+    final response = await request.close().timeout(timeout);
+    if (response.statusCode != HttpStatus.ok) {
+      await response.drain<void>();
+      return _HttpStatus(response.statusCode);
+    }
+    final body = await response.transform(utf8.decoder).join().timeout(timeout);
+    return _HttpBody(jsonDecode(body));
+  }
+
   /// 关掉连接池。应用退出时用不到（进程结束就没了），
   /// 但测试里需要它能释放，避免「测试跑完还有活动连接」的告警。
   void close() => _client.close(force: true);
+}
+
+/// 拿到了响应体。
+final class _HttpBody {
+  const _HttpBody(this.decoded);
+
+  final Object? decoded;
+}
+
+/// 状态码不是 200（404 也要区分对待，所以不能只当成错误）。
+final class _HttpStatus {
+  const _HttpStatus(this.code);
+
+  final int code;
 }
