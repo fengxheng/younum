@@ -75,7 +75,7 @@ storeFile=D:\\dev\\younum\\keystore\\younum_keystore.jks
 * ⚠️ **keystore 与两个密码必须另存一份**（U 盘、密码管理器）。丢了以后这个应用
   再也发不出能覆盖安装的更新，用户只能卸载重装。
 * 密码不要贴进聊天、工单、提交信息；`key.properties` 也永远不要提交。
-* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.0.0+1`）。**在线升级只看
+* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.2.0+3`）。**在线升级只看
   `+` 后面的 build number（versionCode）**，所以每次发布都要让它 +1。
 * 还没做的：确认 `com.younum.app` 未被占用（上架前要查）。
 
@@ -91,7 +91,7 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 
 1. 是**已发布**的 Release（在 GitHub 网页上「Draft a new release」之后还要点
    「Publish release」）：**草稿**对匿名请求完全不可见，光 push 一个 tag 也不算；
-2. tag 里带 **build number**，形如 `v1.1.0+2` —— 比较新旧只看它；
+2. tag 里带 **build number**，形如 `v1.2.0+3` —— 比较新旧只看它；
 3. **上传了 `.apk` 资源**（不能只有源码 zip），而且必须是**正式签名**的包：
    升级是「覆盖安装」，签名不一致会被系统直接拒绝。
 
@@ -105,7 +105,8 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 ```powershell
 Set-Location app
 # 1. 改版本号：versionName 给人看，+ 后面的 build number 必须比上一版大
-#    例如 version: 1.2.0+3
+#    （当前已发布的是 1.1.0+2，仓库里已经改成了 1.2.0+3）
+#    下一个版本至少是 1.2.1+4
 flutter build apk --release
 # 2. 在 GitHub 上 New release：Tag 填 v1.2.0+3，把下面这个文件拖进去，发布
 #    app/build/app/outputs/flutter-apk/app-release.apk
