@@ -393,6 +393,7 @@ final class InMemoryLedgerStore implements LedgerStore {
     required int originalTransactionId,
     required int amountCents,
     required ReviewSessionRecord session,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
   }) async {
     _throwIfFailing();
     final current = _transactions[before.id];
@@ -414,14 +415,24 @@ final class InMemoryLedgerStore implements LedgerStore {
       version: current.version + 1,
     );
     _allocations.remove(before.id);
-    _refundLinks.add(
-      RefundLink(
-        id: _nextRefundLinkId++,
-        refundTransactionId: before.id,
-        originalTransactionId: originalTransactionId,
-        amountCents: amountCents,
-      ),
+    final link = RefundLink(
+      id: _nextRefundLinkId++,
+      refundTransactionId: before.id,
+      originalTransactionId: originalTransactionId,
+      amountCents: amountCents,
     );
+    _refundLinks.add(link);
+    // 拆分消费的退款分配（指南 3.5.5）：哪一项抵扣多少。
+    for (final allocation in allocations) {
+      _refundAllocations.add(
+        RefundAllocation(
+          id: _refundAllocations.length + 1,
+          refundLinkId: link.id,
+          originalAllocationId: allocation.originalAllocationId,
+          amountCents: allocation.amountCents,
+        ),
+      );
+    }
     _sessions[_sessionKey(session.ledgerId, session.month)] = session;
     return true;
   }

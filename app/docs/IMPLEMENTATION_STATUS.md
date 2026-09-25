@@ -334,8 +334,9 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   界面上如实说明「图片图标还没做」；分类**归档（删除）**也还没有入口。
 * **退款解除关联**（指南 3.5.7）已完成：详情页 / 性质页可以看到当前关联、
   取消关联（退款回到待整理）；撤回导入时会先解除关联再删原消费。
-* **拆分过的消费 + 退款**：指南 3.5.5 要求指定退款抵扣到哪些用途，
-  这一步还没做 —— 目前是**明确拒绝并说明原因**，不静默建一条算不准的连接。
+* **拆分过的消费 + 退款**已完成（指南 3.5.5）：拆分消费的退款要求明确
+  「抵扣到哪几项、各多少」，分配合计精确等于退款金额，单项不超自己
+  （见 `DECISIONS.md` 第 50 节）。
 * **导出**（PNG / CSV）未接入文件写入，点按后如实提示。
 * 主题页里的预览金额用的是样例数字（仅预览用）。
 
@@ -357,8 +358,8 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **381 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **37 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **389 passed** |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **38 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
@@ -480,7 +481,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 1. **拿一份真实的支付宝账单导一遍。** 微信那份已经跑通（见上），
    支付宝的列名与格式还没见过。清单见 `docs/MANUAL_CHECKS.md`。
 2. **阶段 4 剩余**：分类的图片图标（指南 14.4 的 `CategoryIconAsset`）、
-   分类归档入口、拆分消费的退款分配（指南 3.5.5）。
+   分类归档入口。
 3. **阶段 3 剩余**：平台专用适配器、`COMMITTING` 中途崩溃后的启动恢复逻辑、
    导入异常明细导出。
 4. **阶段 5 剩余**：导出 PNG / CSV（含防公式注入）。
@@ -499,6 +500,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 4 退款关联 | `RefundRules.validateLink` + `linkRefundAndResolve` | 同上 | 单元测试 8 个（含界面 1 个）+ 真机 2 个 |
 | 5 解除退款关联 | `unlinkRefund`（指南 3.5.7）+ 撤回时先断连接 | `review_screens.dart` / `import_workflow` | 单元测试 5 个（含界面 1 个）+ 真机 2 个 |
 | 6 分类管理落库 | 分类读写走 `category` 表（建 / 图标），图标按 ID 存 | `category_registry.dart` / `category_screens.dart` | 单元测试 12 个（含界面 4 个）+ 真机 2 个 |
+| 7 拆分消费的退款分配 | `RefundRules.validateRefundAllocations` 接上界面与落库（指南 3.5.5） | `refund_allocation_editor.dart` / `review_screens.dart` | 单元测试 8 个（含界面 1 个）+ 真机 1 个 |
 
 两件事值得单独记住：
 
@@ -511,4 +513,6 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   见 `DECISIONS.md` 第 48 节。
 * 分类改成「数据库是唯一来源」，图标按分类 ID 存（以前按名字，改名会丢图标），
   见 `DECISIONS.md` 第 49 节。
+* 拆分消费的退款必须给出明确分配；原消费还没有用途时拒绝关联
+  （先说清楚下一步做什么），见 `DECISIONS.md` 第 50 节。
 

@@ -9,10 +9,12 @@ import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
+import 'package:younum/domain/models/allocation.dart';
 import 'package:younum/domain/models/ledger_source.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
+import 'package:younum/features/organize/refund_allocation_editor.dart';
 import 'package:younum/features/organize/review_screens.dart';
 
 /// 交易性质页的界面接线测试。
@@ -153,6 +155,37 @@ void main() {
   });
 
   testWidgets('收到退款：先选原消费才让提交，提交后落下退款关联', (WidgetTester tester) async {
+    // 原消费先得有用途：退款要抵扣到具体分类上，没用途就没有可抵扣的东西
+    // （仓库层会明确拒绍）。这里拿**另一笔**来当原消费，
+    // 当前这笔（MANNER COFFEE）仍旧留在待整理里。
+    final secondId = DemoLedgerSeed.transactionIdAt(1);
+    await repository.saveDetails(
+      ledgerId: ledgerId,
+      month: DemoLedgerSeed.month,
+      transactionId: secondId,
+      note: null,
+      categoryId: SeedCategoryIds.food,
+    );
+    final second = (await repository.dataset(
+      ledgerId: ledgerId,
+      months: {DemoLedgerSeed.month},
+    )).transaction(secondId)!;
+    // 造一笔金额正好等于原消费的退款（金额一样，抵扣额度才够）。
+    await store.insertTransaction(
+      LedgerTransaction(
+        id: LedgerTransaction.idUnassigned,
+        ledgerId: ledgerId,
+        occurredAtMs: StatisticsTime.epochMsFor(2026, 9, 25, 12),
+        amountCents: second.amountCents,
+        merchant: '退款 · 某笔消费',
+        nature: TransactionNature.income,
+        reviewStatus: ReviewStatus.pending,
+        timeZone: StatisticsTime.timeZone,
+        sourceNamespace: LedgerSource.alipay,
+        sourceTransactionId: 'refund-pick-1',
+      ),
+    );
+
     await openNature(tester);
 
     await tester.tap(inNature(find.text('收到退款')));
@@ -181,7 +214,10 @@ void main() {
     );
 
     await tester.tap(
-      find.descendant(of: sheet, matching: find.byType(YounumPressable)).first,
+      find.descendant(
+        of: sheet,
+        matching: find.textContaining(second.merchant),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -209,10 +245,15 @@ void main() {
 
   testWidgets('已关联的退款：预填原消费、说清不能再关联、能取消关联', (WidgetTester tester) async {
     // 先造一笔已关联的退款 —— 这是上一块做出来的能力，这一块要做它的反向。
-    final original = (await repository.loadSnapshot(
+    // 原消费要先有用途（退款要抵扣到具体分类），用的就是当前这张卡。
+    await repository.saveDetails(
       ledgerId: ledgerId,
       month: DemoLedgerSeed.month,
-    )).current!;
+      transactionId: firstCardId,
+      note: null,
+      categoryId: SeedCategoryIds.food,
+    );
+    final originalId = firstCardId;
     final refundId = await store.insertTransaction(
       LedgerTransaction(
         id: LedgerTransaction.idUnassigned,
@@ -232,7 +273,7 @@ void main() {
         ledgerId: ledgerId,
         month: DemoLedgerSeed.month,
         refundTransactionId: refundId,
-        originalTransactionId: original.id,
+        originalTransactionId: originalId,
       ),
       isA<ReviewSucceeded>(),
     );
@@ -287,7 +328,144 @@ void main() {
     expect(refund.nature, TransactionNature.unknown);
     expect(refund.reviewStatus, ReviewStatus.pending, reason: '指南 3.5.7：恢复待核对');
   });
+
+  testWidgets('拆分过的原消费：必须填清退款分配才能提交', (WidgetTester tester) async {
+    // 把第一笔拆成两项，再造一笔待整理的退款。
+    expect(
+      await repository.split(
+        ledgerId: ledgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: firstCardId,
+        items: <AllocationDraft>[
+          const AllocationDraft(
+            categoryId: SeedCategoryIds.food,
+            amountCents: 1400,
+          ),
+          const AllocationDraft(
+            categoryId: SeedCategoryIds.shopping,
+            amountCents: 1400,
+          ),
+        ],
+      ),
+      isA<ReviewSucceeded>(),
+    );
+    final refundId = await store.insertTransaction(
+      LedgerTransaction(
+        id: LedgerTransaction.idUnassigned,
+        ledgerId: ledgerId,
+        occurredAtMs: StatisticsTime.epochMsFor(2026, 9, 25, 12),
+        amountCents: 1000,
+        merchant: '退款 · 某笔消费',
+        nature: TransactionNature.income,
+        reviewStatus: ReviewStatus.pending,
+        timeZone: StatisticsTime.timeZone,
+        sourceNamespace: LedgerSource.alipay,
+        sourceTransactionId: 'refund-split-ui-1',
+      ),
+    );
+
+    await tester.pumpWidget(
+      YounumApp(
+        themeController: themeController,
+        appStateController: appStateController,
+        ledgerRepository: repository,
+        ledgerFileSource: const UnsupportedFileSource(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppBottomBar),
+        matching: find.text('整理'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is YounumIconButton &&
+            widget.semanticLabel == '查看全部明细',
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退款 · 某笔消费').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设为转账 / 收入 / 不计入'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(inNature(find.text('收到退款')));
+    await tester.pumpAndSettle();
+    await tester.tap(inNature(find.text('选择原消费')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.textContaining('MANNER COFFEE'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 拆分消费必须说明抵扣到哪几项：编辑器出现，并且未填完不能提交。
+    final editor = find.byType(RefundAllocationEditor);
+    expect(editor, findsOneWidget);
+    expect(
+      inNature(find.textContaining('拆成了多项')),
+      findsOneWidget,
+      reason: '要说清为什么还不能提交',
+    );
+    await tester.ensureVisible(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    expect(await store.refundLinkOf(refundId), isNull, reason: '没填分配就不该写库');
+
+    // 两项合计必须精确等于退款金额（1000 分）。
+    final fields = find.descendant(
+      of: editor,
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(fields.at(0), '6.00');
+    await tester.pumpAndSettle();
+    await tester.enterText(fields.at(1), '3.00');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    expect(
+      await store.refundLinkOf(refundId),
+      isNull,
+      reason: '合计 900 分 ≠ 退款 1000 分，不能提交',
+    );
+
+    await tester.enterText(fields.at(1), '4.00');
+    await tester.pumpAndSettle();
+    expect(
+      inNature(find.textContaining('拆成了多项')),
+      findsNothing,
+      reason: '合计对上了就不该再拦着用户',
+    );
+    await tester.ensureVisible(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+    await tester.tap(inNature(find.text('确认调整')));
+    await tester.pumpAndSettle();
+
+    final link = await store.refundLinkOf(refundId);
+    expect(link, isNotNull, reason: '合计对上了就该真的关联');
+    final dataset = await store.dataset(
+      ledgerId: ledgerId,
+      months: {DemoLedgerSeed.month},
+    );
+    final allocations = <int>[
+      for (final allocation in dataset.refundAllocations)
+        if (allocation.refundLinkId == link!.id) allocation.amountCents,
+    ];
+    expect(allocations.toSet(), <int>{600, 400});
+  });
 }
+
+
 
 
 

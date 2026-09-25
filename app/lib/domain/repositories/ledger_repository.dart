@@ -812,6 +812,7 @@ final class LedgerRepository {
     required YearMonth month,
     required int refundTransactionId,
     required int originalTransactionId,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
   }) async {
     final refund = await _store.transactionById(refundTransactionId);
     if (refund == null) return const ReviewRejected('找不到这笔退款记录');
@@ -824,22 +825,25 @@ final class LedgerRepository {
       months: <YearMonth>{refund.month, original.month},
     );
 
-    final error = RefundRules.validateLink(
+    // 原消费还没有用途时，退款没有可抵扣的东西。与其建一条抵扣不到任何用途的
+    // 连接（那会让拆分后的分摊金额悄悄算错），不如让用户先把用途定下来。
+    if (dataset.allocationsOf(originalTransactionId).isEmpty) {
+      return const ReviewRejected(
+        '这笔消费还没有用途，先去详情页给它定一个用途，退款才知道抵扣什么',
+      );
+    }
+
+    // 指南 3.5.5：单分类消费直接抵扣那一项（[allocations] 留空）；拆分消费
+    // 必须明确退款分配 —— 合计等于退款金额，单项累计不超过该拆分项。
+    // 连接本身的校验也在里面（`validateRefundAllocations` 会先调 `validateLink`）。
+    final error = RefundRules.validateRefundAllocations(
       dataset: dataset,
       refundTransactionId: refundTransactionId,
       originalTransactionId: originalTransactionId,
-      amountCents: refund.amountCents,
+      refundAmountCents: refund.amountCents,
+      drafts: allocations,
     );
     if (error != null) return ReviewRejected(error.message);
-
-    // 拆分过的原消费必须指定「退款抵扣到哪些用途」（指南 3.5.5）。
-    // 那个界面还没做，所以这里明确拒绝 —— 而不是建一条抵扣不到具体用途的连接，
-    // 那种连接会让拆分后的分摊金额悄悄算错。
-    if (dataset.allocationsOf(originalTransactionId).length > 1) {
-      return const ReviewRejected(
-        '这笔原消费是拆分过的，退款要指定抵扣到哪些用途 —— 这一步还没做，可以先选别的原消费',
-      );
-    }
 
     final snapshot = await loadSnapshot(ledgerId: ledgerId, month: month);
     final nextRecord = _withoutEntry(snapshot.record, refundTransactionId);
@@ -850,6 +854,7 @@ final class LedgerRepository {
         originalTransactionId: originalTransactionId,
         amountCents: refund.amountCents,
         session: nextRecord,
+        allocations: allocations,
       ),
       ledgerId: ledgerId,
       month: month,

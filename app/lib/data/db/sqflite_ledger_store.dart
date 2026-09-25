@@ -470,6 +470,7 @@ final class SqfliteLedgerStore implements LedgerStore {
     required int originalTransactionId,
     required int amountCents,
     required ReviewSessionRecord session,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
   }) async {
     final db = await _db;
     var conflicted = false;
@@ -499,11 +500,19 @@ final class SqfliteLedgerStore implements LedgerStore {
       );
       // 「同一笔退款只能关联一次」由唯一索引兑底；上层已经先校验过，
       // 这里只是最后一道。
-      await txn.insert('refund_link', <String, Object?>{
+      final linkId = await txn.insert('refund_link', <String, Object?>{
         'refund_transaction_id': before.id,
         'original_transaction_id': originalTransactionId,
         'amount_cents': amountCents,
       });
+      // 拆分消费的退款分配（指南 3.5.5）：哪一项抵扣多少。
+      for (final allocation in allocations) {
+        await txn.insert('refund_allocation', <String, Object?>{
+          'refund_link_id': linkId,
+          'original_allocation_id': allocation.originalAllocationId,
+          'amount_cents': allocation.amountCents,
+        });
+      }
       await _writeSession(txn, session);
     });
     return !conflicted;

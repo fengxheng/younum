@@ -57,9 +57,26 @@ void main() {
     ];
   }
 
+  /// 给一笔消费定用途。
+  ///
+  /// 退款要抵扣到具体的分类上，所以原消费必须有用途 —— 没有用途的连接
+  /// 会在仓库层被拒（「这笔消费还没有用途」）。
+  Future<void> categorize(int transactionId) async {
+    expect(
+      await repository.confirm(
+        ledgerId: ledgerId,
+        month: september,
+        transactionId: transactionId,
+        categoryId: SeedCategoryIds.food,
+      ),
+      isA<ReviewSucceeded>(),
+    );
+  }
+
   /// 建好一个「已关联」的退款，返回它的 ID。
   Future<int> linkedRefund() async {
     final original = (await expenses()).first;
+    await categorize(original.id);
     final refundId = await insertRefund();
     expect(
       await session.linkRefundAndResolve(
@@ -118,17 +135,22 @@ void main() {
   test('解除之后可以重新关联到另一笔消费', () async {
     final refundId = await linkedRefund();
     final candidates = await expenses();
+    final first = (await store.refundLinkOf(refundId))!.originalTransactionId;
 
     await repository.unlinkRefund(
       ledgerId: ledgerId,
       refundTransactionId: refundId,
     );
 
-    // 换一笔金额够大的消费 —— 能成功就说明旧连接真的腾开了
+    // 换一笔金额够大、且已经有用途的消费 —— 能成功就说明旧连接真的腾开了
     // （否则会被「这笔退款已经关联过一笔消费」挡下）。
     final other = candidates.firstWhere(
-      (transaction) => transaction.amountCents >= 1000,
+      (transaction) =>
+          transaction.id != first &&
+          transaction.amountCents >= 1000 &&
+          transaction.nature.isExpense,
     );
+    await categorize(other.id);
     final again = await repository.linkRefundAndResolve(
       ledgerId: ledgerId,
       month: september,

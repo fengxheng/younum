@@ -555,12 +555,17 @@ void main() {
           sourceTransactionId: 'refund-revert-1',
         ),
       );
+      // 用低层 `linkRefund` 建连接（不给退款分配）：这样原消费仍然是
+      // 「没动过」的 —— 撤回时它在删除名单里，正好走指南 3.5.7 那条路。
+      // 界面上的路径（`linkRefundAndResolve`）要求原消费先有用途，
+      // 而有用途的记录撤回时会被保留，碰不到这个分支。
       expect(
-        await repository.linkRefundAndResolve(
+        await repository.linkRefund(
           ledgerId: real,
           month: month,
           refundTransactionId: refundId,
           originalTransactionId: original.id,
+          amountCents: 2800,
         ),
         isA<ReviewSucceeded>(),
       );

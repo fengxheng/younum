@@ -367,9 +367,12 @@ class ReviewSession extends ChangeNotifier {
   }
 
   /// 把一笔退款关联到原消费，并同时把它标成退款、处理完成。
+  ///
+  /// [allocations] 是拆分消费的退款分配（指南 3.5.5）：原消费没拆过就留空。
   Future<bool> linkRefundAndResolve({
     required int refundTransactionId,
     required int originalTransactionId,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
   }) async {
     if (_committing) return false;
     final ledgerId = _ledgerId;
@@ -382,6 +385,7 @@ class ReviewSession extends ChangeNotifier {
         month: month,
         refundTransactionId: refundTransactionId,
         originalTransactionId: originalTransactionId,
+        allocations: allocations,
       ),
     );
   }

@@ -20,6 +20,7 @@ import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/ledger_transaction.dart';
 import 'category_registry.dart';
+import 'refund_allocation_editor.dart';
 import 'review_card.dart';
 import 'review_session.dart';
 
@@ -645,6 +646,15 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
   /// 选中的原消费（退款用）。
   int? _originalId;
 
+  /// 拆分消费的退款分配草稿（指南 3.5.5）。
+  ///
+  /// 原消费没拆过时是空的 —— 那种情况直接抵扣它唯一的那一项。
+  List<RefundAllocationDraft> _refundAllocations =
+      const <RefundAllocationDraft>[];
+
+  /// 退款分配是否已经「合计等于退款金额、单项不超自己」。
+  bool _refundBalanced = false;
+
   /// 这笔退款当前已经关联到的原消费。
   ///
   /// 非空时这一页不再是「选一个原消费」，而是「看看现在关联到了谁」：
@@ -754,6 +764,15 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
       if (_link != null && _originalId == _link!.originalTransactionId) {
         return '这笔退款已经关联到「$_linkedLabel」。要改成别的原消费，请先按下面的「取消退款关联」。';
       }
+      final original = ReviewSessionScope.of(context).cardFor(_originalId!);
+      if (original != null && original.allocations.isEmpty) {
+        return '这笔消费还没有用途，退款抵扣不到东西 —— 先给它定一个用途再关联。';
+      }
+      if (original != null &&
+          original.allocations.length > 1 &&
+          !_refundBalanced) {
+        return '这笔消费拆成了多项，请说明退款分别抵扣哪几项，合计要精确等于退款金额。';
+      }
     }
     if (nature == TransactionNature.expense && card.allocations.isEmpty) {
       return '作为消费统计就需要一个用途，请先用「修改用途」或「拆分」把它定下来。';
@@ -771,10 +790,12 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
     setState(() => _saving = true);
 
     // 退款走的是「关联 + 改性质」一次写完，不能拆成两步。
+    // 拆分过的原消费还要带上退款分配（指南 3.5.5）。
     final ok = nature == TransactionNature.refund && originalId != null
         ? await session.linkRefundAndResolve(
             refundTransactionId: widget.transactionId,
             originalTransactionId: originalId,
+            allocations: _refundAllocations,
           )
         : await session.setNature(
             transactionId: widget.transactionId,
@@ -828,6 +849,10 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
         if (candidate.id != widget.transactionId) candidate,
     ];
 
+    // 选中的原消费那张卡：拆分消费要用它的拆分项来填退款分配。
+    final originalId = _originalId;
+    final originalCard = originalId == null ? null : session.cardFor(originalId);
+
     return YounumScreen(
       title: '调整交易性质',
       child: Column(
@@ -866,13 +891,32 @@ class _TransactionNatureScreenState extends State<TransactionNatureScreen> {
               selected: _originalId,
               placeholder: '选择原消费',
               semanticLabel: '原消费',
-              onSelected: (value) => setState(() => _originalId = value),
+              onSelected: (value) => setState(() {
+                _originalId = value;
+                // 草稿属于之前那一笔的拆分项，换一笔就要重新填。
+                _refundAllocations = const <RefundAllocationDraft>[];
+                _refundBalanced = false;
+              }),
             ),
             if (originals.isEmpty)
               const YounumPillNote(
                 '这个月还没有能作为原消费的记录。找不到原消费时，'
                 '请选「暂不计入统计」并写明原因。',
               ),
+            // 拆分过的消费：退款要说明抵扣到哪几项（指南 3.5.5）。
+            if (originalCard != null && originalCard.allocations.length > 1)
+              ...<Widget>[
+                const SizedBox(height: YounumDimens.gapSm),
+                RefundAllocationEditor(
+                  key: ValueKey<int>(originalCard.id),
+                  card: originalCard,
+                  refundCents: card.amountCents,
+                  onChanged: (drafts, balanced) => setState(() {
+                    _refundAllocations = drafts;
+                    _refundBalanced = balanced;
+                  }),
+                ),
+              ],
             if (_link != null) ...<Widget>[
               const SizedBox(height: YounumDimens.gapSm),
               YounumPanel(

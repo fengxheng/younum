@@ -177,7 +177,7 @@ void main() {
     expect(again, isA<ReviewRejected>());
   });
 
-  test('拆分过的原消费要求先指定抵扣用途，本轮明确拒绝', () async {
+  test('拆分过的原消费：不给出退款分配时被拒（不能靠猜）', () async {
     final original = session.current!;
     expect(
       await session.splitTransaction(
@@ -201,7 +201,7 @@ void main() {
     expect(outcome, isA<ReviewRejected>());
     expect(
       (outcome as ReviewRejected).message,
-      contains('拆分'),
+      contains('抵扣哪几项'),
       reason: '要说清为什么不行，而不是默默建一条抵扣不到用途的连接',
     );
     expect(await hasLink(refundId), isFalse);

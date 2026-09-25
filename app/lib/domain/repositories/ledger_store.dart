@@ -158,6 +158,10 @@ abstract interface class LedgerStore {
 
   /// 把一笔退款关联到原消费，**并在同一个事务里**把它标成退款、置为已处理。
   ///
+  /// [allocations] 是拆分消费的退款分配（指南 3.5.5）：原消费只有一项分配时
+  /// 留空（直接抵扣那一项），多于一项时调用方必须给出「每项抵扣多少」，
+  /// 且合计精确等于退款金额 —— 校验在 `RefundRules.validateRefundAllocations`。
+  ///
   /// 为什么不拆成两次写：`RefundRules.validateLink` 的注释说得很清楚 ——
   /// 分两步会凭空制造中间状态（「已关联但还不是退款」或「是退款却没关联」），
   /// 而中间状态会被统计与外部读取看到。
@@ -171,6 +175,7 @@ abstract interface class LedgerStore {
     required int originalTransactionId,
     required int amountCents,
     required ReviewSessionRecord session,
+    List<RefundAllocationDraft> allocations = const <RefundAllocationDraft>[],
   });
 
   /// 取一笔退款当前的关联（没有则是 null）。

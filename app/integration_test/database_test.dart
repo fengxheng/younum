@@ -912,6 +912,109 @@ void main() {
       expect(row['nature'], TransactionNature.unknown.storageValue);
       expect(row['review_status'], ReviewStatus.pending.storageValue);
     });
+
+    test('拆分消费的退款分配合计正确才落库，解除关联会连带删掉', () async {
+      final repository = _repositoryFor(store);
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final original = snapshot.current!;
+
+      // 把这笔拆成两项（1400 + 1400）。
+      expect(
+        await repository.split(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          month: DemoLedgerSeed.month,
+          transactionId: original.id,
+          items: <AllocationDraft>[
+            const AllocationDraft(
+              categoryId: SeedCategoryIds.food,
+              amountCents: 1400,
+            ),
+            const AllocationDraft(
+              categoryId: SeedCategoryIds.shopping,
+              amountCents: 1400,
+            ),
+          ],
+        ),
+        isA<ReviewSucceeded>(),
+      );
+      final items = (await store.dataset(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        months: <YearMonth>{DemoLedgerSeed.month},
+      )).allocationsOf(original.id);
+      expect(items, hasLength(2));
+
+      final refundId = await store.insertTransaction(
+        (await store.transactionById(original.id))!.copyWith(
+          id: LedgerTransaction.idUnassigned,
+          merchant: '退款 · 拆分过的消费',
+          amountCents: 1000,
+          nature: TransactionNature.refund,
+          reviewStatus: ReviewStatus.pending,
+          sourceTransactionId: 'refund-split-1',
+        ),
+      );
+
+      // 合计不对：必须被拒，且 `refund_allocation` 一行都不写。
+      final mismatch = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: original.id,
+        allocations: <RefundAllocationDraft>[
+          RefundAllocationDraft(
+            originalAllocationId: items.first.id,
+            amountCents: 600,
+          ),
+          RefundAllocationDraft(
+            originalAllocationId: items.last.id,
+            amountCents: 300,
+          ),
+        ],
+      );
+      expect(mismatch, isA<ReviewRejected>());
+      expect(await countOf(await openRaw(), 'refund_allocation'), 0);
+
+      // 合计对上：连接 + 两条分配一起落库。
+      final ok = await repository.linkRefundAndResolve(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        month: DemoLedgerSeed.month,
+        refundTransactionId: refundId,
+        originalTransactionId: original.id,
+        allocations: <RefundAllocationDraft>[
+          RefundAllocationDraft(
+            originalAllocationId: items.first.id,
+            amountCents: 600,
+          ),
+          RefundAllocationDraft(
+            originalAllocationId: items.last.id,
+            amountCents: 400,
+          ),
+        ],
+      );
+      expect(ok, isA<ReviewSucceeded>(), reason: '$ok');
+
+      final db = await openRaw();
+      final saved = await db.query('refund_allocation');
+      expect(saved, hasLength(2));
+      expect(
+        saved.fold<int>(0, (sum, row) => sum + (row['amount_cents']! as int)),
+        1000,
+      );
+
+      // 解除关联：`refund_allocation` 挂在连接上（ON DELETE CASCADE），
+      // 连接没了它自己就没 —— 真机证明这条级联真的生效。
+      expect(
+        await repository.unlinkRefund(
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          refundTransactionId: refundId,
+        ),
+        isA<ReviewSucceeded>(),
+      );
+      expect(await countOf(await openRaw(), 'refund_allocation'), 0);
+    });
   });
 
   group('结构迁移', () {
@@ -1439,11 +1542,15 @@ void main() {
         ),
       );
       expect(
-        await repository.linkRefundAndResolve(
+        // 用低层 `linkRefund` 建连接：这样原消费还是「没动过」的，
+        // 撤回时它才会进入删除名单 —— 正是要验证的那条路（指南 3.5.7）。
+        // 界面那条路径要求原消费先有用途，而有用途的记录撤回时会被保留。
+        await repository.linkRefund(
           ledgerId: real,
           month: billedMonth,
           refundTransactionId: refundId,
           originalTransactionId: original.id,
+          amountCents: original.amountCents,
         ),
         isA<ReviewSucceeded>(),
       );
