@@ -358,7 +358,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
 | 单元测试（包含界面测试） | `flutter test` | **381 passed** |
-| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **35 passed**（本次新增的两条分类用例因设备拒绝安装未执行，见 `MANUAL_CHECKS.md`） |
+| 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **37 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
 | 真机三屏引导 | `adb shell input swipe` + 截屏逐屏核对 | 三屏均正确，与设计稿一致 |
@@ -498,7 +498,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 | 3 详情页编辑 | `saveDetails`（备注 + 用途一次写完） | 同上 | 单元测试 10 个（含界面 4 个） |
 | 4 退款关联 | `RefundRules.validateLink` + `linkRefundAndResolve` | 同上 | 单元测试 8 个（含界面 1 个）+ 真机 2 个 |
 | 5 解除退款关联 | `unlinkRefund`（指南 3.5.7）+ 撤回时先断连接 | `review_screens.dart` / `import_workflow` | 单元测试 5 个（含界面 1 个）+ 真机 2 个 |
-| 6 分类管理落库 | 分类读写走 `category` 表（建 / 图标），图标按 ID 存 | `category_registry.dart` / `category_screens.dart` | 单元测试 12 个（含界面 4 个）+ 真机用例 2 条 |
+| 6 分类管理落库 | 分类读写走 `category` 表（建 / 图标），图标按 ID 存 | `category_registry.dart` / `category_screens.dart` | 单元测试 12 个（含界面 4 个）+ 真机 2 个 |
 
 两件事值得单独记住：
 

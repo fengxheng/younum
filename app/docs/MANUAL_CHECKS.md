@@ -166,7 +166,9 @@ flutter test integration_test/file_source_test.dart -d 412913d4
 
 自动化已覆盖「新建真的写进分类表、同级重名被拒且不落库、改图标只改图标、
 界面失败不返回上一页」（`test/category_management_test.dart`、
-`test/category_widget_test.dart`）。下面这些靠人手：
+`test/category_widget_test.dart`），真机 `database_test.dart` 里另有两条
+（新建与改图标重开数据库仍在、同级重名不落库），2026-09-25 已跑过。
+下面这些靠人手：
 
 - [ ] 我的 → 分类管理：应看到库里**真实**的分类（内置 + 自定义的「宠物」「学习成长」）
 - [ ] 新建一个分类（如「养花」）并选图标 → 保存后再进分类管理：它应在列表里
@@ -187,7 +189,6 @@ flutter test integration_test/file_source_test.dart -d 412913d4
 | 六套主题下的导入页面与引导页 | 见第四节与第七节 |
 | 本机启动白屏（Impeller） | 已定性为设备端图形问题，不是应用缺陷；未确认重启手机后是否恢复，见第九节 |
 | 引导页的读屏 / 横屏 / 大字号 | 只在 widget 测试里走过语义，真机上没验，见第七节 |
-| 分类落库的真机验证（重启仍在） | 2026-09-25 本次真机安装被系统拒绝（`INSTALL_FAILED_USER_RESTRICTED`，需要手机上允许 USB 安装）；`integration_test/database_test.dart` 里两条用例已写好但没执行。单测与界面测试已覆盖，真机与上一轮的 35 条一起重跑即可 |
 
 > 微信真实账单已于 2026-09-25 验过（表头第 18 行、6 笔、支出 3022.40 元 /
 > 收入 1.76 元与文件自带汇总一致），因此从本表移出。
