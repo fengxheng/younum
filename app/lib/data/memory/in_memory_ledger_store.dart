@@ -15,6 +15,7 @@ library;
 import '../../data/seed/demo_ledger_seed.dart';
 import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
+import '../../domain/models/category_icon_asset.dart';
 import '../../domain/models/import_records.dart';
 import '../../domain/models/ledger.dart';
 import '../../domain/models/ledger_dataset.dart';
@@ -29,6 +30,7 @@ final class InMemoryLedgerStore implements LedgerStore {
 
   final Map<int, Ledger> _ledgers = <int, Ledger>{};
   final Map<int, Category> _categories = <int, Category>{};
+  final Map<int, CategoryIconAsset> _iconAssets = <int, CategoryIconAsset>{};
   final Map<int, LedgerTransaction> _transactions = <int, LedgerTransaction>{};
   final Map<int, List<Allocation>> _allocations = <int, List<Allocation>>{};
   final List<RefundLink> _refundLinks = <RefundLink>[];
@@ -112,6 +114,53 @@ final class InMemoryLedgerStore implements LedgerStore {
   int _nextCategoryId() {
     var candidate = 1;
     for (final id in _categories.keys) {
+      if (id >= candidate) candidate = id + 1;
+    }
+    return candidate;
+  }
+
+  @override
+  Future<List<CategoryIconAsset>> iconAssets() async =>
+      _iconAssets.values.toList()..sort((a, b) => a.id.compareTo(b.id));
+
+  @override
+  Future<CategoryIconAsset> saveIconAsset(CategoryIconAsset asset) async {
+    _throwIfFailing();
+    for (final existing in _iconAssets.values) {
+      if (existing.contentHash == asset.contentHash) return existing;
+    }
+    final saved = asset.id == CategoryIconAsset.idUnassigned
+        ? asset.copyWith(id: _nextIconAssetId())
+        : asset;
+    _iconAssets[saved.id] = saved;
+    return saved;
+  }
+
+  @override
+  Future<void> deleteIconAsset(int assetId) async {
+    _throwIfFailing();
+    _iconAssets.remove(assetId);
+  }
+
+  @override
+  Future<Category> saveCategoryWithIconAsset({
+    required Category category,
+    required CategoryIconAsset asset,
+  }) async {
+    // 内存实现本来就在一个 isolate 里顺序执行，两步之间没有可观察的中间态；
+    // 真机实现才需要用事务把两行包起来。
+    final savedAsset = await saveIconAsset(asset);
+    return saveCategory(
+      category.copyWith(
+        iconType: CategoryIconType.image,
+        iconKey: '${savedAsset.id}',
+      ),
+    );
+  }
+
+  int _nextIconAssetId() {
+    var candidate = 1;
+    for (final id in _iconAssets.keys) {
       if (id >= candidate) candidate = id + 1;
     }
     return candidate;

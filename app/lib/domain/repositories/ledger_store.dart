@@ -14,6 +14,7 @@ library;
 
 import '../models/allocation.dart';
 import '../models/category.dart';
+import '../models/category_icon_asset.dart';
 import '../models/import_records.dart';
 import '../models/ledger.dart';
 import '../models/ledger_dataset.dart';
@@ -76,6 +77,30 @@ abstract interface class LedgerStore {
   /// 同级重名会被唯一索引拦下（`idx_category_parent_name`），
   /// 调用方应当先用 `CategoryRules` 给出人能看懂的原因。
   Future<Category> saveCategory(Category category);
+
+  /// 全部图片资源（分类图标用）。
+  Future<List<CategoryIconAsset>> iconAssets();
+
+  /// 新增一条图片资源，返回带 ID 的资源。
+  ///
+  /// 同一份内容（`content_hash` 相同）已经存在时返回已有那条：不重复落文件，
+  /// 也不产生两行指向同一文件的记录。
+  Future<CategoryIconAsset> saveIconAsset(CategoryIconAsset asset);
+
+  /// 删掉一条图片资源记录。
+  ///
+  /// 只删数据库那一行；**文件**由调用方确认「已经没人引用」之后再清理
+  /// （指南 14.4.4：不能提前删文件）。
+  Future<void> deleteIconAsset(int assetId);
+
+  /// 把「分类指向这张图」与「落这条资源」写在**同一个事务**里（指南 14.4.3）。
+  ///
+  /// 分两次写会出现「分类已经指向一张还没落库的图」的中间状态，
+  /// 而那个状态会被渲染层看到（图不在，退回默认图标，用户以为没保存成功）。
+  Future<Category> saveCategoryWithIconAsset({
+    required Category category,
+    required CategoryIconAsset asset,
+  });
 
   /// 取账本的数据集。
   ///

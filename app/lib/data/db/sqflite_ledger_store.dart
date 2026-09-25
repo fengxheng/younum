@@ -23,6 +23,7 @@ import '../../core/time/statistics_time.dart';
 import '../../data/seed/demo_ledger_seed.dart';
 import '../../domain/models/allocation.dart';
 import '../../domain/models/category.dart';
+import '../../domain/models/category_icon_asset.dart';
 import '../../domain/models/import_records.dart';
 import '../../domain/models/ledger.dart';
 import '../../domain/models/ledger_dataset.dart';
@@ -211,6 +212,108 @@ final class SqfliteLedgerStore implements LedgerStore {
     }
     return category;
   }
+
+  @override
+  Future<List<CategoryIconAsset>> iconAssets() async {
+    final db = await _db;
+    final rows = await db.query('category_icon_asset', orderBy: 'id ASC');
+    return <CategoryIconAsset>[for (final row in rows) _iconAssetFrom(row)];
+  }
+
+  @override
+  Future<CategoryIconAsset> saveIconAsset(CategoryIconAsset asset) async {
+    final db = await _db;
+    // 同一份内容只留一条：先查哈希，命中了直接用它（文件也已经在了）。
+    final existing = await db.query(
+      'category_icon_asset',
+      where: 'content_hash = ?',
+      whereArgs: <Object?>[asset.contentHash],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) return _iconAssetFrom(existing.first);
+
+    final values = _iconAssetValues(asset)..remove('id');
+    final id = await db.insert('category_icon_asset', values);
+    return asset.copyWith(id: id);
+  }
+
+  @override
+  Future<void> deleteIconAsset(int assetId) async {
+    final db = await _db;
+    await db.delete(
+      'category_icon_asset',
+      where: 'id = ?',
+      whereArgs: <Object?>[assetId],
+    );
+  }
+
+  @override
+  Future<Category> saveCategoryWithIconAsset({
+    required Category category,
+    required CategoryIconAsset asset,
+  }) async {
+    final db = await _db;
+    return db.transaction<Category>((txn) async {
+      var linkAsset = asset;
+      final existing = await txn.query(
+        'category_icon_asset',
+        where: 'content_hash = ?',
+        whereArgs: <Object?>[asset.contentHash],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        linkAsset = _iconAssetFrom(existing.first);
+      } else {
+        final id = await txn.insert(
+          'category_icon_asset',
+          _iconAssetValues(asset)..remove('id'),
+        );
+        linkAsset = asset.copyWith(id: id);
+      }
+
+      final linked = category.copyWith(
+        iconType: CategoryIconType.image,
+        iconKey: '${linkAsset.id}',
+      );
+      if (linked.id == Category.idUnassigned) {
+        final id = await txn.insert(
+          'category',
+          _categoryValues(linked)..remove('id'),
+        );
+        return linked.copyWith(id: id);
+      }
+      final updated = await txn.update(
+        'category',
+        _categoryValues(linked)..remove('id'),
+        where: 'id = ?',
+        whereArgs: <Object?>[linked.id],
+      );
+      if (updated != 1) throw StateError('分类不存在：${linked.id}');
+      return linked;
+    });
+  }
+
+  static CategoryIconAsset _iconAssetFrom(Map<String, Object?> row) =>
+      CategoryIconAsset(
+        id: row['id']! as int,
+        relativePath: row['relative_path']! as String,
+        contentHash: row['content_hash']! as String,
+        width: row['width']! as int,
+        height: row['height']! as int,
+        byteSize: row['byte_size']! as int,
+        createdAtMs: row['created_at_ms']! as int,
+      );
+
+  static Map<String, Object?> _iconAssetValues(CategoryIconAsset asset) =>
+      <String, Object?>{
+        'id': asset.id,
+        'relative_path': asset.relativePath,
+        'content_hash': asset.contentHash,
+        'width': asset.width,
+        'height': asset.height,
+        'byte_size': asset.byteSize,
+        'created_at_ms': asset.createdAtMs,
+      };
 
   @override
   Future<LedgerTransaction?> transactionById(int transactionId) async {
@@ -1684,3 +1787,4 @@ final class SqfliteLedgerStore implements LedgerStore {
     );
   }
 }
+

@@ -62,7 +62,11 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "pickDocument" -> handlePick(result)
+                    "pickDocument" -> handlePick(result, call.argument<String>("mimeType"))
+
+                    // 应用私有目录。分类图片要落在自己拥有的目录里
+                    // （指南 14.4.2：不能长期依赖选择器给的临时 URI）。
+                    "filesDir" -> result.success(filesDir.absolutePath)
 
                     "readDocument" -> {
                         val uri = call.argument<String>("uri")
@@ -109,7 +113,7 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun handlePick(result: MethodChannel.Result) {
+    private fun handlePick(result: MethodChannel.Result, mimeType: String?) {
         if (pendingPick != null) {
             // 连点两次「选择文件」时，第二个请求直接拒绝，而不是覆盖第一个的
             // 回调 —— 覆盖会让第一个 Future 永远不完成，界面卡在加载中。
@@ -119,7 +123,7 @@ class MainActivity : FlutterActivity() {
 
         pendingPick = result
         try {
-            startActivityForResult(pickIntent(), REQUEST_PICK_DOCUMENT)
+            startActivityForResult(pickIntent(mimeType), REQUEST_PICK_DOCUMENT)
         } catch (error: ActivityNotFoundException) {
             pendingPick = null
             result.error("unavailable", "这台设备上没有可用的文件选择器", null)
@@ -131,11 +135,18 @@ class MainActivity : FlutterActivity() {
      *
      * `FLAG_GRANT_READ_URI_PERMISSION` 是必须的：`takePersistableUriPermission`
      * 只能持久化系统真的授予过的权限，不带这个标记就会直接抛 SecurityException。
+     *
+     * [mimeType] 为空表示账单文件（任意类型）；选分类图片时传图片通配，
+     * 让选择器先帮用户过滤一遍，而不是选完再拒绝。
+     *
+     * ⚠️ 这里的注释不能出现斜杠加星号（哪怕是写成路径样式）：
+     * Kotlin 的块注释是**可嵌套**的，那会开一个新的注释层，
+     * 把后面整段代码吞掉 —— 编译器的报错会指向很远的地方。
      */
-    private fun pickIntent(): Intent =
+    private fun pickIntent(mimeType: String?): Intent =
         Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
+            type = mimeType ?: "*/*"
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
@@ -177,7 +188,7 @@ class MainActivity : FlutterActivity() {
      * —— 真正能不能开，以 [handlePick] 里捕获 ActivityNotFoundException 为准。
      */
     private fun pickerAvailable(): Boolean = try {
-        pickIntent().resolveActivity(packageManager) != null
+        pickIntent(null).resolveActivity(packageManager) != null
     } catch (error: Exception) {
         false
     }

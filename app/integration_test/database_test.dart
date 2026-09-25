@@ -10,6 +10,8 @@ import 'package:younum/data/db/sqflite_ledger_store.dart';
 import 'package:younum/data/db/younum_schema.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
 import 'package:younum/domain/models/allocation.dart';
+import 'package:younum/domain/models/category.dart';
+import 'package:younum/domain/models/category_icon_asset.dart';
 import 'package:younum/domain/models/import_records.dart';
 import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/models/review_session_record.dart';
@@ -81,7 +83,7 @@ void main() {
       expect(rows.first.values.first, younumSchemaVersion);
     });
 
-    test('十张表与关键索引都建好了', () async {
+    test('十一张表与关键索引都建好了', () async {
       final db = await openRaw();
       final tables = <String>{
         for (final row in await db.rawQuery(
@@ -102,6 +104,7 @@ void main() {
           'review_queue_item',
           'review_action',
           'month_review',
+          'category_icon_asset',
         ]),
       );
 
@@ -119,8 +122,62 @@ void main() {
           'idx_refund_link_refund',
           'idx_category_parent_name',
           'idx_review_session_unique',
+          'idx_category_icon_asset_hash',
         ]),
       );
+    });
+
+    test('图片资源：同一哈希只落一条，分类与资源一起写', () async {
+      final repository = _repositoryFor(store);
+      final now = DateTime(2026, 9, 25).millisecondsSinceEpoch;
+
+      const asset = CategoryIconAsset(
+        id: CategoryIconAsset.idUnassigned,
+        relativePath: 'category_icons/abc.png',
+        contentHash: 'abc',
+        width: 256,
+        height: 256,
+        byteSize: 4096,
+        createdAtMs: 0,
+      );
+      final saved = await store.saveIconAsset(
+        CategoryIconAsset(
+          id: asset.id,
+          relativePath: asset.relativePath,
+          contentHash: asset.contentHash,
+          width: asset.width,
+          height: asset.height,
+          byteSize: asset.byteSize,
+          createdAtMs: now,
+        ),
+      );
+      expect(saved.id, isNot(CategoryIconAsset.idUnassigned));
+
+      // 同一份内容再存一次：不新增行（唯一索引兑底）。
+      final again = await store.saveIconAsset(saved);
+      expect(again.id, saved.id);
+      expect(await countOf(await openRaw(), 'category_icon_asset'), 1);
+
+      // 分类指向图片：类型与资源 ID 一起写。
+      final target = (await repository.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      )).firstWhere((category) => category.name == '餐饮');
+      final linked = await store.saveCategoryWithIconAsset(
+        category: target,
+        asset: saved,
+      );
+      expect(linked.iconType, CategoryIconType.image);
+      expect(linked.iconKey, '${saved.id}');
+
+      final row = (await openRaw().then(
+        (db) => db.query(
+          'category',
+          where: 'id = ?',
+          whereArgs: <Object?>[target.id],
+        ),
+      )).single;
+      expect(row['icon_type'], CategoryIconType.image.storageValue);
+      expect(row['icon_key'], '${saved.id}');
     });
 
     test('initialize 幂等：重复调用不会产生重复账本或分类', () async {
@@ -1584,3 +1641,5 @@ void main() {
 /// 这里刻意不导入界面层：数据库测试验证的是仓库 + SQL，不含 UI。
 LedgerRepository _repositoryFor(SqfliteLedgerStore store) =>
     LedgerRepository(store);
+
+

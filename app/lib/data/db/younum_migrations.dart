@@ -24,7 +24,23 @@ const List<Migration> younumMigrations = <Migration>[
     description: '导入批次记住来源 URI，供导入历史重新解析',
     run: _addImportSourceUri,
   ),
+  Migration(
+    from: 3,
+    to: 4,
+    description: '新增分类图片图标资源表',
+    run: _addIconAssetTable,
+  ),
 ];
+
+/// v3 → v4：分类图片图标的资源表。
+///
+/// 纯新增表，不动既有数据：升级后已有的分类仍然指向内置图标，
+/// 不因为加了图片能力而变样。
+Future<void> _addIconAssetTable(Future<void> Function(String sql) execute) async {
+  for (final statement in younumSchemaV4) {
+    await execute(statement);
+  }
+}
 
 /// v1 → v2：导入相关结构。
 ///

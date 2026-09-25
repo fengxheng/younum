@@ -20,7 +20,7 @@ library;
 /// ⚠️ 下面每个版本的 DDL 列表一旦发布就**冻结**，只改「新增迁移」里的事。
 /// 因为全新安装也是「先建 v1 → 再跑整条迁移链」，如果在旧列表里加一列，
 /// 升级用户会在紧接着的 ALTER TABLE 上重复加列而报错。
-const int younumSchemaVersion = 3;
+const int younumSchemaVersion = 4;
 
 /// v1 的建表语句。
 ///
@@ -306,5 +306,30 @@ const List<String> younumSchemaV2 = <String>[
   '''
   CREATE INDEX idx_transaction_origin_txn
     ON transaction_origin(transaction_id)
+  ''',
+];
+
+/// v4 新增：分类图片图标的资源表（指南 3.2 / 14.4）。
+///
+/// 只存元数据与**相对**路径，图片本体在应用私有目录里（不存 Bitmap / Base64）。
+/// `content_hash` 加唯一索引：同一张图重复选择只落一份文件。
+///
+/// 「引用状态」不是列：它等于「有没有分类的 `icon_key` 指向我」，
+/// 现算即可；存一份就会漂移。
+const List<String> younumSchemaV4 = <String>[
+  '''
+  CREATE TABLE category_icon_asset (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    width INTEGER NOT NULL CHECK (width > 0),
+    height INTEGER NOT NULL CHECK (height > 0),
+    byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+    created_at_ms INTEGER NOT NULL
+  )
+  ''',
+  '''
+  CREATE UNIQUE INDEX idx_category_icon_asset_hash
+    ON category_icon_asset(content_hash)
   ''',
 ];
