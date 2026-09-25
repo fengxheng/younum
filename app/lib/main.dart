@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite_sqlcipher/sqflite.dart' show databaseFactory;
 
 import 'app/app.dart';
 import 'core/preferences/app_state_store.dart';
@@ -6,6 +8,7 @@ import 'core/preferences/reminder_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
 import 'core/preferences/update_store.dart';
+import 'data/db/database_encryption.dart';
 import 'data/db/sqflite_ledger_store.dart';
 import 'data/files/app_files_directory.dart';
 import 'data/files/icon_asset_store.dart';
@@ -16,8 +19,10 @@ import 'data/files/system_file_source.dart';
 import 'data/files/system_image_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
 import 'data/net/github_update_source.dart';
+import 'data/platform/system_database_secret.dart';
 import 'data/platform/system_reminder_scheduler.dart';
 import 'data/platform/system_update_installer.dart';
+import 'domain/repositories/database_secret.dart';
 import 'domain/repositories/icon_asset_ports.dart';
 import 'domain/repositories/document_saver.dart';
 import 'domain/repositories/image_file_source.dart';
@@ -44,16 +49,54 @@ Future<void> main() async {
   AppStateStore appStateStore;
   ReminderStore reminderStore;
   UpdateStore updateStore;
-  LedgerStore ledgerStore = SqfliteLedgerStore();
+  LedgerStore ledgerStore;
   // 分类图片的文件柜。目录从平台通道拿（`filesDir`），这里不猜。
   final IconAssetStore iconFiles = FileIconAssetStore(
     directoryOf: systemFilesDirectory,
   );
+
+  // 数据库加密（方案 A）。
+  //
+  // 顺序很重要：**先把老明文库换成加密库，再用口令打开它**。
+  // 口令由 Android Keystore 保管（它自己不出 Keystore，所以文件被拷走也没用）。
+  // 取不到口令时**不偷偷换一把新的**，而是这一轮不加密并把原因带上去 ——
+  // 否则用户会看到一个空账本，那看起来就像账单被删了。
+  String? databasePassword;
+  String? encryptionNote;
+  try {
+    final secret = SystemDatabaseSecret();
+    final passphrase = await secret.databasePassphrase();
+    if (passphrase != null) {
+      final path = p.join(
+        await databaseFactory.getDatabasesPath(),
+        SqfliteLedgerStore.fileName,
+      );
+      final result = await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: path,
+        password: passphrase,
+      );
+      debugPrint('数据库加密：$result');
+      if (result.isEncrypted) {
+        databasePassword = passphrase;
+      } else {
+        encryptionNote = result.failure ?? '数据加密没有完成，账单仍是未加密存储';
+      }
+    }
+  } on DatabaseSecretUnavailable catch (error) {
+    encryptionNote = error.message;
+    debugPrint('数据库口令取不出来，本轮不加密：${error.message}');
+  } on Object catch (error) {
+    encryptionNote = '数据加密没有完成：$error';
+    debugPrint('数据库加密出错：$error');
+  }
+
   try {
     themeStore = await SharedPreferencesThemeStore.open();
     appStateStore = await SharedPreferencesAppStateStore.open();
     reminderStore = await SharedPreferencesReminderStore.open();
     updateStore = await SharedPreferencesUpdateStore.open();
+    ledgerStore = SqfliteLedgerStore(password: databasePassword);
   } catch (_) {
     themeStore = InMemoryThemeStore();
     appStateStore = InMemoryAppStateStore();
@@ -81,7 +124,6 @@ Future<void> main() async {
     );
     await repository.initialize();
   }
-
   final themeController = await ThemeController.restore(themeStore);
   final appStateController = await AppStateController.restore(appStateStore);
 
@@ -157,6 +199,8 @@ Future<void> main() async {
       updateInstaller: updateInstaller,
       updateStore: updateStore,
       appVersion: appVersion,
+      databaseEncrypted: databasePassword != null,
+      databaseEncryptionNote: encryptionNote,
     ),
   );
 }

@@ -80,17 +80,6 @@ class DatabaseKeyStore(private val filesDir: File) {
         return text
     }
 
-    /** 应用数据被清掉时，包裹文件跟着没了，Keystore 里那把密钥留着也没用。 */
-    fun forget() {
-        val wrapped = File(filesDir, FILE_NAME)
-        if (wrapped.exists()) wrapped.delete()
-        try {
-            keyStore().deleteEntry(KEY_ALIAS)
-        } catch (error: Exception) {
-            Log.d(TAG, "清不掉数据库密钥：${error.message}")
-        }
-    }
-
     private fun keyStore(): KeyStore =
         KeyStore.getInstance(KEYSTORE).apply { load(null) }
 

@@ -59,6 +59,8 @@ class YounumApp extends StatefulWidget {
     this.updateInstaller = const UnsupportedUpdateInstaller(),
     this.updateStore,
     this.appVersion,
+    this.databaseEncrypted = false,
+    this.databaseEncryptionNote,
   });
 
   final ThemeController themeController;
@@ -100,6 +102,14 @@ class YounumApp extends StatefulWidget {
   /// 当前安装的版本。读不到时为 null —— 那就**不做升级提示**，
   /// 而不是拿一个猜出来的版本号去比较。
   final AppVersion? appVersion;
+
+  /// 数据库是不是加密存储。
+  ///
+  /// 界面要**如实显示**：加密没成功时用户有权知道，而不是以为已经加密了。
+  final bool databaseEncrypted;
+
+  /// 加密没成功时的原因（成功时为 null）。
+  final String? databaseEncryptionNote;
 
   @override
   State<YounumApp> createState() => _YounumAppState();
@@ -413,7 +423,10 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
       case AppRoutes.importHistory:
         return (context) => const ImportHistoryScreen();
       case AppRoutes.privacy:
-        return (context) => const PrivacyScreen();
+        return (context) => PrivacyScreen(
+          encrypted: widget.databaseEncrypted,
+          encryptionNote: widget.databaseEncryptionNote,
+        );
       case AppRoutes.reminder:
         return (context) => ReminderScreen(controller: _reminder);
       case AppRoutes.deleteConfirm:

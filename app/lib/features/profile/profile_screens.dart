@@ -469,7 +469,16 @@ class _BatchPanel extends StatelessWidget {
 
 /// 隐私与数据。
 class PrivacyScreen extends StatelessWidget {
-  const PrivacyScreen({super.key});
+  const PrivacyScreen({super.key, this.encrypted = false, this.encryptionNote});
+
+  /// 数据库是不是加密存储。
+  ///
+  /// 这一页是用户看「我的数据怎么存」的地方，所以加密状态必须**如实显示**：
+  /// 没加上的时候要说明原因，而不是让「仅本地」这四个字盖过去。
+  final bool encrypted;
+
+  /// 没加上的原因（正常时是 null）。
+  final String? encryptionNote;
 
   @override
   Widget build(BuildContext context) {
@@ -488,6 +497,19 @@ class PrivacyScreen extends StatelessWidget {
             '再经你同意后下载安装包）。',
           ),
           const SizedBox(height: YounumDimens.gap),
+          // 数据库加密状态。指南 8.3 的「仅本地」不包含加密，所以这里把话写全：
+          // 加密保护的是什么（文件被拷走也读不出），代价是什么（钥匙丢了就没了）。
+          YounumPanel(
+            tone: YounumPanelTone.soft,
+            child: YounumMutedText(
+              encrypted
+                  ? '数据库已加密：口令由系统密钥库保管，'
+                        '把文件拷走到别的设备也读不出内容。\n'
+                        '代价是钥匙丢了就无法恢复 —— 卸载或换机前请先导出。'
+                  : '数据库**没有**加密：${encryptionNote ?? '这台设备上暂不支持'}。\n'
+                        '账单仍然只存在本机，但文件被拷走就能读。',
+            ),
+          ),
           YounumPanel(
             tone: YounumPanelTone.soft,
             child: Column(

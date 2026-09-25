@@ -278,6 +278,30 @@ flutter test integration_test/file_source_test.dart -d 412913d4
       再进这一页时**不该**再弹「发现新版本」；但按钮还在，仍能手动装
 
 
+## 十六、数据库加密（方案 A）
+
+- [ ] 装好后进「我的 → 隐私与数据」：应写着**数据库已加密**，
+      并说明「口令由系统密钥库保管、钥匙丢了无法恢复」
+- [ ] 把库拷出来读一眼文件头（应用私有目录，调试包可用 `run-as`）：
+      ```powershell
+      $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+      & $adb -s <设备> shell "run-as com.younum.app cat databases/younum.db | od -An -c -N 16"
+      ```
+      头 16 个字节**不该**是 `S y S Q L i t e   f o r m a t   3`；
+      同时 `run-as com.younum.app ls files` 里应有 `younum.database.key`（口令密文）
+- [ ] **从旧版升级过来**（先装上一版、导几笔账单，再覆盖安装这一版）：
+      打开后账目、分类、图标、导入记录**一条不少**；数据库文件已经从明文
+      变成密文；`databases` 目录里不该留下 `younum.db.plain` 残留
+- [ ] 杀进程重开：能正常打开（口令从 Keystore 取回），数据还在
+- [ ] 把 `younum.db` 拷到电脑上（`adb pull`），用任何 SQLite 工具打开：
+      应当打不开、或只能看到乱码 —— 这是「加密真的生效」最直观的一条
+- [ ] 「清除本地数据」之后：账本为空，但数据库**仍然能打开**（清数据不等于
+      换钥匙，口令不动 —— 换了钥匙会让这个库永久读不出，那是两回事）
+- [ ] ⚠️ 不能人工触发但要知道的表现：**卸载重装 / 清了应用数据 / 换手机**之后，
+      Keystore 里那把钥匙没了，旧的加密库再也打不开 —— 隐私页写明了
+      「卸载或换机前请先导出」，这是加密的必然代价，不是缺陷
+
+
 ## 已知未验证（明确记录，不当作已完成）
 
 | 项目 | 为什么没验证 |

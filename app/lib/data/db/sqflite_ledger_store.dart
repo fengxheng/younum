@@ -17,7 +17,10 @@ library;
 import 'dart:convert';
 
 import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
+// 用 sqflite_sqlcipher 而不是 sqflite：它是同一个 API 的超集，多一个口令参数。
+// 不传口令时它的行为与普通 sqflite 一样（SQLCipher 读明文库没问题），
+// 所以桌面与测试环境不受影响。
+import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../../core/time/statistics_time.dart';
 import '../../data/seed/demo_ledger_seed.dart';
@@ -37,16 +40,64 @@ import 'younum_schema.dart';
 
 /// SQLite 存储。
 final class SqfliteLedgerStore implements LedgerStore {
-  SqfliteLedgerStore({String? databasePath, DatabaseFactory? factory})
-    : _customPath = databasePath,
-      _factory = factory ?? databaseFactory;
+  SqfliteLedgerStore({
+    String? databasePath,
+    DatabaseFactory? factory,
+    this.password,
+  }) : _customPath = databasePath,
+       _factory = factory ?? databaseFactory;
 
   static const String fileName = 'younum.db';
 
   final String? _customPath;
   final DatabaseFactory _factory;
 
+  /// 数据库口令。为 null 时不加密（桌面、测试环境，以及「还没拿到口令」的降级态）。
+  ///
+  /// ⚠️ 不要把它写进日志或异常文案里。
+  final String? password;
+
   Database? _database;
+
+  /// 打开数据库用的选项。
+  ///
+  /// 抽出来是因为**数据迁移**要用同一套选项去打开老的明文库：
+  /// 老库可能还停在 v1/v2/v3，先用迁移链升到当前版本，再往加密库里搬。
+  static SqlCipherOpenDatabaseOptions buildOptions({
+    String? password,
+    DatabaseFactory? factory,
+  }) => SqlCipherOpenDatabaseOptions(
+    version: younumSchemaVersion,
+    password: password,
+    onConfigure: (db) async {
+      // 关键一步：不打开这个开关，所有外键都形同虚设。
+      await db.execute('PRAGMA foreign_keys = ON');
+
+      // 再主动读一下表目录。
+      //
+      // 为什么需要这一下：SQLite 是**惰性**的 —— 打开一个加密库却不给口令，
+      // `openDatabase` 不会报错，要等第一次真正读表才炸。那样「口令不对」会以
+      // 「某次查询失败」的形式出现，很难查。这里读一次 sqlite_master，
+      // 让口令问题在**打开时**就暴露。
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
+    },
+    onCreate: (db, version) async {
+      // 全新安装先建 v1，再跑迁移链升到当前版本。
+      // 这样「升级路径」在每次全新安装时都被走一遍。
+      for (final statement in younumSchemaV1) {
+        await db.execute(statement);
+      }
+      await _runMigrations(db, from: 1, to: version);
+    },
+    onUpgrade: (db, oldVersion, newVersion) =>
+        _runMigrations(db, from: oldVersion, to: newVersion),
+    onDowngrade: (db, oldVersion, newVersion) async {
+      throw MigrationError(
+        '数据库版本 v$oldVersion 高于代码期望的 v$newVersion，'
+        '不支持降级',
+      );
+    },
+  );
 
   /// 打开（必要时创建并迁移）数据库。
   Future<Database> _open() async {
@@ -57,29 +108,7 @@ final class SqfliteLedgerStore implements LedgerStore {
         _customPath ?? p.join(await _factory.getDatabasesPath(), fileName);
     final database = await _factory.openDatabase(
       path,
-      options: OpenDatabaseOptions(
-        version: younumSchemaVersion,
-        onConfigure: (db) async {
-          // 关键一步：不打开这个开关，所有外键都形同虚设。
-          await db.execute('PRAGMA foreign_keys = ON');
-        },
-        onCreate: (db, version) async {
-          // 全新安装先建 v1，再跑迁移链升到当前版本。
-          // 这样「升级路径」在每次全新安装时都被走一遍。
-          for (final statement in younumSchemaV1) {
-            await db.execute(statement);
-          }
-          await _runMigrations(db, from: 1, to: version);
-        },
-        onUpgrade: (db, oldVersion, newVersion) =>
-            _runMigrations(db, from: oldVersion, to: newVersion),
-        onDowngrade: (db, oldVersion, newVersion) async {
-          throw MigrationError(
-            '数据库版本 v$oldVersion 高于代码期望的 v$newVersion，'
-            '不支持降级',
-          );
-        },
-      ),
+      options: buildOptions(password: password, factory: _factory),
     );
     _database = database;
     return database;

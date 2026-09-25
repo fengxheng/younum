@@ -7,8 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_sqlcipher/sqflite.dart';
 import 'package:younum/core/time/statistics_time.dart';
+import 'package:younum/data/db/database_encryption.dart';
 import 'package:younum/data/db/sqflite_ledger_store.dart';
 import 'package:younum/data/files/icon_asset_store.dart';
 import 'package:younum/data/files/icon_image_processor.dart';
@@ -64,7 +65,7 @@ void main() {
   /// [path] 缺省用 setUp 建好的那一份；迁移用例需要指向自己造的老库。
   Future<Database> openRaw([String? path]) => databaseFactory.openDatabase(
     path ?? databasePath,
-    options: OpenDatabaseOptions(
+    options: SqlCipherOpenDatabaseOptions(
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
     ),
   );
@@ -1789,6 +1790,182 @@ void main() {
       final batches = await db.query('import_batch');
       expect(batches.first['stage'], 'COMMITTED');
       expect(await countOf(db, 'txn'), 8, reason: '一笔都不能多');
+    });
+  });
+
+  // 数据库加密（方案 A）。必须跑在真机上：加解密是原生库干的，
+  // 「文件到底是不是密文」也只能在真文件上看。
+  group('数据加密', () {
+    const passphrase = 'test-passphrase-32-bytes-long-xx';
+
+    /// 加密用例用自己的一份文件，不碰 setUp 里那份。
+    late String encPath;
+
+    setUp(() {
+      encPath = '$databasePath.enc';
+    });
+
+    tearDown(() async {
+      for (final suffix in <String>['', DatabaseEncryption.plaintextSuffix]) {
+        final file = File('$encPath$suffix');
+        if (file.existsSync()) file.deleteSync();
+      }
+    });
+
+    /// 造一个**明文**库并写入数据（复用仓库的种子：示例账本 + 分类 + 6 笔）。
+    Future<SqfliteLedgerStore> seedPlaintext() async {
+      final plain = SqfliteLedgerStore(databasePath: encPath);
+      final repository = LedgerRepository(plain);
+      await repository.initialize();
+      await repository.createCategory(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        name: '加密测试',
+        iconKey: 'leaf',
+      );
+      await plain.close();
+      return plain;
+    }
+
+    /// 带口令的原始连接（默认是明文的那份）。
+    Future<Database> openRawWith(
+      String path, {
+      String? password,
+    }) => databaseFactory.openDatabase(
+      path,
+      options: SqlCipherOpenDatabaseOptions(
+        password: password,
+        onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+      ),
+    );
+
+    /// 文件开头 16 字节（明文 SQLite 是 "SQLite format 3\0"）。
+    Future<String> headerOf(String path) async {
+      final handle = await File(path).open();
+      try {
+        final bytes = await handle.read(16);
+        return String.fromCharCodes(bytes);
+      } finally {
+        await handle.close();
+      }
+    }
+
+    test('明文库搬成加密库：数据一条不少，而且文件真的不是明文', () async {
+      await seedPlaintext();
+      expect(
+        await headerOf(encPath),
+        startsWith('SQLite format 3'),
+        reason: '前提：现在是明文库',
+      );
+
+      final result = await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+      expect(result.outcome, EncryptionOutcome.migrated, reason: '$result');
+      expect(result.copiedRows, greaterThan(0));
+
+      // 1. 文件头不再是明文 SQLite —— 这是「真的加密了」最直接的证据。
+      expect(
+        await headerOf(encPath),
+        isNot(startsWith('SQLite format 3')),
+        reason: '加密之后文件头不该是明文魔数',
+      );
+
+      // 2. 留底已删（成功了才删）。
+      expect(
+        File('$encPath${DatabaseEncryption.plaintextSuffix}').existsSync(),
+        isFalse,
+      );
+
+      // 3. 用口令打开：账目与分类都在。
+      final db = await openRawWith(encPath, password: passphrase);
+      expect(await countOf(db, 'txn'), greaterThanOrEqualTo(6));
+      expect(await countOf(db, 'ledger'), greaterThanOrEqualTo(1));
+      final names = <String>[
+        for (final row in await db.query('category', columns: <String>['name']))
+          row['name']! as String,
+      ];
+      expect(names, contains('加密测试'), reason: '用户建的分类也要一起搬过来');
+      await db.close();
+    });
+
+    test('不给口令（或给错口令）：读不出里面的数据', () async {
+      await seedPlaintext();
+      await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+
+      // 为什么要拷贝一份再试：sqflite 的工厂按**路径**缓存单个实例，
+      // 迁移时已经用正确口令打开过这个文件，同一个进程里再 openDatabase
+      // 会把那个连接直接还给你，压根不碰文件 —— 于是「口令不对」测不出来。
+      // 换一个没被打开过的路径，才是真的重新读文件。
+      final copy = '$encPath.copy';
+      File(encPath).copySync(copy);
+      addTearDown(() {
+        final file = File(copy);
+        if (file.existsSync()) file.deleteSync();
+      });
+
+      // 不给口令。注意 SQLite 是**惰性**的：光打开不报错，第一次真读表才炸
+      // （应用里为此在 onConfigure 主动读了一次 sqlite_master，好让口令问题
+      // 在打开时就暴露）。这里量的就是这个「读不出数据」。
+      var readable = false;
+      try {
+        final withoutKey = await openRawWith(copy);
+        await withoutKey.rawQuery('SELECT count(*) FROM txn');
+        readable = true;
+      } on Object {
+        readable = false;
+      }
+      expect(readable, isFalse, reason: '不给口令就不该读得出数据');
+    });
+
+    test('上一次没搬完（留底还在）：下一次会重来，数据不丢', () async {
+      await seedPlaintext();
+      // 模拟「搬到一半被杀」：老库改名为 .plain 留着，主文件位置是个垃圾。
+      File(encPath).renameSync('$encPath${DatabaseEncryption.plaintextSuffix}');
+      File(encPath).writeAsStringSync('这不是数据库');
+
+      final result = await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+
+      expect(result.outcome, EncryptionOutcome.migrated, reason: '$result');
+      final db = await openRawWith(encPath, password: passphrase);
+      expect(await countOf(db, 'txn'), greaterThanOrEqualTo(6), reason: '恢复之后数据要完整');
+      await db.close();
+    });
+
+    test('已经是加密库：再跑一次什么都不做', () async {
+      await seedPlaintext();
+      await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+
+      final again = await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+
+      expect(again.outcome, EncryptionOutcome.alreadyEncrypted);
+      expect(again.copiedRows, 0);
+    });
+
+    test('全新安装：没有库时什么都不做，交给存储层去建加密库', () async {
+      final result = await DatabaseEncryption.ensureEncrypted(
+        factory: databaseFactory,
+        path: encPath,
+        password: passphrase,
+      );
+      expect(result.outcome, EncryptionOutcome.freshInstall);
     });
   });
 }
