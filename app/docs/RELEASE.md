@@ -28,11 +28,21 @@ adb install -r app/build/app/outputs/flutter-apk/app-debug.apk
 
 ## 3. 本机环境上要注意的两件事
 
-* **Impeller 会让这台机器的屏幕变白**（设备端图形问题，不是应用缺陷）。
-  用 `flutter run --no-enable-impeller`，或者直接装 APK 包。
-* 改过 Kotlin 之后**必须真编译一次**（`flutter build apk --debug`）：
-  `flutter analyze` 只看 Dart，Kotlin 的可空/语法错误只有编译才暴露 ——
-  这个坑真的踩过。
+* **改过 Kotlin / Manifest / Gradle 或依赖之后，一定要 `flutter build apk --release`
+  并装到真机上点开看一眼。** release 会跑 R8 而 debug 不会，所以「反射实例化被
+  当成死代码裁掉」这类问题**只在正式包里出现**，`flutter analyze`（只管 Dart）
+  和 debug 构建都看不见。上一轮的真实现象是：release 包装好后**点开图标什么都没发生**
+  —— 没有白屏、没有闪退提示、logcat 里也一条 `flutter` 日志都没有（崩在引擎起来之前），
+  真凶是 `AndroidRuntime: NoSuchMethodException: androidx.work.impl.WorkDatabase_Impl.<init>`。
+  保留规则在 `app/android/app/proguard-rules.pro`，`build.gradle.kts` 的 release
+  里显式开了 R8 并挂上了它。细节见 `DECISIONS.md` 第 67 节。
+* **改了 Kotlin 之后**：`flutter analyze` 只看 Dart，Kotlin 的可空/语法错误只有编译才暴露
+  —— 这个坑真的踩过，所以至少要用 `flutter build apk --debug` 编一次。
+
+> 一个**已经实测推翻**的旧说法：本机 Impeller（Vulkan）会让屏幕变白。
+> 同一台机器上同一个 APK，用普通 `am start` 启动（Impeller 开着）画面完全正常。
+> 所以不要再加 `io.flutter.embedding.android.EnableImpeller=false`。
+> 真遇到白屏，先 `pidof` 看进程在不在：进程不在就是原生层崩了，去查 `AndroidRuntime`。
 
 ## 4. 签名与发布
 
@@ -122,6 +132,11 @@ flutter build apk --release
 * [ ] `allowBackup="false"`、`dataExtractionRules` 都在（避免账单被系统云备份）。
 * [ ] 设计走查路由 `AppRoutes.designReview` 只在调试构建注册（`kDebugMode`）。
 * [ ] `flutter analyze` 零告警；`flutter test` 全绿；真机数据库测试全绿。
+* [ ] **正式包真的能在真机上打开**：`flutter build apk --release` 后 `adb install -r`，
+      然后**点开图标看一眼**（只看安装输出里的 `Success` 不够 —— R8 的坑就是
+      装得上、打不开）。同时确认 `android/app/proguard-rules.pro` 里的两条保留规则
+      还在（Room 的数据库实现、WorkManager 的 Worker）：后者被裁掉不会当场崩，
+      但**每月提醒会静默失灵**，更难发现。
 * [ ] 人工核对清单里标为未验证的项，在发布说明里如实写明。
 * [ ] **数据库确实是加密的**：装好之后按 `MANUAL_CHECKS.md` 第十六节看一眼
       文件头（不该是 `SQLite format 3`），并确认「隐私与数据」页显示已加密。
