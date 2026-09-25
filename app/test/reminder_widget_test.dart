@@ -217,10 +217,15 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('带上整理页的路由：启动后直接落在卡片整理', (tester) async {
+    testWidgets('带上整理页的路由：启动后直接落在卡片整理，且底部高亮跟着变', (tester) async {
       await bootWithRoute(tester, '/organize/cards');
 
       expect(find.byType(CardsScreen), findsOneWidget);
+      expect(
+        TabScope.of(tester.element(find.byType(CardsScreen))).index,
+        AppRoutes.tabs.indexOf(AppRoutes.cards),
+        reason: '人在整理页，底部高亮也必须在整理上',
+      );
     });
 
     testWidgets('路由不在白名单里：什么都不跳', (tester) async {
@@ -234,5 +239,27 @@ void main() {
 
       expect(find.byType(CardsScreen), findsNothing);
     });
+
+    testWidgets('从别处跳到一级标签页：高亮也跟着走', (tester) async {
+      await bootWithRoute(tester, null);
+
+      final navigator = Navigator.of(tester.element(find.byType(Navigator).first));
+      unawaited(navigator.pushNamed(AppRoutes.report));
+      await tester.pumpAndSettle();
+
+      expect(
+        TabScope.of(tester.element(find.byType(Navigator).first)).index,
+        AppRoutes.tabs.indexOf(AppRoutes.report),
+      );
+
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(
+        TabScope.of(tester.element(find.byType(Navigator).first)).index,
+        AppRoutes.tabs.indexOf(AppRoutes.home),
+        reason: '退回后高亮要回到原来的标签',
+      );
+    });
   });
 }
+

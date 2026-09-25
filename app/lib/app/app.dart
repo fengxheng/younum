@@ -151,7 +151,12 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
       _ => null,
     };
     if (target == null) return;
-    _navigatorKey.currentState?.pushNamed(target);
+
+    // 整理本来就是一级标签页：**切标签**比再压一层路由对 ——
+    // 压路由会多出一份同样的页面，而且底部导航的高亮会停在原来的标签上。
+    // 先回到根，避免用户还停在某个详情页里时切了标签却看不见。
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    _tabs.syncFromRoute(target);
   }
 
   /// 进入 / 退出演示账本时整体重载会话。
@@ -209,6 +214,9 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
                       documentSaver: widget.documentSaver,
                       child: MaterialApp(
                         navigatorKey: _navigatorKey,
+                        navigatorObservers: <NavigatorObserver>[
+                          _TabHighlightObserver(_tabs),
+                        ],
                         title: '有数',
                         debugShowCheckedModeBanner: false,
                         // 只提供浅色主题：系统深色模式不应把浅色设计自动反色（指南 7.2）。
@@ -430,5 +438,58 @@ class YounumUnknownRouteScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// 让底部导航的高亮跟着当前路由走。
+///
+/// 没这个之前，只有用户自己点底部导航才会换高亮；从别处**跳**到某个一级
+/// 标签页（通知点进来、首页的「继续整理」）时，就会出现
+/// 「人在整理页、高亮停在首页」这种自相矛盾的界面 —— 真机上碰到过。
+///
+/// [TabSelection.syncFromRoute] 只认四个一级标签，其余路由不动高亮，
+/// 所以详情页、导入流程这些压栈不会误改高亮。
+class _TabHighlightObserver extends NavigatorObserver {
+  _TabHighlightObserver(this.tabs);
+
+  final TabSelection tabs;
+
+  /// 压入一级标签页之前的高亮。根路由（底部导航外壳）的高亮才是
+  /// 「用户原本在哪儿」；压栈只是临时盖在上面的一层，退回来要还原。
+  int? _before;
+
+  static int _indexOf(Route<dynamic>? route) =>
+      AppRoutes.tabs.indexOf(route?.settings.name ?? '');
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    final index = _indexOf(route);
+    if (index < 0) return;
+    _before = tabs.index;
+    tabs.select(index);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    if (_indexOf(route) < 0) return;
+    tabs.select(_before ?? tabs.index);
+    _before = null;
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    final index = _indexOf(newRoute);
+    if (index >= 0) tabs.select(index);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didRemove(route, previousRoute);
+    if (_indexOf(route) < 0) return;
+    tabs.select(_before ?? tabs.index);
+    _before = null;
   }
 }
