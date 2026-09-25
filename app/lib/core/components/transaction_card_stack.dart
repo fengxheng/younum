@@ -58,6 +58,17 @@ class TransactionCardStack extends StatefulWidget {
   /// 队列为空时禁用。
   final bool enabled;
 
+  /// 卡片**至少**多高：设计稿量出来的高度。
+  ///
+  /// 这里只给下限，不给固定高度。以前是把 236 写死，于是字号一大，卡片里的
+  /// 文字就被挤出去（`RenderFlex overflowed`）—— 当时的应对是把整个 App 的
+  /// 字号上限压到 1.6，等于让用户替容器的限制买单。指南 6.3 要的是
+  /// 「不固定屏幕总高度，大字号时允许滚动」。
+  ///
+  /// 现在卡片自己撑高：设计高度当垫底，装不下就往上长（见 `build` 里的
+  /// `IntrinsicHeight`），页面该滚就滚。
+  static const double minCardHeight = YounumDimens.transactionCardHeight;
+
   /// 后层视觉卡片的数量。后层只做视觉提示，不接收输入、不参与朗读（指南 6.1）。
   final int backLayerCount;
 
@@ -288,7 +299,6 @@ class _TransactionCardStackState extends State<TransactionCardStack>
   Widget build(BuildContext context) {
     final colors = YounumColors.of(context);
     const reserve = YounumDimens.stackSwingReserve;
-    const cardHeight = YounumDimens.transactionCardHeight;
     const farInset = YounumDimens.stackBackLayerInsetFar;
     const nearInset = YounumDimens.stackBackLayerInsetNear;
     const farAngle =
@@ -296,10 +306,10 @@ class _TransactionCardStackState extends State<TransactionCardStack>
     const nearAngle =
         YounumDimens.stackBackLayerAngleNear * 3.141592653589793 / 180;
 
-    return SizedBox(
+    return Padding(
       // 上下各留 reserve：后层卡片旋转后包围盒会变高，
       // 不留出这段空间它就会向上压到整理进度条上。
-      height: cardHeight + reserve * 2,
+      padding: const EdgeInsets.symmetric(vertical: reserve),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: _onDragStart,
@@ -309,12 +319,13 @@ class _TransactionCardStackState extends State<TransactionCardStack>
         child: Stack(
           children: <Widget>[
             // 后层卡片：纯装饰，不接收输入、不进无障碍树。
+            //
+            // 用 `Positioned.fill` 而不是写死高度：层高由前层卡片决定，
+            // 字号放大时后层跟着一起长，不会露出半截。
             if (widget.backLayerCount > 1)
-              Positioned(
-                top: reserve,
+              Positioned.fill(
                 left: farInset,
                 right: farInset,
-                height: cardHeight,
                 child: ExcludeSemantics(
                   child: IgnorePointer(
                     child: Transform.rotate(
@@ -332,11 +343,9 @@ class _TransactionCardStackState extends State<TransactionCardStack>
                 ),
               ),
             if (widget.backLayerCount > 0)
-              Positioned(
-                top: reserve,
+              Positioned.fill(
                 left: nearInset,
                 right: nearInset,
-                height: cardHeight,
                 child: ExcludeSemantics(
                   child: IgnorePointer(
                     child: Transform.rotate(
@@ -353,16 +362,23 @@ class _TransactionCardStackState extends State<TransactionCardStack>
                   ),
                 ),
               ),
-            // 前层卡片：只有它接收输入。
-            Positioned(
-              top: reserve,
-              left: 0,
-              right: 0,
-              child: ValueListenableBuilder<double>(
-                valueListenable: _offset,
-                // 常量 child：拖动时它完全不重建，只有外层 Transform 更新。
-                child: SizedBox(
-                  height: cardHeight,
+            // 前层卡片：只有它接收输入，也**由它决定整个栈的高度**。
+            //
+            // `IntrinsicHeight` 先问卡片「装下这些内容最少要多高」，再把
+            // 它当**下限**（设计高度也在下限里，见 `minCardHeight`）——
+            // 卡片内部的弹性空白负责把分隔线与页脚推到卡片底部，与设计稿
+            // 一致；字号放大到装不下时卡片就往上长，页面该滚就滚。
+            //
+            // 这一层不能省：它是「字号上限」和「固定高度容器」之间唯一的
+            // 解 —— 有了它才敢把 `maxScaleFactor` 拿掉。
+            IntrinsicHeight(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  minHeight: TransactionCardStack.minCardHeight,
+                ),
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _offset,
+                  // 常量 child：拖动时它完全不重建，只有外层 Transform 更新。
                   child: Stack(
                     children: <Widget>[
                       // RepaintBoundary 让卡片内容单独成层：拖动只更新变换矩阵，
@@ -392,17 +408,17 @@ class _TransactionCardStackState extends State<TransactionCardStack>
                       ),
                     ],
                   ),
-                ),
-                builder: (context, dx, child) => Transform.translate(
-                  offset: Offset(dx, 0),
-                  child: Transform.rotate(
-                    angle: (dx / 18).clamp(
-                          -_maxRotationDegrees,
-                          _maxRotationDegrees,
-                        ) *
-                        3.141592653589793 /
-                        180,
-                    child: child,
+                  builder: (context, dx, child) => Transform.translate(
+                    offset: Offset(dx, 0),
+                    child: Transform.rotate(
+                      angle: (dx / 18).clamp(
+                            -_maxRotationDegrees,
+                            _maxRotationDegrees,
+                          ) *
+                          3.141592653589793 /
+                          180,
+                      child: child,
+                    ),
                   ),
                 ),
               ),

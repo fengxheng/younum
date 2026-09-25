@@ -78,18 +78,26 @@ class AmountText extends StatelessWidget {
       excludeSemantics: true,
       child: Directionality(
         textDirection: TextDirection.ltr,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: <Widget>[
-            Text(
-              currencySymbol,
-              style: resolved.copyWith(fontSize: symbolSize),
-            ),
-            const SizedBox(width: 3),
-            Text(body, style: resolved),
-          ],
+        // 金额是页面里最大的字，也最容易在大字号下横向顶出去。
+        // 宁可**缩**也不截断：`scaleDown` 只在放不下时才缩小，宽度够时
+        // 一点都不动（`¥633.30` 在默认字号下仍是设计稿那个大小），
+        // 而 `ellipsis` 会把金额变成「¥633…」—— 数字被截断比字小更糟。
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: AlignmentDirectional.centerStart,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: <Widget>[
+              Text(
+                currencySymbol,
+                style: resolved.copyWith(fontSize: symbolSize),
+              ),
+              const SizedBox(width: 3),
+              Text(body, style: resolved),
+            ],
+          ),
         ),
       ),
     );

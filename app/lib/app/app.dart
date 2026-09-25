@@ -235,11 +235,15 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
                             : AppRoutes.welcome,
                         onGenerateRoute: _onGenerateRoute,
                         builder: (context, child) {
-                          // 限制文字缩放上限，避免堆叠卡片这类固定高度容器在大字体下溢出。
-                          // 下限不压低，用户调大字号的能力不被剥夺（指南 6.3）。
+                          // 下限不压低用户调小字号的意愿，也保住按默认字号设计的版式。
+                          //
+                          // ⚠️ 上限已经**去掉**了：曾经写死 1.6，理由是「堆叠卡片这类
+                          // 固定高度容器会溢出」。那是把容器的限制转嫁给了用户 ——
+                          // 指南 6.3 要的是「不固定屏幕总高度，大字号时允许滚动」。
+                          // 现在卡片高度跟着字号一起长（见 `cardHeightFor`），
+                          // 页面本身可滚动，字号想调多大就调多大。
                           return MediaQuery.withClampedTextScaling(
                             minScaleFactor: 0.85,
-                            maxScaleFactor: 1.6,
                             child: child ?? const SizedBox.shrink(),
                           );
                         },

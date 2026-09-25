@@ -706,12 +706,26 @@ class HomeScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Row(
+          // 词标 + 示例标记在左、月份切换在右。
+          //
+          // 用 `Wrap` 而不是 `Row` + `Spacer`：大字号下这一行的固定内容会超过
+          // 屏宽，`Spacer` 只能被压到 0，然后整行溢出（360dp 屏 + 字号 2.0
+          // 实测溢出 16px）。换行是这里唯一不牺牲内容的选择 —— 月份按钮被挤掉
+          // 或者词标被截断都比换行更糟。默认字号下仍是一行，位置与设计稿一致。
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: YounumDimens.gapSm,
+            runSpacing: YounumDimens.gapSm,
             children: <Widget>[
-              Text('有数.', style: text.sectionTitle.copyWith(fontSize: 20)),
-              const SizedBox(width: YounumDimens.gapSm),
-              const DemoLedgerBadge(),
-              const Spacer(),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text('有数.', style: text.sectionTitle.copyWith(fontSize: 20)),
+                  const SizedBox(width: YounumDimens.gapSm),
+                  const DemoLedgerBadge(),
+                ],
+              ),
               PlainTextButton(
                 label: session.month?.shortLabel ?? '',
                 trailingIcon: YounumIcons.expandMore,
