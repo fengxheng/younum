@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../core/preferences/app_state_store.dart';
+import '../core/preferences/reminder_controller.dart';
+import '../core/preferences/reminder_store.dart';
 import '../core/preferences/theme_controller.dart';
 import '../domain/repositories/image_file_source.dart';
 import '../domain/repositories/document_saver.dart';
 import '../domain/repositories/ledger_file_source.dart';
 import '../domain/repositories/ledger_repository.dart';
 import '../domain/repositories/poster_ports.dart';
+import '../domain/repositories/reminder_scheduler.dart';
 import '../features/export/export_scope.dart';
 import '../features/import_flow/import_screens.dart';
 import '../features/import_flow/import_session.dart';
@@ -44,6 +47,8 @@ class YounumApp extends StatefulWidget {
     this.imageFileSource = const UnsupportedImageSource(),
     this.posterMaker = const UnsupportedPosterMaker(),
     this.documentSaver = const UnsupportedDocumentSaver(),
+    this.reminderStore,
+    this.reminderScheduler = const UnsupportedReminderScheduler(),
   });
 
   final ThemeController themeController;
@@ -67,6 +72,12 @@ class YounumApp extends StatefulWidget {
   /// 保存文件的能力。桌面与测试环境是不支持实现，导出会如实报错。
   final DocumentSaver documentSaver;
 
+  /// 提醒设置的持久化。不传就用内存实现（测试与降级路径）。
+  final ReminderStore? reminderStore;
+
+  /// 提醒调度能力。桌面与测试环境是不支持实现，开关会显灰。
+  final ReminderScheduler reminderScheduler;
+
   @override
   State<YounumApp> createState() => _YounumAppState();
 }
@@ -85,6 +96,10 @@ class _YounumAppState extends State<YounumApp> {
     repository: widget.ledgerRepository,
     imageSource: widget.imageFileSource,
   );
+  late final ReminderController _reminder = ReminderController(
+    store: widget.reminderStore ?? InMemoryReminderStore(),
+    scheduler: widget.reminderScheduler,
+  );
 
   @override
   void initState() {
@@ -96,6 +111,8 @@ class _YounumAppState extends State<YounumApp> {
     _registry.load(
       ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
     );
+    // 提醒设置与平台状态也启动就读：设置页必须显示**实际**状态。
+    _reminder.load();
   }
 
   /// 进入 / 退出演示账本时整体重载会话。
@@ -123,6 +140,7 @@ class _YounumAppState extends State<YounumApp> {
     _review.dispose();
     _import.dispose();
     _registry.dispose();
+    _reminder.dispose();
     super.dispose();
   }
 
@@ -306,9 +324,9 @@ class _YounumAppState extends State<YounumApp> {
       case AppRoutes.privacy:
         return (context) => const PrivacyScreen();
       case AppRoutes.reminder:
-        return (context) => const ReminderScreen();
+        return (context) => ReminderScreen(controller: _reminder);
       case AppRoutes.deleteConfirm:
-        return (context) => const DeleteConfirmScreen();
+        return (context) => DeleteConfirmScreen(reminder: _reminder);
       case AppRoutes.offlineStatus:
         return (context) => const OfflineStatusScreen();
 

@@ -13,12 +13,14 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../core/preferences/app_state_store.dart';
+import '../../core/preferences/reminder_controller.dart';
 import '../../core/preferences/theme_controller.dart';
 import '../../core/time/statistics_time.dart';
 import '../../core/time/younum_clock.dart';
 import '../../domain/models/import_records.dart';
 import '../../domain/models/year_month.dart';
 import '../../domain/repositories/document_saver.dart';
+import '../../domain/rules/reminder_rules.dart';
 import '../export/export_files.dart';
 import '../export/export_scope.dart';
 import '../import_flow/import_session.dart';
@@ -510,122 +512,144 @@ class PrivacyScreen extends StatelessWidget {
 
 /// 提醒设置。
 ///
-/// 默认关闭；开启时需要说明用途。通知权限未开启时必须显示**实际**状态，
-/// 不能显示「已开启」却发不出通知（指南 8.2）。
-class ReminderScreen extends StatefulWidget {
-  const ReminderScreen({super.key});
+/// 指南 8.2 的几条要求落在这里：
+///
+/// * 默认关闭，用户主动打开时才申请通知权限；
+/// * **显示实际状态**：权限没给、或系统里通知被关，都不显示「已开启」却收不到；
+/// * 文案写「约」，因为系统省电策略允许合理延迟（我们没有申请精确闹钟权限）；
+/// * 改日期或时间立刻生效并替换旧任务，不需要再点一次保存。
+class ReminderScreen extends StatelessWidget {
+  const ReminderScreen({super.key, required this.controller});
 
-  @override
-  State<ReminderScreen> createState() => _ReminderScreenState();
-}
+  final ReminderController controller;
 
-class _ReminderScreenState extends State<ReminderScreen> {
-  static const List<String> _days = <String>[
-    '每月 1 日 · 整理上月',
-    '每月 5 日 · 整理上月',
-    '每月 10 日 · 整理上月',
+  /// 可选的小时。整点：账单提醒不需要挑到分钟。
+  static const List<int> hourOptions = <int>[
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
   ];
-
-  static const List<String> _hours = <String>['20:00', '12:00', '09:00'];
-
-  /// 默认关闭（指南 8.2）。
-  bool _enabled = false;
-  int _day = 0;
-  int _hour = 0;
-
-  /// 通知权限状态。阶段 6 会替换为真实权限查询结果，因此这里还不是可变状态。
-  final bool _permissionGranted = false;
-
-  int get _dayValue => const <int>[1, 5, 10][_day];
-
-  int get _hourValue => const <int>[20, 12, 9][_hour];
 
   @override
   Widget build(BuildContext context) {
     final text = YounumText.of(context);
-    final next = YounumClock.nextMonthly(_dayValue, _hourValue);
 
-    return YounumScreen(
-      title: '整理提醒',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Text('每月，留一点时间给自己', style: text.screenTitle),
-          const SizedBox(height: YounumDimens.gapSm),
-          YounumMutedText('整理不必每天发生，一月一次就很好。'),
-          const SizedBox(height: YounumDimens.gap),
-          YounumPanel(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                YounumSwitchRow(
-                  label: '每月提醒我整理账单',
-                  description: _enabled ? '到时会提醒你整理上一个月的账单。' : '关闭时不会有任何通知。',
-                  value: _enabled,
-                  onChanged: (value) => setState(() => _enabled = value),
-                ),
-                if (_enabled) ...<Widget>[
-                  const YounumFieldLabel('提醒日期'),
-                  YounumSelectField<int>(
-                    options: List<int>.generate(_days.length, (index) => index),
-                    labelBuilder: (index) => _days[index],
-                    selected: _day,
-                    semanticLabel: '提醒日期',
-                    onSelected: (value) => setState(() => _day = value),
-                  ),
-                  const SizedBox(height: YounumDimens.gap),
-                  const YounumFieldLabel('提醒时间'),
-                  YounumSelectField<int>(
-                    options: List<int>.generate(
-                      _hours.length,
-                      (index) => index,
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final settings = controller.settings;
+        final capability = controller.capability;
+        final enabled = settings.enabled;
+        final next = controller.nextRun;
+        final now = DateTime.now();
+
+        return YounumScreen(
+          title: '整理提醒',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Text('每月，留一点时间给自己', style: text.screenTitle),
+              const SizedBox(height: YounumDimens.gapSm),
+              YounumMutedText('整理不必每天发生，一月一次就很好。'),
+              const SizedBox(height: YounumDimens.gap),
+              YounumPanel(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    YounumSwitchRow(
+                      label: '每月提醒我整理账单',
+                      description: _switchDescription(controller),
+                      value: enabled,
+                      onChanged: controller.isSupported && !controller.isBusy
+                          ? controller.setEnabled
+                          : null,
                     ),
-                    labelBuilder: (index) => _hours[index],
-                    selected: _hour,
-                    semanticLabel: '提醒时间',
-                    onSelected: (value) => setState(() => _hour = value),
-                  ),
-                  const SizedBox(height: YounumDimens.gap),
-                  YounumMutedText(
-                    '下次提醒约在 ${next.year}年${next.month}月${next.day}日 '
-                    '${_hourValue.toString().padLeft(2, '0')}:00'
-                    '（还有 ${daysUntil(next)} 天）',
-                  ),
-                  YounumMutedText('按自然日历计算，不是固定 30 天；系统省电策略可能造成合理延迟。'),
-                ],
-              ],
-            ),
-          ),
-          if (_enabled && !_permissionGranted)
-            const YounumNotice(
-              '通知权限尚未开启。未授权时不会显示「已开启」——'
-              '需要在系统设置里允许通知，提醒才会真正发出。',
-            ),
-          PrimaryAction(
-            label: '保存提醒设置',
-            onPressed: () => showYounumToast(
-              context,
-              _enabled
-                  ? (_permissionGranted ? '提醒设置已保存' : '设置已保存，但通知权限未开启，暂时收不到提醒')
-                  : '已关闭提醒',
-            ),
-          ),
-          if (_enabled && !_permissionGranted)
-            PrimaryAction(
-              label: '开启通知权限',
-              style: YounumActionStyle.secondary,
-              onPressed: () => showYounumToast(
-                context,
-                'Android 13 及以上需要 POST_NOTIFICATIONS 运行时权限，阶段 6 接入',
+                    if (enabled && controller.isSupported) ...<Widget>[
+                      const SizedBox(height: YounumDimens.gap),
+                      const YounumFieldLabel('提醒日期'),
+                      YounumSelectField<int>(
+                        options: List<int>.generate(31, (index) => index + 1),
+                        labelBuilder: (day) => '每月 $day 日',
+                        selected: settings.day,
+                        semanticLabel: '提醒日期',
+                        onSelected: controller.setDay,
+                      ),
+                      const SizedBox(height: YounumDimens.gap),
+                      const YounumFieldLabel('提醒时间'),
+                      YounumSelectField<int>(
+                        options: hourOptions,
+                        labelBuilder: (hour) =>
+                            '${hour.toString().padLeft(2, '0')}:00',
+                        selected: settings.hour,
+                        semanticLabel: '提醒时间',
+                        onSelected: (hour) => controller.setTime(
+                          hour: hour,
+                          minute: settings.minute,
+                        ),
+                      ),
+                      const SizedBox(height: YounumDimens.gap),
+                      YounumMutedText(
+                        next == null
+                            ? '还没算好下次提醒时间。'
+                            : '下次提醒约在 ${ReminderRules.describe(next)}'
+                                  '（${ReminderRules.remainingLabel(next, now: now)}）',
+                      ),
+                      YounumMutedText(
+                        '按自然日历计算，不是固定 30 天；选 29 / 30 / 31 日时，'
+                        '短月顺延到当月最后一天。系统省电策略可能造成合理延迟，'
+                        '所以写的是「约」。',
+                      ),
+                    ],
+                  ],
+                ),
               ),
-            ),
-          const YounumDemoNote(
-            '设计走查：日期与时间会真实推算下次触发时间。'
-            'WorkManager 后台任务与权限申请在阶段 6 接入。',
+              if (!controller.isSupported)
+                const YounumNotice('这个平台上还不能发通知，所以提醒暂时用不了。')
+              else if (enabled && !capability.canDeliver)
+                YounumNotice(
+                  capability.permissionGranted
+                      ? '系统里没有允许「有数」发通知，提醒现在发不出去。'
+                            '到「设置 → 应用 → 有数 → 通知」里打开后，开关照旧生效。'
+                      : '通知权限还没给，提醒不会真的发出。',
+                ),
+              if (controller.lastFailure != null)
+                YounumNotice(controller.lastFailure!),
+              PrimaryAction(
+                label: '完成',
+                onPressed: () => Navigator.of(context).maybePop(),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
+  }
+
+  static String _switchDescription(ReminderController controller) {
+    if (!controller.isSupported) return '这个平台上还没有这个能力。';
+    if (!controller.settings.enabled) return '关闭时不会有任何通知。';
+    if (!controller.capability.permissionGranted) {
+      return '通知权限还没给，提醒发不出来。';
+    }
+    if (!controller.capability.notificationsEnabled) {
+      return '系统里把通知关掉了，提醒发不出来。';
+    }
+    return '到时会提醒你整理上一个月的账单（约在此时间，可能稍有延迟）。';
   }
 }
 
@@ -637,7 +661,10 @@ class _ReminderScreenState extends State<ReminderScreen> {
 ///
 /// 确认文案必须逐项说明清除范围与保留范围（指南 8.3）。
 class DeleteConfirmScreen extends StatefulWidget {
-  const DeleteConfirmScreen({super.key});
+  const DeleteConfirmScreen({super.key, required this.reminder});
+
+  /// 清除本地数据要连带取消提醒（指南 8.3）。
+  final ReminderController reminder;
 
   @override
   State<DeleteConfirmScreen> createState() => _DeleteConfirmScreenState();
@@ -672,6 +699,9 @@ class _DeleteConfirmScreenState extends State<DeleteConfirmScreen> {
       if (!mounted) return;
       // 真实清空本地数据库，然后把会话状态跟着归零。
       await ReviewSessionScope.read(context).clearAllData();
+      if (!mounted) return;
+      // 提醒也要取消：账都清了，就不该再收到「该整理上个月的账单」。
+      await widget.reminder.cancelReminder();
       if (!mounted) return;
       showYounumToast(context, '本地数据已清除');
     }

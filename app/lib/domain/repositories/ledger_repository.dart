@@ -233,6 +233,10 @@ final class LedgerRepository {
   /// 保留主题偏好与引导状态（指南 8.3）。
   Future<void> clearAllData() async {
     await _store.clearAll();
+    // 分类图片是**文件**，不在数据库里：只清表会留下孤儿文件，
+    // 而「清除本地数据」的承诺是把它们一起清掉（指南 8.3）。
+    // 文件都放在应用私有目录下的 category_icons，清空即可，不需要逐个删。
+    await _iconFiles.clearAll();
   }
 
   /// 月度报告：概况 + 洞察 + 趋势 + 有记录的月份 + 完整数据集。

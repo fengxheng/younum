@@ -365,7 +365,7 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
 
 | 项目 | 命令 | 结果 |
 | --- | --- | --- |
-| 单元测试（包含界面测试） | `flutter test` | **479 passed** |
+| 单元测试（包含界面测试） | `flutter test` | **513 passed** |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **40 passed** |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed** |
 | 真机启动冲烟 | `adb install -r` + 冷启动 + logcat | 无 Dart 异常，进程存活 |
@@ -478,9 +478,10 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   （`test/bank_statement_test.dart` 的「微信账单不会误用银行适配器」）。
 * 导入失败与 `COMMITTING` 中途崩溃：`ImportStage.isInFlight` 已经能识别出
   「上次写到一半」的批次，但还没有启动时扫描并恢复的逻辑。
-* 导入异常明细的导出（依赖阶段 5 的导出能力，所以暂时没有这个按钮 ——
+* 导入异常明细的导出：导出能力已经就绪（阶段 5 完成），但这个按钮还没做 ——
+  与其放一个只弹「暂不可用」的按钮，不如先不做。
   不做一个只弹「暂不可用」的按钮）。
-* Photo Picker、WorkManager、通知权限未接入。
+* Photo Picker（选图片走的是系统文档选择器）；提醒的真实送达需要等一天或手改系统时间才能验。
 
 真机上的 v1 → v2 用例是这样做的：先手工造一个只建 v1 结构、版本号写着 1、
 并且**已经存有账单数据**（账本、分类、交易、分配、整理会话、月范围确认）的库，
@@ -499,7 +500,6 @@ debug 与 profile 包**都没有产生掉帧日志**，只有 2–3 条亚毫秒
   （解析与提交已验，界面要靠人手点）。
 * 「在系统选择器里真的选一份微信 / 支付宝账单」、选各种异常文件、
   连续快速点两次选择文件 —— 都需要人手，见清单第一节。
-* Photo Picker、WorkManager、通知权限未接入。
   Storage Access Framework 已接入（见 DECISIONS 第 34 节），**没有全盘文件权限**。
 * **旋转、大字号、TalkBack 未回归**。阶段 2 改了首页与整理页的布局，
   阶段 3 又新增了六个导入页面，都没在真机上逐一走查。

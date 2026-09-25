@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app/app.dart';
 import 'core/preferences/app_state_store.dart';
+import 'core/preferences/reminder_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
 import 'data/db/sqflite_ledger_store.dart';
@@ -13,12 +14,14 @@ import 'data/files/system_document_saver.dart';
 import 'data/files/system_file_source.dart';
 import 'data/files/system_image_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
+import 'data/platform/system_reminder_scheduler.dart';
 import 'domain/repositories/icon_asset_ports.dart';
 import 'domain/repositories/document_saver.dart';
 import 'domain/repositories/image_file_source.dart';
 import 'domain/repositories/ledger_file_source.dart';
 import 'domain/repositories/ledger_repository.dart';
 import 'domain/repositories/ledger_store.dart';
+import 'domain/repositories/reminder_scheduler.dart';
 
 /// 应用入口。
 ///
@@ -35,6 +38,7 @@ Future<void> main() async {
 
   ThemeStore themeStore;
   AppStateStore appStateStore;
+  ReminderStore reminderStore;
   LedgerStore ledgerStore = SqfliteLedgerStore();
   // 分类图片的文件柜。目录从平台通道拿（`filesDir`），这里不猜。
   final IconAssetStore iconFiles = FileIconAssetStore(
@@ -43,9 +47,11 @@ Future<void> main() async {
   try {
     themeStore = await SharedPreferencesThemeStore.open();
     appStateStore = await SharedPreferencesAppStateStore.open();
+    reminderStore = await SharedPreferencesReminderStore.open();
   } catch (_) {
     themeStore = InMemoryThemeStore();
     appStateStore = InMemoryAppStateStore();
+    reminderStore = InMemoryReminderStore();
     ledgerStore = InMemoryLedgerStore();
   }
 
@@ -92,6 +98,10 @@ Future<void> main() async {
   const posterMaker = SharePosterRenderer();
   final DocumentSaver documentSaver = SystemDocumentSaver();
 
+  // 每月整理提醒。调度在原生侧走 WorkManager + 通知渠道，
+  // Dart 只负责「什么时候该有提醒」与如实上报状态（指南 8.2）。
+  final ReminderScheduler reminderScheduler = SystemReminderScheduler();
+
   runApp(
     YounumApp(
       themeController: themeController,
@@ -101,6 +111,8 @@ Future<void> main() async {
       imageFileSource: imageSource,
       posterMaker: posterMaker,
       documentSaver: documentSaver,
+      reminderStore: reminderStore,
+      reminderScheduler: reminderScheduler,
     ),
   );
 }
