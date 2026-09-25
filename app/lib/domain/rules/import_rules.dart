@@ -29,6 +29,17 @@ enum ImportField {
   /// 交易对方 / 商户（必填）。
   merchant,
 
+  /// 付款方（钱从谁那儿来）。
+  ///
+  /// 和 [payee] 一起是给银行账单准备的：银行卡明细里「付款方姓名 / 收款方姓名」
+  /// **两列同时在**，只结合方向才知道哪一列才是真正的交易对方
+  /// （见 [ImportRules.parseRow]）。微信、支付宝没有这两列，
+  /// 直接看 [merchant] 就行。
+  payer,
+
+  /// 收款方（钱到谁那儿去）。
+  payee,
+
   /// 收 / 支方向。
   direction,
 
@@ -55,6 +66,8 @@ enum ImportField {
     occurredAt => '交易时间',
     amount => '金额',
     merchant => '交易对方',
+    payer => '付款方',
+    payee => '收款方',
     direction => '收 / 支',
     status => '交易状态',
     orderId => '交易单号',
@@ -129,6 +142,74 @@ const Map<ImportField, List<String>> importFieldAliases =
       ],
       ImportField.note: <String>['备注', '商品说明', '说明', 'note', 'memo'],
     };
+
+/// 平台专用适配器。
+///
+/// 为什么不能往 [importFieldAliases] 里塞平台自己的列名 —— 拿银行卡账单举例：
+/// 它的方向列叫「交易类型」（值是转出 / 转入）。可微信账单里**也有一列**叫
+/// 「交易类型」（值是「商户消费」这种），而且排在「收 / 支」前面：
+/// 一旦把它加进公共别名表，微信账单的方向列就会被它抢走，整份账单方向全错。
+///
+/// 所以平台自己的列名只能挂在平台名下：只有当**整套表头**对得上号
+/// （[signature] 命中 [signatureHits] 个）时才启用它那套列名。
+/// 宁可漏认（退化成人工映射，用户能自己指列），不可错认。
+final class ImportPlatformProfile {
+  const ImportPlatformProfile({
+    required this.name,
+    required this.signature,
+    required this.signatureHits,
+    required this.columns,
+  });
+
+  /// 展示用的平台名。
+  final String name;
+
+  /// 这个平台表头里必定会出现的列名。
+  ///
+  /// 比较前会归一化（去空白、全角括号转半角、转小写），和公共别名表一致。
+  final List<String> signature;
+
+  /// 至少命中几个 [signature] 才算这个平台。
+  ///
+  /// 不用「全部命中」是因为银行导出的列会变（多一列「交易地点」之类），
+  /// 但也不会只要命中一个就算 —— 那就不叫识别整套表头了。
+  final int signatureHits;
+
+  /// 这个平台下「字段 → 列名」。
+  final Map<ImportField, String> columns;
+}
+
+/// 银行卡交易明细。
+///
+/// 真实样例（内容是造过的）：
+///
+/// ```
+/// 账号：6230****7275  开始日期：…  币种：RMB
+/// 交易时间,付款方姓名,付款方账号,收款方姓名,收款方账号,交易类型,交易金额,账户余额,摘要,备注,交易流水号
+/// 2026-09-25 11:09:10,刘旭龙,6230****7275,支付宝（中国）网络技术有限公司,215500690,转出,50.00,…
+/// ```
+///
+/// ⚠️ 交易对方固定指到「收款方姓名」只是 [ImportField.merchant] 的默认值
+/// （必填项得有个着落），真正取哪一列由 [ImportRules.parseRow] 结合方向决定。
+const ImportPlatformProfile bankStatementProfile = ImportPlatformProfile(
+  name: '银行账单',
+  signature: <String>['付款方姓名', '收款方姓名', '交易流水号', '账户余额'],
+  signatureHits: 3,
+  columns: <ImportField, String>{
+    ImportField.occurredAt: '交易时间',
+    ImportField.amount: '交易金额',
+    ImportField.direction: '交易类型',
+    ImportField.orderId: '交易流水号',
+    ImportField.note: '备注',
+    ImportField.merchant: '收款方姓名',
+    ImportField.payee: '收款方姓名',
+    ImportField.payer: '付款方姓名',
+  },
+);
+
+/// 所有平台专用适配器。
+const List<ImportPlatformProfile> importPlatformProfiles =
+    <ImportPlatformProfile>[bankStatementProfile];
 
 /// 表头识别结果。
 final class HeaderGuess {
@@ -314,7 +395,7 @@ abstract final class ImportRules {
       headerRowIndex: bestIndex,
       headers: headers,
       columns: bestColumns,
-      platformName: _platformOf(headers, table),
+      platformName: _platformOf(headers, table, bestIndex),
     );
   }
 
@@ -331,7 +412,39 @@ abstract final class ImportRules {
         }
       }
     }
+
+    // 公共别名表认不出的列，再看是不是某个平台自己的列名。
+    // 只有整套表头对得上号的平台才轮到这一手。
+    final profile = _profileOf(row);
+    if (profile != null) {
+      for (final entry in profile.columns.entries) {
+        if (columns.containsKey(entry.key)) continue;
+        final index = _columnOf(row, entry.value);
+        if (index != null) columns[entry.key] = index;
+      }
+    }
     return columns;
+  }
+
+  /// 这一行是哪个平台自己的表头？只用于**列匹配**，不用于展示。
+  static ImportPlatformProfile? _profileOf(List<String> row) {
+    for (final profile in importPlatformProfiles) {
+      var hits = 0;
+      for (final name in profile.signature) {
+        if (_columnOf(row, name) != null) hits++;
+      }
+      if (hits >= profile.signatureHits) return profile;
+    }
+    return null;
+  }
+
+  /// 按列名找列下标（比较前先归一化）。找不到返回 null。
+  static int? _columnOf(List<String> row, String header) {
+    final target = _normalizeHeader(header);
+    for (var index = 0; index < row.length; index++) {
+      if (_normalizeHeader(row[index]) == target) return index;
+    }
+    return null;
   }
 
   /// 去掉空白、全角括号等差异后再比较，避免因为一个空格就认不出表头。
@@ -344,13 +457,27 @@ abstract final class ImportRules {
       .toLowerCase();
 
   /// 猜平台名。只用于展示，不影响解析。
-  static String? _platformOf(List<String> headers, CsvTable table) {
+  ///
+  /// ⚠️ 说明行只在**表头之前**那几行里找。早些时候这里是从文件开头抓 6 行拼起来
+  /// 找关键词，结果把**数据行**也扫了进去：银行卡账单里的收款方写的是
+  /// 「支付宝（中国）网络技术有限公司」，于是这份银行账单被认成了「支付宝」。
+  static String? _platformOf(
+    List<String> headers,
+    CsvTable table,
+    int headerRowIndex,
+  ) {
+    final profile = _profileOf(headers);
+    if (profile != null) return profile.name;
+
     final joined = headers.join('|');
     if (joined.contains('微信')) return '微信支付';
     if (joined.contains('支付宝')) return '支付宝';
 
     // 表头本身看不出平台时，看看表头之前那些说明行。
-    final before = table.rows.take(6).expand((row) => row).join('|');
+    final before = table.rows
+        .take(headerRowIndex < 0 ? 0 : headerRowIndex)
+        .expand((row) => row)
+        .join('|');
     if (before.contains('微信')) return '微信支付';
     if (before.contains('支付宝')) return '支付宝';
     return null;
@@ -391,7 +518,6 @@ abstract final class ImportRules {
 
     final amountText = _cell(row, header.columns[ImportField.amount]);
     final timeText = _cell(row, header.columns[ImportField.occurredAt]);
-    final merchantText = _cell(row, header.columns[ImportField.merchant]);
 
     if (amountText.isEmpty) {
       return RowInvalid(rowNumber: rowNumber, issue: '缺少金额', rawText: rawText);
@@ -400,13 +526,6 @@ abstract final class ImportRules {
       return RowInvalid(
         rowNumber: rowNumber,
         issue: '缺少交易时间',
-        rawText: rawText,
-      );
-    }
-    if (merchantText.isEmpty) {
-      return RowInvalid(
-        rowNumber: rowNumber,
-        issue: '缺少交易对方',
         rawText: rawText,
       );
     }
@@ -450,6 +569,15 @@ abstract final class ImportRules {
       );
     }
 
+    final merchantText = _counterpartyOf(row, header, direction);
+    if (merchantText.isEmpty) {
+      return RowInvalid(
+        rowNumber: rowNumber,
+        issue: '缺少交易对方',
+        rawText: rawText,
+      );
+    }
+
     return RowParsed(
       rowNumber: rowNumber,
       occurredAtMs: occurredAt,
@@ -466,6 +594,27 @@ abstract final class ImportRules {
   static String _cell(List<String> row, int? index) {
     if (index == null || index < 0 || index >= row.length) return '';
     return row[index].trim();
+  }
+
+  /// 结合方向取出「交易对方」。
+  ///
+  /// 银行卡明细里「付款方姓名 / 收款方姓名」两列同时在，而**交易对方只有一侧**：
+  /// 转出（花钱）时对方是收款方，转入（进钱）时对方才是付款方。
+  /// 不结合方向的话，转入那几行的交易对方会变成用户自己的名字。
+  ///
+  /// 没有这两列的账单（微信、支付宝）直接用 [ImportField.merchant] 那一列。
+  static String _counterpartyOf(
+    List<String> row,
+    HeaderGuess header,
+    ImportDirection direction,
+  ) {
+    final merchant = _cell(row, header.columns[ImportField.merchant]);
+    final payer = _cell(row, header.columns[ImportField.payer]);
+    final payee = _cell(row, header.columns[ImportField.payee]);
+    if (direction == ImportDirection.income) {
+      return payer.isNotEmpty ? payer : merchant;
+    }
+    return payee.isNotEmpty ? payee : merchant;
   }
 
   /// 是否是合计行 / 统计行。
