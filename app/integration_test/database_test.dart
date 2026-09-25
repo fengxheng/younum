@@ -1,12 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:younum/core/time/statistics_time.dart';
 import 'package:younum/data/db/sqflite_ledger_store.dart';
+import 'package:younum/data/files/icon_asset_store.dart';
+import 'package:younum/data/files/icon_image_processor.dart';
 import 'package:younum/data/db/younum_schema.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
 import 'package:younum/domain/models/allocation.dart';
@@ -252,6 +257,83 @@ void main() {
 
       expect(result, isA<CategoryRejected>());
       expect(await countOf(await openRaw(), 'category'), before);
+    });
+
+    test('图片图标：处理成缩略图、落进私有目录、分类指过去，恢复默认会清理', () async {
+      // 目录用测试自己的临时目录：不动应用真正的私有目录。
+      final directory = await Directory.systemTemp.createTemp('younum_icon_dev_');
+      addTearDown(() async {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
+      final files = FileIconAssetStore(directoryOf: () async => directory.path);
+
+      // 现场生成一张横图，走完整条链路（解码 → 居中裁方 → 256×256 → PNG）。
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      canvas.drawRect(
+        const Rect.fromLTWH(0, 0, 400, 120),
+        Paint()..color = const Color(0xFF3366CC),
+      );
+      final source = await recorder.endRecording().toImage(400, 120);
+      final png = (await source.toByteData(format: ui.ImageByteFormat.png))!
+          .buffer
+          .asUint8List();
+      source.dispose();
+
+      final repository = LedgerRepository(
+        store,
+        thumbnails: const IconImageProcessor(),
+        iconFiles: files,
+      );
+      final target = (await repository.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      )).firstWhere((category) => category.name == '餐饮');
+
+      final saved = await repository.setCategoryImage(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        categoryId: target.id,
+        bytes: png,
+      );
+      expect(saved, isA<CategorySaved>(), reason: '$saved');
+      expect((saved as CategorySaved).category.iconType, CategoryIconType.image);
+
+      final assets = await store.iconAssets();
+      expect(assets, hasLength(1));
+      final asset = assets.single;
+      expect(asset.width, 256);
+      expect(asset.height, 256);
+      expect(
+        await files.exists(asset.relativePath),
+        isTrue,
+        reason: '缩略图必须真的落在私有目录里',
+      );
+
+      // 重开数据库：分类仍然指着这条资源（重启后图标还在）。
+      await store.close();
+      store = SqfliteLedgerStore(databasePath: databasePath);
+      final reloaded = (await store.categories(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+      )).firstWhere((category) => category.id == target.id);
+      expect(reloaded.iconType, CategoryIconType.image);
+      expect(reloaded.iconKey, '${asset.id}');
+
+      // 恢复默认图标：资源与文件都要清掉（已经没人引用它了）。
+      final restored = await LedgerRepository(
+        store,
+        iconFiles: files,
+      ).clearCategoryImage(
+        ledgerId: DemoLedgerSeed.demoLedgerId,
+        categoryId: target.id,
+        iconKey: 'food',
+      );
+      expect(restored, isA<CategorySaved>(), reason: '$restored');
+      expect((restored as CategorySaved).category.iconType, CategoryIconType.builtin);
+      expect(await store.iconAssets(), isEmpty);
+      expect(
+        await files.exists(asset.relativePath),
+        isFalse,
+        reason: '没人引用的旧资源才删 —— 这里确实没人了',
+      );
     });
   });
 
@@ -1641,5 +1723,6 @@ void main() {
 /// 这里刻意不导入界面层：数据库测试验证的是仓库 + SQL，不含 UI。
 LedgerRepository _repositoryFor(SqfliteLedgerStore store) =>
     LedgerRepository(store);
+
 
 

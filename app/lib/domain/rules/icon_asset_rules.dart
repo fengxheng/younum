@@ -117,4 +117,18 @@ abstract final class IconAssetRules {
     final side = width < height ? width : height;
     return ((width - side) ~/ 2, (height - side) ~/ 2, side);
   }
+
+  /// 内容哈希：FNV-1a 64 位。
+  ///
+  /// 只用来给文件起名与判重，不做安全用途。与导入那边的文件哈希是同一套
+  /// 算法，但解决的不是一件事：那边比的是「同一份账单文件」，
+  /// 这边比的是「同一张图」。
+  static String contentHash(Uint8List bytes) {
+    var hash = 0xcbf29ce484222325;
+    for (final byte in bytes) {
+      hash ^= byte;
+      hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
+    }
+    return hash.toRadixString(16).padLeft(16, '0');
+  }
 }

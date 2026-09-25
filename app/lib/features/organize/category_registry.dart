@@ -1,8 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/widgets.dart';
 
 import '../../core/designsystem/younum_icons.dart';
 import '../../data/seed/demo_ledger_seed.dart';
 import '../../domain/models/category.dart';
+import '../../domain/models/category_icon_asset.dart';
+import '../../domain/repositories/icon_asset_ports.dart';
+import '../../domain/repositories/image_file_source.dart';
 import '../../domain/repositories/ledger_repository.dart';
 
 /// 分类与图标的**唯一**来源。
@@ -21,9 +26,13 @@ import '../../domain/repositories/ledger_repository.dart';
 /// 图标只按分类 ID 存（`category.icon_key`），图片资源（`CategoryIconAsset`
 /// 与私有文件生命周期）还没做，界面上如实说明。
 class CategoryRegistry extends ChangeNotifier {
-  CategoryRegistry({required this.repository});
+  CategoryRegistry({required this.repository, ImageFileSource? imageSource})
+      : imageSource = imageSource ?? const UnsupportedImageSource();
 
   final LedgerRepository repository;
+
+  /// 选图片的能力。桌面与测试环境是不支持实现，界面据此把入口显灰。
+  final ImageFileSource imageSource;
 
   /// 出厂图标：内置分类在种子里定义的那一个。
   ///
@@ -40,6 +49,7 @@ class CategoryRegistry extends ChangeNotifier {
   }
 
   List<Category> _categories = const <Category>[];
+  List<CategoryIconAsset> _assets = const <CategoryIconAsset>[];
   String? _lastFailure;
   bool _loaded = false;
 
@@ -88,7 +98,77 @@ class CategoryRegistry extends ChangeNotifier {
   Future<void> load({required int ledgerId}) async {
     _ledgerId = ledgerId;
     _categories = await repository.categories(ledgerId: ledgerId);
+    _assets = await repository.iconAssets();
     _loaded = true;
+    notifyListeners();
+  }
+
+  /// 分类当前用的图片资源（内置图标时是 null）。
+  CategoryIconAsset? assetOf(Category category) {
+    if (category.iconType != CategoryIconType.image) return null;
+    final id = int.tryParse(category.iconKey ?? '');
+    if (id == null) return null;
+    for (final asset in _assets) {
+      if (asset.id == id) return asset;
+    }
+    return null;
+  }
+
+  /// 渲染用的**绝对**路径。
+  ///
+  /// 内置图标、或者资源记录已经不在了（图片被删、清过数据）时返回 null，
+  /// 调用方回退到矢量图标 —— 指南 14.4.8：图片缺失不能影响分类与账目。
+  String? imagePathOf(Category category) {
+    final asset = assetOf(category);
+    if (asset == null) return null;
+    return repository.iconFiles.absolutePath(asset.relativePath);
+  }
+
+  /// 按分类名取渲染路径（明细、月报手上只有名字）。
+  String? imagePathOfName(String name) {
+    final category = byName(name);
+    return category == null ? null : imagePathOf(category);
+  }
+
+  /// 把选中的图片做成缩略图（草稿用；此时还不落盘）。
+  Future<IconThumbnailResult> prepareImage(Uint8List bytes) =>
+      repository.prepareImage(bytes);
+
+  /// 换成一个图片图标。返回 false 时 [lastFailure] 是可展示的原因。
+  Future<bool> setImage({
+    required int categoryId,
+    required Uint8List bytes,
+  }) async {
+    final ok = _apply(
+      await repository.setCategoryImage(
+        ledgerId: _ledgerId,
+        categoryId: categoryId,
+        bytes: bytes,
+      ),
+    );
+    if (ok) await _refreshAssets();
+    return ok;
+  }
+
+  /// 恢复成内置图标（设计稿的「恢复默认图标」）。
+  Future<bool> restoreBuiltinIcon({
+    required int categoryId,
+    required String name,
+    required String iconKey,
+  }) async {
+    final ok = _apply(
+      await repository.clearCategoryImage(
+        ledgerId: _ledgerId,
+        categoryId: categoryId,
+        iconKey: iconKey,
+      ),
+    );
+    if (ok) await _refreshAssets();
+    return ok;
+  }
+
+  Future<void> _refreshAssets() async {
+    _assets = await repository.iconAssets();
     notifyListeners();
   }
 
@@ -162,4 +242,6 @@ class CategoryRegistryScope extends InheritedNotifier<CategoryRegistry> {
     return scope!.notifier!;
   }
 }
+
+
 

@@ -5,8 +5,14 @@ import 'core/preferences/app_state_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
 import 'data/db/sqflite_ledger_store.dart';
+import 'data/files/app_files_directory.dart';
+import 'data/files/icon_asset_store.dart';
+import 'data/files/icon_image_processor.dart';
 import 'data/files/system_file_source.dart';
+import 'data/files/system_image_source.dart';
 import 'data/memory/in_memory_ledger_store.dart';
+import 'domain/repositories/icon_asset_ports.dart';
+import 'domain/repositories/image_file_source.dart';
 import 'domain/repositories/ledger_file_source.dart';
 import 'domain/repositories/ledger_repository.dart';
 import 'domain/repositories/ledger_store.dart';
@@ -27,6 +33,10 @@ Future<void> main() async {
   ThemeStore themeStore;
   AppStateStore appStateStore;
   LedgerStore ledgerStore = SqfliteLedgerStore();
+  // 分类图片的文件柜。目录从平台通道拿（`filesDir`），这里不猜。
+  final IconAssetStore iconFiles = FileIconAssetStore(
+    directoryOf: systemFilesDirectory,
+  );
   try {
     themeStore = await SharedPreferencesThemeStore.open();
     appStateStore = await SharedPreferencesAppStateStore.open();
@@ -36,7 +46,11 @@ Future<void> main() async {
     ledgerStore = InMemoryLedgerStore();
   }
 
-  var repository = LedgerRepository(ledgerStore);
+  var repository = LedgerRepository(
+    ledgerStore,
+    thumbnails: const IconImageProcessor(),
+    iconFiles: iconFiles,
+  );
   try {
     await repository.initialize();
   } catch (error, stack) {
@@ -44,7 +58,11 @@ Future<void> main() async {
     // 并把原因打出来，而不是白屏。
     debugPrint('本地数据库初始化失败，本次会话不落盘：$error\n$stack');
     ledgerStore = InMemoryLedgerStore();
-    repository = LedgerRepository(ledgerStore);
+    repository = LedgerRepository(
+      ledgerStore,
+      thumbnails: const IconImageProcessor(),
+      iconFiles: iconFiles,
+    );
     await repository.initialize();
   }
 
@@ -58,12 +76,21 @@ Future<void> main() async {
   // 这里不预判平台：判断留在实现里，注入点保持一个。
   final LedgerFileSource fileSource = SystemFileSource();
 
+  // 分类图片图标的能力。
+  //
+  // 图片落在应用私有目录（指南 14.4.2）；三个注入点分开给，
+  // 测试里换成假实现就能跑完整的「选图 → 裁切 → 落盘」路径。
+  final ImageFileSource imageSource = SystemImageSource();
+
   runApp(
     YounumApp(
       themeController: themeController,
       appStateController: appStateController,
       ledgerRepository: repository,
       ledgerFileSource: fileSource,
+      imageFileSource: imageSource,
     ),
   );
 }
+
+

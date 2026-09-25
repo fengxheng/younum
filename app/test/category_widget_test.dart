@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
@@ -5,9 +7,13 @@ import 'package:younum/core/components/screen_scaffold.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
+import 'package:younum/data/files/icon_asset_store.dart';
+import 'package:younum/data/files/icon_image_processor.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
 import 'package:younum/data/seed/demo_ledger_seed.dart';
 import 'package:younum/domain/models/category.dart';
+import 'package:younum/domain/repositories/icon_asset_ports.dart';
+import 'package:younum/domain/repositories/image_file_source.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
 import 'package:younum/features/organize/category_screens.dart';
@@ -22,6 +28,11 @@ void main() {
   late LedgerRepository repository;
   late ThemeController themeController;
   late AppStateController appStateController;
+  late Directory iconDirectory;
+  late FileIconAssetStore iconFiles;
+
+  /// 测试可以换成假实现，避免在 widget 测试里真的跑引擎解码。
+  IconThumbnailMaker? fakeThumbnails;
 
   const int ledgerId = DemoLedgerSeed.demoLedgerId;
 
@@ -33,8 +44,14 @@ void main() {
     view.physicalSize = const Size(1080, 2400);
     view.devicePixelRatio = 2.75;
 
+    iconDirectory = await Directory.systemTemp.createTemp('younum_icons_ui_');
+    iconFiles = FileIconAssetStore(directoryOf: () async => iconDirectory.path);
     store = InMemoryLedgerStore();
-    repository = LedgerRepository(store);
+    repository = LedgerRepository(
+      store,
+      thumbnails: fakeThumbnails ?? const IconImageProcessor(),
+      iconFiles: iconFiles,
+    );
     await repository.initialize();
     themeController = await ThemeController.restore(InMemoryThemeStore());
     appStateController = await AppStateController.restore(
@@ -44,8 +61,11 @@ void main() {
     await appStateController.enterDemoLedger();
   });
 
-  tearDown(() {
+  tearDown(() async {
     themeController.dispose();
+    if (await iconDirectory.exists()) {
+      await iconDirectory.delete(recursive: true);
+    }
   });
 
   Future<Category?> categoryNamed(String name) async {
@@ -57,13 +77,14 @@ void main() {
   }
 
   /// 我的 → 分类管理。
-  Future<void> openManage(WidgetTester tester) async {
+  Future<void> openManage(WidgetTester tester, {ImageFileSource? imageSource}) async {
     await tester.pumpWidget(
       YounumApp(
         themeController: themeController,
         appStateController: appStateController,
         ledgerRepository: repository,
         ledgerFileSource: const UnsupportedFileSource(),
+        imageFileSource: imageSource ?? const UnsupportedImageSource(),
       ),
     );
     await tester.pumpAndSettle();
@@ -155,4 +176,5 @@ void main() {
     expect(after.name, before.name);
     expect(after.iconKey, 'coffee');
   });
+
 }

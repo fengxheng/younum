@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../core/preferences/app_state_store.dart';
 import '../core/preferences/theme_controller.dart';
+import '../domain/repositories/image_file_source.dart';
 import '../domain/repositories/ledger_file_source.dart';
 import '../domain/repositories/ledger_repository.dart';
 import '../features/import_flow/import_screens.dart';
@@ -37,6 +38,7 @@ class YounumApp extends StatefulWidget {
     required this.appStateController,
     required this.ledgerRepository,
     required this.ledgerFileSource,
+    this.imageFileSource = const UnsupportedImageSource(),
   });
 
   final ThemeController themeController;
@@ -50,6 +52,9 @@ class YounumApp extends StatefulWidget {
   /// 桌面与测试环境传 [UnsupportedFileSource]：界面据此把入口显灰，
   /// 而不是留一个点了没反应的按钮。
   final LedgerFileSource ledgerFileSource;
+
+  /// 选分类图片的能力。桌面与测试环境是不支持实现，入口会显灰。
+  final ImageFileSource imageFileSource;
 
   @override
   State<YounumApp> createState() => _YounumAppState();
@@ -67,6 +72,7 @@ class _YounumAppState extends State<YounumApp> {
   );
   late final CategoryRegistry _registry = CategoryRegistry(
     repository: widget.ledgerRepository,
+    imageSource: widget.imageFileSource,
   );
 
   @override

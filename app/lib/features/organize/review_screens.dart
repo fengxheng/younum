@@ -169,6 +169,7 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
                 YounumTileIcon(
                   iconKey: registry.iconKeyOf(displayCategory) ??
                       YounumIcons.defaultCategoryIconKey,
+                  imagePath: registry.imagePathOfName(displayCategory),
                   size: 46,
                 ),
                 const SizedBox(height: YounumDimens.gap),

@@ -6,8 +6,11 @@
 /// 「单元测试里验证的公式」和「界面上跑出来的数字」不会分叉。
 library;
 
+import 'dart:typed_data';
+
 import '../models/allocation.dart';
 import '../models/category.dart';
+import '../models/category_icon_asset.dart';
 import '../models/ledger.dart';
 import '../models/ledger_dataset.dart';
 import '../models/ledger_transaction.dart';
@@ -15,9 +18,11 @@ import '../models/review_session_record.dart';
 import '../models/year_month.dart';
 import '../rules/allocation_rules.dart';
 import '../rules/category_rules.dart';
+import '../rules/icon_asset_rules.dart';
 import '../rules/month_insights.dart';
 import '../rules/month_overview.dart';
 import '../rules/refund_rules.dart';
+import 'icon_asset_ports.dart';
 import 'ledger_store.dart';
 
 /// 一次整理会话的完整快照：队列 + 本月概况。
@@ -147,11 +152,35 @@ final class CategoryRejected extends CategoryWriteResult {
 
 /// 账本仓库。
 final class LedgerRepository {
-  LedgerRepository(this._store, {DateTime Function()? clock})
-    : _clock = clock ?? DateTime.now;
+  LedgerRepository(
+    this._store, {
+    DateTime Function()? clock,
+    IconThumbnailMaker? thumbnails,
+    IconAssetStore? iconFiles,
+  }) : _clock = clock ?? DateTime.now,
+       _thumbnails = thumbnails ?? const UnsupportedThumbnailMaker(),
+       _iconFiles = iconFiles ?? const UnsupportedIconAssetStore();
 
   final LedgerStore _store;
   final DateTime Function() _clock;
+
+  /// 图片处理与文件夹。桌面/单测环境给的是「不支持」的实现，
+  /// 仓库层会先问能不能用，再决定要不要接这个能力。
+  final IconThumbnailMaker _thumbnails;
+  final IconAssetStore _iconFiles;
+
+  /// 图片文件夹（界面渲染需要把相对路径换成绝对路径）。
+  IconAssetStore get iconFiles => _iconFiles;
+
+  /// 全部图片资源。
+  Future<List<CategoryIconAsset>> iconAssets() => _store.iconAssets();
+
+  /// 把一张图做成缩略图，**不落盘**。
+  ///
+  /// 给编辑器的草稿预览用（指南 14.3：选中图片只改草稿，按保存才提交）：
+  /// 失败时什么都不改，用户手上的旧草稿也不受影响。
+  Future<IconThumbnailResult> prepareImage(Uint8List bytes) =>
+      _thumbnails.thumbnail(bytes);
 
   LedgerStore get store => _store;
 
@@ -968,12 +997,126 @@ final class LedgerRepository {
             iconKey: iconKey,
           ),
         );
+        // 从图片换回内置图标：旧图片资源如果已经没人引用，顺手清掉。
+        await _clearUnreferencedIcon(
+          category.iconKey,
+          ledgerId: ledgerId,
+          keepAssetId: null,
+        );
         return CategorySaved(saved);
       }
       return const CategoryRejected('找不到这个分类，可能已经被删掉了');
     } catch (error) {
       return CategoryRejected('图标没有保存成功：$error');
     }
+  }
+
+  /// 把分类图标换成一张图片（指南 14.3 / 14.4）。
+  ///
+  /// 顺序是「处理 → 写文件 → 提交数据库引用」：文件与数据库不可能共处一个
+  /// 事务（14.4.3），所以任何一步失败都保持**旧图标不动**，
+  /// 而且处理期间不删旧文件。只有替换成功之后，才去看旧资源还有没有人引用。
+  Future<CategoryWriteResult> setCategoryImage({
+    required int ledgerId,
+    required int categoryId,
+    required Uint8List bytes,
+  }) async {
+    if (!await _iconFiles.isAvailable()) {
+      return const CategoryRejected('这个平台上还不能保存图片图标');
+    }
+
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      Category? target;
+      for (final category in all) {
+        if (category.id == categoryId) target = category;
+      }
+      if (target == null) {
+        return const CategoryRejected('找不到这个分类，可能已经被删掉了');
+      }
+
+      final processed = await _thumbnails.thumbnail(bytes);
+      switch (processed) {
+        case IconThumbnailFailed(:final error):
+          return CategoryRejected(error.message);
+        case IconThumbnailReady(
+          :final bytes,
+          :final width,
+          :final height,
+        ):
+          final hash = IconAssetRules.contentHash(bytes);
+          final relativePath = await _iconFiles.write(
+            contentHash: hash,
+            bytes: bytes,
+          );
+          final saved = await _store.saveCategoryWithIconAsset(
+            category: target,
+            asset: CategoryIconAsset(
+              id: CategoryIconAsset.idUnassigned,
+              relativePath: relativePath,
+              contentHash: hash,
+              width: width,
+              height: height,
+              byteSize: bytes.length,
+              createdAtMs: _nowMs(),
+            ),
+          );
+          await _clearUnreferencedIcon(
+            target.iconKey,
+            ledgerId: ledgerId,
+            keepAssetId: int.tryParse(saved.iconKey ?? ''),
+          );
+          return CategorySaved(saved);
+      }
+    } catch (error) {
+      return CategoryRejected('这张图没有保存成功：$error');
+    }
+  }
+
+  /// 把分类图标恢复成内置图标（设计稿的「恢复默认图标」）。
+  ///
+  /// [iconKey] 由调用方给出出厂图标键 —— 「默认」是种子数据里的定义，
+  /// 而不是库里当前的值（那个值已经被用户改过了）。
+  Future<CategoryWriteResult> clearCategoryImage({
+    required int ledgerId,
+    required int categoryId,
+    required String iconKey,
+  }) async {
+    final result = await setCategoryIcon(
+      ledgerId: ledgerId,
+      categoryId: categoryId,
+      iconKey: iconKey,
+    );
+    return result;
+  }
+
+  /// 清理一个不再被引用的图片资源（指南 14.4.4）。
+  ///
+  /// [keepAssetId] 是刚刚写进去、**肯定还在用**的那个资源：
+  /// 保存同一个分类时，旧资源与新资源可能是同一条（同一张图），
+  /// 那种情况下不能把它删掉。
+  Future<void> _clearUnreferencedIcon(
+    String? oldIconKey, {
+    required int ledgerId,
+    required int? keepAssetId,
+  }) async {
+    final assetId = int.tryParse(oldIconKey ?? '');
+    if (assetId == null || assetId == keepAssetId) return;
+
+    final assets = await _store.iconAssets();
+    CategoryIconAsset? asset;
+    for (final item in assets) {
+      if (item.id == assetId) asset = item;
+    }
+    if (asset == null) return;
+
+    // 还有别的分类指向它就不动 —— 先删记录再删文件：
+    // 反过来的话，中途失败会留下一条指向不存在文件的记录。
+    for (final category in await _store.categories(ledgerId: ledgerId)) {
+      if (category.iconKey == '$assetId') return;
+    }
+    await _store.deleteIconAsset(assetId);
+    await _iconFiles.delete(asset.relativePath);
   }
 
   /// 建立退款与原消费的关联。

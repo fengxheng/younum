@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../app/app_routes.dart';
@@ -14,6 +16,8 @@ import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
 import '../../domain/models/category.dart';
+import '../../domain/repositories/icon_asset_ports.dart';
+import '../../domain/repositories/ledger_file_source.dart';
 import '../../domain/rules/category_rules.dart';
 import 'category_registry.dart';
 import 'review_session.dart';
@@ -99,6 +103,7 @@ class _AllCategoriesScreenState extends State<AllCategoriesScreen> {
                   name: category.name,
                   iconKey:
                       category.iconKey ?? YounumIcons.defaultCategoryIconKey,
+                  imagePath: registry.imagePathOf(category),
                 ),
             ],
             selectedName: selectedName,
@@ -247,6 +252,7 @@ class CategoryManageScreen extends StatelessWidget {
                           name: category.name,
                           iconKey: category.iconKey ??
                               YounumIcons.defaultCategoryIconKey,
+                          imagePath: registry.imagePathOf(category),
                         ),
                         onTap: () => context.open(
                           AppRoutes.categoryEditor,
@@ -366,11 +372,24 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
       TextEditingController(text: widget.args.categoryName ?? '');
 
   late String _draftIconKey;
+
+  /// 草稿里的图片缩略图（设计稿：选中图片只改草稿，按保存才提交）。
+  Uint8List? _draftImageBytes;
+
   String? _errorText;
   String _statusMessage = '';
 
   /// 正在写库。写完之前按钮要保持不可点（指南 14.3）。
   bool _saving = false;
+
+  /// 正在处理图片。处理未完成时也要禁用保存（指南 14.3）。
+  bool _processing = false;
+
+  /// 这台设备能不能选图片。未知时按钮显灰，而不是点了才发现不行。
+  bool _canPickImage = false;
+
+  /// 选图令牌：连续选图只保留最后一次（指南 14.3）。
+  int _pickToken = 0;
 
   bool get _isEditing => widget.args.categoryId != null;
 
@@ -379,10 +398,17 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
     super.initState();
     // 读当前的已提交图标作为草稿起点；草稿只有按「保存」才会写库。
     final categoryId = widget.args.categoryId;
-    _draftIconKey = categoryId == null
+    final committed = categoryId == null ? null : _registry.byId(categoryId);
+    _draftIconKey = committed == null
         ? YounumIcons.defaultCategoryIconKey
-        : _registry.byId(categoryId)?.iconKey ??
-              YounumIcons.defaultCategoryIconKey;
+        : CategoryRegistry.defaultIconKeyOf(committed.name);
+    _loadPickAvailability();
+  }
+
+  Future<void> _loadPickAvailability() async {
+    final available = await _registry.imageSource.isAvailable();
+    if (!mounted) return;
+    setState(() => _canPickImage = available);
   }
 
   @override
@@ -399,10 +425,44 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
 
   /// 是否存在未保存的草稿。
   bool get _isDirty {
+    if (_draftImageBytes != null) return true;
     final categoryId = widget.args.categoryId;
     if (categoryId == null) return false;
     final committed = _registry.byId(categoryId)?.iconKey;
     return committed != null && committed != _draftIconKey;
+  }
+
+  /// 选一张图片，做成缩略图放进草稿。
+  ///
+  /// 取消什么也不改；失败给出可读原因并且**保留旧草稿**（指南 14.3）。
+  /// 连续选图用令牌只留最后一次：旧图处理得慢，回来时不能覆盖新选择。
+  Future<void> _pickImage() async {
+    if (_processing) return;
+    final registry = _registry;
+    final token = ++_pickToken;
+
+    setState(() => _processing = true);
+    final outcome = await registry.imageSource.pickImage();
+    switch (outcome) {
+      case PickCanceled():
+        break;
+      case PickFailed(:final message):
+        if (mounted) showYounumToast(context, message);
+      case DocumentPicked(:final document):
+        final result = await registry.prepareImage(document.bytes);
+        // 有更新的选择在路上了：这次的结果直接丢掉，也不写任何状态。
+        if (token != _pickToken || !mounted) return;
+        switch (result) {
+          case IconThumbnailFailed(:final error):
+            showYounumToast(context, error.message);
+          case IconThumbnailReady(:final bytes):
+            setState(() {
+              _draftImageBytes = bytes;
+              _statusMessage = '图片已预览，保存后生效';
+            });
+        }
+    }
+    if (mounted) setState(() => _processing = false);
   }
 
   /// 名称校验走规则层：界面与仓库用同一份判断，
@@ -417,21 +477,51 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
   }
 
   Future<void> _save() async {
-    if (_saving) return;
+    if (_saving || _processing) return;
     final registry = _registry;
     final categoryId = widget.args.categoryId;
     if (categoryId == null && !_validateName(_nameController.text)) return;
 
     setState(() => _saving = true);
-    final ok = categoryId == null
-        ? await registry.create(
-            name: _nameController.text.trim(),
-            iconKey: _draftIconKey,
-          )
-        : await registry.setIcon(
-            categoryId: categoryId,
-            iconKey: _draftIconKey,
-          );
+
+    // 先确保分类存在：新建时先建（用草稿里的矢量图标），再改图标。
+    // 分开写是有意的：图片落盘与数据库不可能共处一个事务（指南 14.4.3），
+    // 所以万一图片那一步失败，分类本身仍然建成了（带默认图标），
+    // 而不是让用户以为什么都没发生。
+    var targetId = categoryId;
+    var ok = true;
+    if (targetId == null) {
+      ok = await registry.create(
+        name: _nameController.text.trim(),
+        iconKey: _draftIconKey,
+      );
+      targetId = ok ? registry.byName(_nameController.text.trim())?.id : null;
+    } else {
+      ok = await registry.setIcon(
+        categoryId: targetId,
+        iconKey: _draftIconKey,
+      );
+    }
+
+    final imageBytes = _draftImageBytes;
+    if (ok && targetId != null) {
+      final committed = registry.byId(targetId);
+      final name = committed?.name ?? _nameController.text.trim();
+      if (imageBytes != null) {
+        ok = await registry.setImage(
+          categoryId: targetId,
+          bytes: imageBytes,
+        );
+      } else if (committed?.iconType == CategoryIconType.image) {
+        // 草稿是矢量图标、库里本来挂着图片：这就是「恢复默认图标」。
+        ok = await registry.restoreBuiltinIcon(
+          categoryId: targetId,
+          name: name,
+          iconKey: _draftIconKey,
+        );
+      }
+    }
+
     if (!mounted) return;
     setState(() => _saving = false);
 
@@ -495,11 +585,21 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 alignment: Alignment.center,
-                child: CategoryIconView(
-                  iconKey: _draftIconKey,
-                  size: 42,
-                  color: colors.primaryColor,
-                ),
+                child: _draftImageBytes != null
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          _draftImageBytes!,
+                          width: 52,
+                          height: 52,
+                          fit: BoxFit.cover,
+                        ),
+                      )
+                    : CategoryIconView(
+                        iconKey: _draftIconKey,
+                        size: 42,
+                        color: colors.primaryColor,
+                      ),
               ),
             ),
             const SizedBox(height: YounumDimens.gapLg),
@@ -547,17 +647,19 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
             const SizedBox(height: YounumDimens.gapLg),
 
             PrimaryAction(
-              label: '从图片选择',
+              label: _processing ? '正在处理图片…' : '从图片选择',
               icon: YounumIcons.upload,
               style: YounumActionStyle.secondary,
-              onPressed: () => showYounumToast(
-                context,
-                '阶段 4 接入系统 Photo Picker 后可用；当前只支持预设图标',
+              onPressed: (_processing || !_canPickImage) ? null : _pickImage,
+            ),
+            if (_canPickImage)
+              const YounumPillNote(
+                'PNG / JPG / WebP · 最大 2 MB\n图片居中裁成方形，保留原色，仅存于此设备',
+              )
+            else
+              const YounumPillNote(
+                '这个平台上还不能选择图片（桌面与测试环境）；手机上可以。',
               ),
-            ),
-            const YounumPillNote(
-              'PNG / JPG / WebP · 最大 2 MB\n图片居中裁成方形，保留原色，仅存于此设备',
-            ),
             PrimaryAction(
               label: '恢复默认图标',
               style: YounumActionStyle.plain,
@@ -565,6 +667,7 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                 _draftIconKey = CategoryRegistry.defaultIconKeyOf(
                   widget.args.categoryName,
                 );
+                _draftImageBytes = null;
                 _statusMessage = '已恢复默认图标，保存后生效';
               }),
             ),
@@ -578,8 +681,10 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
                 ),
               ),
             PrimaryAction(
-              label: _isEditing ? '保存图标' : '保存分类',
-              onPressed: _saving ? null : _save,
+              label: _saving
+                  ? '正在保存…'
+                  : (_processing ? '图片处理中…' : (_isEditing ? '保存图标' : '保存分类')),
+              onPressed: (_saving || _processing) ? null : _save,
             ),
           ],
         ),
@@ -587,3 +692,4 @@ class _CategoryEditorScreenState extends State<CategoryEditorScreen> {
     );
   }
 }
+

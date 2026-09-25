@@ -472,6 +472,9 @@ class BreakdownScreen extends StatelessWidget {
                       iconKey:
                           registry.iconKeyOf(categories[index].categoryName) ??
                           YounumIcons.defaultCategoryIconKey,
+                      imagePath: registry.imagePathOfName(
+                        categories[index].categoryName,
+                      ),
                     ),
                   ],
                 ),
@@ -900,6 +903,9 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                     '${visible[index].reviewStatus == ReviewStatus.deferred ? ' · 稍后处理' : ''}',
                 iconKey: registry.iconKeyOf(_categoryOf(visible[index]) ?? '') ??
                     YounumIcons.defaultCategoryIconKey,
+                imagePath: registry.imagePathOfName(
+                  _categoryOf(visible[index]) ?? '',
+                ),
                 trailingText: _signedAmount(visible[index]),
                 onTap: () => context.open(
                   AppRoutes.transactionDetail,
