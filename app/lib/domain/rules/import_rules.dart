@@ -253,6 +253,9 @@ enum DuplicateVerdict {
 }
 
 /// 导入规则。
+/// 跨来源比对用的一笔记录：发生在什么时候、来自哪份账单。
+typedef ImportSourceStamp = ({int occurredAtMs, String sourceNamespace});
+
 abstract final class ImportRules {
   /// 扫描表头时最多往下看多少行。
   ///
@@ -554,6 +557,12 @@ abstract final class ImportRules {
       return ImportDirection.transfer;
     }
 
+    // 银行账单写的是「转出 / 转入」。⚠️ 必须放在下面的「收 / 支」单字判断之前：
+    // 「转出」里既没有「收」也没有「支」，只有这两个词能表达方向。
+    // 注意「转出」不含「转账」，所以不会和上面那一支冲突。
+    if (text.contains('转出')) return ImportDirection.expense;
+    if (text.contains('转入')) return ImportDirection.income;
+
     final mentionsIncome = text.contains('收入');
     final mentionsExpense = text.contains('支出');
     if (mentionsIncome && !mentionsExpense) {
@@ -687,6 +696,76 @@ abstract final class ImportRules {
       return DuplicateVerdict.suspected;
     }
     return DuplicateVerdict.fresh;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 跨来源疑似重复
+  // ---------------------------------------------------------------------------
+
+  /// 跨来源比对的时间窗口：24 小时。
+  ///
+  /// 取这么宽是因为两份账单记的**不是同一个时刻**：银行卡账单记的是扣款时间，
+  /// 支付宝记的是下单时间，两者可能差几秒，也可能因为结算差上几小时。
+  /// 窗口放宽的代价只是「多问一句」，而漏掉的代价是同一笔被算两次 ——
+  /// 所以宁可宽一点，反正最后一定是用户自己决定（指南 4.3）。
+  static const int crossSourceWindowMs = 24 * 60 * 60 * 1000;
+
+  /// 一笔已知记录在「金额相同」候选表里的样子。
+  static ImportSourceStamp stampOf({
+    required int occurredAtMs,
+    required String sourceNamespace,
+  }) => (occurredAtMs: occurredAtMs, sourceNamespace: sourceNamespace);
+
+  /// 跨来源疑似重复：**金额相同 + 时间接近 + 来源不同**。
+  ///
+  /// 为什么单靠 [weakKeyOf] 不够：微信、支付宝的扣款大多走银行卡，同一笔消费会
+  /// 同时出现在两份账单里，可是两边记的**商户名完全不同** —— 银行那份写的是
+  /// 「支付宝（中国）网络技术有限公司」，时间也不是毫秒级一致。用「商户 + 时间 +
+  /// 金额完全相同」那条弱键永远发现不了，结果就是同一笔被算两次。
+  ///
+  /// ⚠️ 这里**只**产出「疑似」：指南 4.3 明确说跨平台金额相同不等于同一笔，
+  /// 必须逐组让用户确认，并且允许「保留两笔」。所以调用方绝不能拿它自动丢弃行。
+  ///
+  /// 返回与哪一份来源撞上、差了多久；没有撞上时返回 null。
+  static ({int gapMs, String otherNamespace})? crossSourceDuplicate({
+    required int occurredAtMs,
+    required String sourceNamespace,
+    required Iterable<ImportSourceStamp> sameAmount,
+  }) {
+    ({int gapMs, String otherNamespace})? hit;
+    for (final candidate in sameAmount) {
+      // 同一份来源的重复交给同源键和弱键，不在这里判。
+      if (candidate.sourceNamespace == sourceNamespace) continue;
+      final gap = (candidate.occurredAtMs - occurredAtMs).abs();
+      if (gap > crossSourceWindowMs) continue;
+      if (hit == null || gap < hit.gapMs) {
+        hit = (gapMs: gap, otherNamespace: candidate.sourceNamespace);
+      }
+    }
+    return hit;
+  }
+
+  /// 跨来源疑似重复的提示文案。
+  ///
+  /// 必须以 [suspectedDuplicateIssuePrefix] 开头：核对页是按这个前缀把行归到
+  /// 「疑似重复」那一组里的。
+  static String crossSourceIssue({
+    required int gapMs,
+    required String otherNamespace,
+  }) =>
+      '$suspectedDuplicateIssuePrefix：金额与「$otherNamespace」账单里的一笔相同，'
+      '时间相差${sourceGapText(gapMs)}，很可能是同一笔消费在两份账单里各记了一次'
+      '（比如银行卡账单上的「支付宝」扣款），请确认是不是同一笔';
+
+  /// 把时间差说成人话。用于提示文案，不参与任何判断。
+  static String sourceGapText(int gapMs) {
+    if (gapMs < 60 * 1000) return '不到 1 分钟';
+    if (gapMs < 60 * 60 * 1000) return '${gapMs ~/ (60 * 1000)} 分钟';
+    if (gapMs < 48 * 60 * 60 * 1000) {
+      final hours = gapMs / (60 * 60 * 1000);
+      return '${hours.toStringAsFixed(hours < 10 ? 1 : 0)} 小时';
+    }
+    return '${gapMs ~/ (24 * 60 * 60 * 1000)} 天';
   }
 
   // ---------------------------------------------------------------------------

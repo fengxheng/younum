@@ -283,6 +283,9 @@ extension ImportWorkflow on LedgerRepository {
     final existing = await dataset(ledgerId: ledgerId);
     final knownStable = <String>{};
     final knownWeak = <String>{};
+    // 金额 → 已知记录。跨来源疑似重复只看同金额的候选，所以按金额分桶，
+    // 不用拿每一行去扫全表。
+    final knownByAmount = <int, List<ImportSourceStamp>>{};
     for (final transaction in existing.transactions) {
       final key = transaction.dedupeKey;
       if (key != null) knownStable.add(key);
@@ -291,6 +294,14 @@ extension ImportWorkflow on LedgerRepository {
           merchant: transaction.merchant,
           occurredAtMs: transaction.occurredAtMs,
           amountCents: transaction.amountCents,
+        ),
+      );
+      (knownByAmount[transaction.amountCents] ??= <ImportSourceStamp>[]).add(
+        ImportRules.stampOf(
+          occurredAtMs: transaction.occurredAtMs,
+          // 手工记的账 / 示例数据没有来源，统一当成「另一类来源」：
+          // 空字符串只和空字符串算同源，不会把两份真实账单误判成同一份。
+          sourceNamespace: transaction.sourceNamespace ?? '',
         ),
       );
     }
@@ -351,6 +362,19 @@ extension ImportWorkflow on LedgerRepository {
             knownWeakKeys: knownWeak,
           );
 
+          // 同源键和弱键都没撞上时，再看一眼「金额相同、来源不同、时间接近」——
+          // 微信/支付宝的扣款大多走银行卡，会出现同一笔在两份账单里各记一次，
+          // 而两边商户名完全不同（银行那份写的是「支付宝（中国）网络技术有限公司」）。
+          final crossSource = verdict == DuplicateVerdict.fresh
+              ? ImportRules.crossSourceDuplicate(
+                  occurredAtMs: result.occurredAtMs,
+                  sourceNamespace: sourceNamespace,
+                  sameAmount:
+                      knownByAmount[result.amountCents] ??
+                      const <ImportSourceStamp>[],
+                )
+              : null;
+
           var status = ImportRowStatus.newRow;
           var included = true;
           String? issue;
@@ -366,12 +390,24 @@ extension ImportWorkflow on LedgerRepository {
                   '$suspectedDuplicateIssuePrefix：商户、时间、金额与别处一致，'
                   '请确认是否同一笔';
             case DuplicateVerdict.fresh:
-              break;
+              if (crossSource != null) {
+                suspected++;
+                issue = ImportRules.crossSourceIssue(
+                  gapMs: crossSource.gapMs,
+                  otherNamespace: crossSource.otherNamespace,
+                );
+              }
           }
 
           if (stableKey != null) knownStable.add(stableKey);
           // 同一文件里后面出现的行也要能和前面比，所以无论什么判定都记进去。
           knownWeak.add(weakKey);
+          (knownByAmount[result.amountCents] ??= <ImportSourceStamp>[]).add(
+            ImportRules.stampOf(
+              occurredAtMs: result.occurredAtMs,
+              sourceNamespace: sourceNamespace,
+            ),
+          );
 
           if (included) {
             parsed.add(result);
