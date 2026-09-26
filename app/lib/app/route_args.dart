@@ -53,6 +53,8 @@ class CategoryEditorArgs {
     this.categoryId,
     this.categoryName,
     this.returnRoute,
+    this.parentId,
+    this.parentName,
   });
 
   /// 为 null 表示新建分类；非 null 表示只编辑该分类的图标。
@@ -66,6 +68,20 @@ class CategoryEditorArgs {
 
   /// 保存后返回的路由，用于「管理图标」与「分类管理」两个入口。
   final String? returnRoute;
+
+  /// 新建**细分用途**时挂到哪个一级分类下（为 null 就是建一级分类）。
+  final int? parentId;
+
+  /// 父分类的名字，只用于「给「餐饮」加一个细分用途」这类文案。
+  final String? parentName;
+}
+
+/// 细分用途管理页参数。
+class SubCategoryArgs {
+  const SubCategoryArgs({required this.parentId, this.parentName});
+
+  final int parentId;
+  final String? parentName;
 }
 
 /// 交易详情参数。

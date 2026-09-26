@@ -53,10 +53,23 @@ class CategoryIconView extends StatelessWidget {
         ),
       );
     }
+    // 用户直接填的 emoji：不是内置键就当文字画出来（需求：图标可以直接输入 emoji）。
+    //
+    // 未知的键也走这条路 —— 与其默默回退成叶片，不如把它画出来，
+    // 出了问题一眼就能看出这个分类的 iconKey 到底是什么。
+    // 写入侧有校验（`CategoryRules.validateEmojiIconKey`），所以这里
+    // 遇到的正常情况就是「一个 emoji」。
+    if (!YounumIcons.isBuiltinCategoryKey(resolved)) {
+      return Text(
+        resolved,
+        // emoji 的字面高度比同字号的图标矮一点，放大 1.05 倍看起来才是对齐的。
+        style: TextStyle(fontSize: size * 1.05, color: color, height: 1),
+        textAlign: TextAlign.center,
+      );
+    }
     return Icon(YounumIcons.categoryIcon(resolved), size: size, color: color);
   }
 }
-
 /// 圆角方形图标底。
 class YounumTileIcon extends StatelessWidget {
   const YounumTileIcon({

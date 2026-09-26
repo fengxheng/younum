@@ -178,6 +178,162 @@ void main() {
     });
   });
 
+  group('细分用途（需求：自己建、自己改）', () {
+    /// 演示账本里「餐饮」下的细分用途（种子里那 5 个）。
+    Future<Category> food() async {
+      final all = await categories();
+      return all.firstWhere((category) => category.name == '餐饮');
+    }
+
+    test('可以在一级分类下面新建细分用途，排在同级最后', () async {
+      final parent = await food();
+      final before = (await categories())
+          .where((category) => category.parentId == parent.id)
+          .length;
+
+      final result = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '外卖',
+        iconKey: 'fastfood',
+        parentId: parent.id,
+      );
+      expect(result, isA<CategorySaved>(), reason: '$result');
+
+      final created = (result as CategorySaved).category;
+      expect(created.parentId, parent.id);
+      expect(created.isBuiltin, isFalse);
+      expect(
+        (await categories())
+            .where((category) => category.parentId == parent.id)
+            .length,
+        before + 1,
+      );
+    });
+
+    test('同一父级下重名被拒；换个父级就可以同名', () async {
+      final parent = await food();
+      final all = await categories();
+      final parent2 = all.firstWhere((category) => category.name == '购物');
+
+      final clash = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '买菜',
+        iconKey: 'food',
+        parentId: parent.id,
+      );
+      expect(clash, isA<CategoryRejected>());
+      expect((clash as CategoryRejected).message, contains('已经存在'));
+
+      // 换个父级（购物）就不算重名 —— 唯一索引是按 parent_id + name 判的。
+      final other = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '买菜',
+        iconKey: 'food',
+        parentId: parent2.id,
+      );
+      expect(other, isA<CategorySaved>(), reason: '$other');
+    });
+
+    test('改名保留 ID 与父子关系，名字真的变了', () async {
+      final parent = await food();
+      final created = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '外卖',
+        iconKey: 'fastfood',
+        parentId: parent.id,
+      );
+      final id = (created as CategorySaved).category.id;
+
+      final renamed = await repository.renameCategory(
+        ledgerId: ledgerId,
+        categoryId: id,
+        name: '点外卖',
+      );
+      expect(renamed, isA<CategorySaved>(), reason: '$renamed');
+
+      final saved = (renamed as CategorySaved).category;
+      expect(saved.id, id, reason: '指南 3.5.8：重命名保留稳定 ID');
+      expect(saved.name, '点外卖');
+      expect(saved.parentId, parent.id);
+      expect(saved.iconKey, created.category.iconKey, reason: '只改名字');
+    });
+
+    test('改名成同级的重名被拒，且什么都没写', () async {
+      final parent = await food();
+      final created = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '外卖',
+        iconKey: 'fastfood',
+        parentId: parent.id,
+      );
+      final id = (created as CategorySaved).category.id;
+
+      final result = await repository.renameCategory(
+        ledgerId: ledgerId,
+        categoryId: id,
+        name: '买菜',
+      );
+      expect(result, isA<CategoryRejected>());
+      final all = await categories();
+      expect(all.firstWhere((category) => category.id == id).name, '外卖');
+    });
+
+    test('内置分类不给改名（它们是设计稿定的基线词汇）', () async {
+      final parent = await food();
+      final result = await repository.renameCategory(
+        ledgerId: ledgerId,
+        categoryId: parent.id,
+        name: '吃饭',
+      );
+      expect(result, isA<CategoryRejected>());
+      expect((result as CategoryRejected).message, contains('内置分类'));
+      expect((await food()).name, '餐饮');
+    });
+
+    test('改名之后，已经归好类的账目照旧属于它', () async {
+      final parent = await food();
+      final created = await repository.createCategory(
+        ledgerId: ledgerId,
+        name: '外卖',
+        iconKey: 'fastfood',
+        parentId: parent.id,
+      );
+      final id = (created as CategorySaved).category.id;
+
+      final snapshot = await repository.loadSnapshot(
+        ledgerId: ledgerId,
+        month: DemoLedgerSeed.month,
+      );
+      final card = snapshot.current!;
+      await repository.confirm(
+        ledgerId: ledgerId,
+        month: DemoLedgerSeed.month,
+        transactionId: card.id,
+        categoryId: id,
+      );
+
+      await repository.renameCategory(
+        ledgerId: ledgerId,
+        categoryId: id,
+        name: '点外卖',
+      );
+
+      final dataset = await repository.dataset(
+        ledgerId: ledgerId,
+        months: <YearMonth>{DemoLedgerSeed.month},
+      );
+      expect(
+        dataset.allocationsOf(card.id).single.categoryId,
+        id,
+        reason: '账目存的是分类 ID，改名不该把它甩掉',
+      );
+      expect(
+        dataset.categories.firstWhere((c) => c.id == id).name,
+        '点外卖',
+      );
+    });
+  });
+
   group('归档（指南 3.5.8：删除默认归档）', () {
     test('规则：最后一个还在用的一级分类不能归档，细分用途不受限', () {
       const onlyRoot = <Category>[

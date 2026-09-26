@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:younum/core/designsystem/younum_icons.dart';
+import 'package:younum/domain/rules/category_rules.dart';
 import 'package:younum/domain/rules/icon_asset_rules.dart';
 
 /// 分类图片图标的校验规则（指南 14.4 / 设计稿「分类管理」）。
@@ -118,6 +120,115 @@ void main() {
       expect(left, 25);
       expect(top, 0);
       expect(left + side, lessThanOrEqualTo(101));
+    });
+  });
+
+  group('预设图标库', () {
+    // 这些键按分类存进了数据库（`category.icon_key`），改名或删除等于把
+    // 用户已经选好的图标弄丢。所以它们必须一直在。
+    const legendary = <String, String>{
+      'food': '餐饮',
+      'coffee': '咖啡',
+      'bag': '购物',
+      'car': '交通',
+      'home': '居住',
+      'play': '娱乐',
+      'heart': '健康',
+      'gift': '人情',
+      'file': '文件',
+      'wallet': '钱包',
+      'user': '个人',
+      'leaf': '叶片',
+    };
+
+    test('指南 14.3 要求的 12 类一个都不能少、不能改名', () {
+      for (final entry in legendary.entries) {
+        expect(
+          YounumIcons.isBuiltinCategoryKey(entry.key),
+          isTrue,
+          reason: '${entry.key} 已经存进过数据库，不能删',
+        );
+        expect(YounumIcons.categoryIconLabel(entry.key), entry.value);
+      }
+    });
+
+    test('图标变多了（用户反馈预设太少）', () {
+      expect(
+        YounumIcons.builtinCategoryKeys.length,
+        greaterThanOrEqualTo(40),
+        reason: '只给十来个预设时，用户几乎只能在「默认叶子」和「自己的照片」之间选',
+      );
+    });
+
+    test('每个键都有图标与名字，名字两两不同', () {
+      // 名字在编辑器里**同时是选项名**（`CategoryGrid` 按名字选中）：
+      // 重名会让选中态落到错误的那一格 —— 而且是静默的。
+      final labels = <String>{};
+      for (final key in YounumIcons.builtinCategoryKeys) {
+        expect(key.trim(), isNotEmpty);
+        expect(
+          YounumIcons.categoryIconLabels.containsKey(key),
+          isTrue,
+          reason: '$key 少了中文名，TalkBack 会读不出它是什么',
+        );
+        expect(
+          YounumIcons.categoryIconLabels[key],
+          isNot(equals(YounumIcons.defaultCategoryIconKey)),
+        );
+        expect(
+          labels.add(YounumIcons.categoryIconLabels[key]!),
+          isTrue,
+          reason: '${YounumIcons.categoryIconLabels[key]} 这个名字重复了',
+        );
+      }
+    });
+
+    test('未知的键原样返回（emoji 就这样被读出来）', () {
+      expect(YounumIcons.categoryIconLabel('🍜'), '🍜');
+      expect(YounumIcons.isBuiltinCategoryKey('🍜'), isFalse);
+    });
+  });
+
+  group('emoji 当图标（用户直接填）', () {
+    test('常见的 emoji 放行', () {
+      for (final emoji in <String>['🍜', '🐱', '✈️', '🏠', '👨‍👩‍👧']) {
+        expect(
+          CategoryRules.validateEmojiIconKey(raw: emoji),
+          isNull,
+          reason: '$emoji 应该可以用',
+        );
+      }
+    });
+
+    test('首尾空白不算内容', () {
+      expect(
+        CategoryRules.validateEmojiIconKey(raw: '  🍜  '),
+        isNull,
+      );
+    });
+
+    test('空的要说清「填一个 emoji 或者从预设里挑」', () {
+      final error = CategoryRules.validateEmojiIconKey(raw: '   ');
+      expect(error, isA<CategoryIconEmojiEmpty>());
+      expect(error!.message, contains('emoji'));
+    });
+
+    test('文字 / 数字 / 空格都不行（图标不是第二个名字）', () {
+      for (final text in <String>['拉面', 'ab', '12', '吃 饭']) {
+        expect(
+          CategoryRules.validateEmojiIconKey(raw: text),
+          isA<CategoryIconEmojiNotEmoji>(),
+          reason: '$text 不是 emoji',
+        );
+      }
+    });
+
+    test('太长的不行', () {
+      expect(
+        CategoryRules.validateEmojiIconKey(raw: '🍜🍜🍜🍜🍜'),
+        isA<CategoryIconEmojiTooLong>(),
+      );
+      expect(CategoryRules.maxEmojiIconLength, 8);
     });
   });
 }

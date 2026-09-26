@@ -38,6 +38,25 @@ final class CategoryNameDuplicated extends CategoryError {
   const CategoryNameDuplicated() : super('这个分类已经存在');
 }
 
+/// 图标只填了一个空串。
+final class CategoryIconEmojiEmpty extends CategoryError {
+  const CategoryIconEmojiEmpty()
+      : super('先填一个 emoji，或者从上面的预设里挑一个');
+}
+
+/// 图标填得太长（不是一个 emoji，而是一串东西）。
+final class CategoryIconEmojiTooLong extends CategoryError {
+  const CategoryIconEmojiTooLong() : super('一个 emoji 就够了');
+}
+
+/// 图标里混进了文字 / 数字 / 空白。
+///
+/// 分类本来就有名字，图标再写成一段文字就分不出哪个是哪个了。
+final class CategoryIconEmojiNotEmoji extends CategoryError {
+  const CategoryIconEmojiNotEmoji()
+      : super('这里只能填 emoji（符号），文字请填在上面的「分类名称」');
+}
+
 /// 只剩这一个分类了，不能再归档。
 ///
 /// 用途选择列表不能空：空了用户整理时无从下手，而且那不是用户想要的 ——
@@ -114,8 +133,37 @@ abstract final class CategoryRules {
     return null;
   }
 
-  /// 能不能归档 / 恢复这个分类（指南 3.5.8）。
+  /// emoji 图标最长几个 UTF-16 码元。
   ///
+  /// 一个常见 emoji 是 2（代理对），带肤色或 ZWJ 组合的会长一些；
+  /// 8 够放下「👨‍👩‍👧」这种，又挡住了一整句话。
+  static const int maxEmojiIconLength = 8;
+
+  /// 图标里不允许出现的字符：字母、数字、空白。
+  ///
+  /// 分类本来就有名字，图标再写成一段文字，列表里就分不出哪个是哪个了。
+  static final RegExp _emojiForbidden = RegExp(r'[\p{L}\p{N}\s]', unicode: true);
+
+  /// 校验用户直接填的 emoji 图标键（需求：允许把 emoji 当图标）。
+  ///
+  /// 存法：`iconType` 仍然是 `BUILTIN`，`iconKey` 里放的就是这个 emoji ——
+  /// 渲染时「不是内置键」就走文字那条路（见 `CategoryIconView`）。
+  /// 这样不用改表结构，旧版本读到它也只是回退成默认图标，不会崩。
+  ///
+  /// 判据宁可严一点：**只接受一小串符号**，不接受文字或数字。
+  static CategoryError? validateEmojiIconKey({required String raw}) {
+    final value = raw.trim();
+    if (value.isEmpty) return const CategoryIconEmojiEmpty();
+    if (value.length > maxEmojiIconLength) {
+      return const CategoryIconEmojiTooLong();
+    }
+    if (_emojiForbidden.hasMatch(value)) {
+      return const CategoryIconEmojiNotEmoji();
+    }
+    return null;
+  }
+
+  /// 能不能归档 / 恢复这个分类（指南 3.5.8）。  ///
   /// 只有一条限制：**不能把最后一个还在用的一级分类归档掉** ——
   /// 那样「选择用途」就空了，用户整理时无从下手。细分用途不受限：
   /// 它们的父级还在，只是少一个选项。

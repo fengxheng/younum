@@ -48,7 +48,7 @@ flutter test test/manual/live_update_test.dart --dart-define=YOUNUM_LIVE=1
 
 ```text
 test/
-├── *_test.dart                    59 个测试文件（下面逐个说明）
+├── *_test.dart                    62 个测试文件（下面逐个说明）
 ├── support/
 │   ├── ledger_fixtures.dart       公开夹具：只用指南 10.1 的固定基准，不含真实账单
 │   └── fake_file_source.dart      可控的文件来源（选到了什么 / 取消 / 失败）
@@ -78,7 +78,7 @@ integration_test/
 | `update_rules_test.dart` | 升级判定：残缺的 GitHub 响应、没有 APK、千奇百怪的 tag、忽略语义 |
 | `export_rules_test.dart` | 明细 CSV 的结构、**防公式注入**（`= + - @` 开头）、隐私开关 |
 | `share_poster_rules_test.dart` | 海报要画什么（纯数据决定），隐藏金额时清单里就不该有金额 |
-| `icon_asset_rules_test.dart` | 图片图标校验：太大、尺寸不对、坏图、格式不支持 |
+| `icon_asset_rules_test.dart` | 图片图标校验：太大、尺寸不对、坏图、格式不支持；预设图标键（老 12 个键一个不改、数量 ≥ 40、标签唯一、未知键原样返回）与 emoji 图标的收/拒 |
 | `color_math_test.dart` | 颜色逐通道混色、线性化亮度、对比度 ≥ 4.5:1 |
 | `csv_parser_test.dart` | CSV：引号、字段内逗号、字段内换行、BOM、CRLF |
 | `text_decoding_test.dart` | 编码探测：UTF-8 严格解析 → GBK 对比，判不出来时给用户选 |
@@ -140,6 +140,8 @@ integration_test/
 | `update_widget_test.dart` | 检查更新页：按钮不贴在一起、查不到不能写成已是最新；**启动时的新版本提示**也在这一组（只弹一次、忽略过的版本不弹、出现更高版本再提、「以后再说」不写偏好、Release 正文那种长度与字号 2.0 下不溢出） |
 | `share_import_widget_test.dart` | 系统「分享一份账单到有数」：落到确认导入页、认不出表头去映射页、老式 `.xls` 与读不了的文件要说清原因、同一份分享**只导一次** |
 | `quick_pick_widget_test.dart` | 用途快捷项接线：卡片上的几格就是配好的那几个与那个顺序；管理页移除后卡片跟着变；**拖动改顺序真的落盘**；只剩一个时不能移除；满了显示「已满」且点不动 |
+| `category_pick_widget_test.dart` | 「全部分类」页：点一下即选中、底部按钮文案跟着变；**按返回就等于确认**（带值回去）；只是点进去看一眼、没动过选择时**不带值**（别把卡片上的用途改掉） |
+| `sub_category_widget_test.dart` | 细分用途：在细分用途页新建 → 回选择页就能选到并确认；改名后 ID/父级不动；两个入口（选择页的「新建 / 编辑 ›」与编辑一级分类页的「细分用途」）都能到；emoji 存进 `iconKey` 并真的画出来；emoji 框里填文字当场报错 |
 | `demo_ledger_exit_widget_test.dart` | 退出示例账本：「我的」那一行退出后回到自己的账本且能走回去、徽标 → 弹层 → 退出、「继续体验」什么都不改 |
 | `tablet_layout_widget_test.dart` | 平板竖屏（720×1152dp）：走一遍不溢出、正文正好 560dp 且居中、插画不跟着屏宽变形、弹层也跟着限宽 |
 

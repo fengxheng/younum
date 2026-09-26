@@ -32,6 +32,9 @@ abstract final class AppRoutes {
   /// 用途快捷项：整理卡片上显示哪几个分类、按什么顺序。
   static const String categoryQuickPick = '/organize/category-quick-pick';
   static const String categoryEditor = '/organize/category-editor';
+
+  /// 细分用途：某个一级分类下面自己建的细分。
+  static const String subCategories = '/organize/sub-categories';
   static const String transactionDetail = '/organize/detail';
   static const String splitTransaction = '/organize/split';
   static const String transactionNature = '/organize/nature';

@@ -88,6 +88,16 @@ class CategoryRegistry extends ChangeNotifier {
           if (category.parentId == parentId && !category.archived) category,
       ];
 
+  /// 某个一级分类下**已归档**的细分用途。
+  ///
+  /// 与 [archivedRoots] 同一个道理：归档不等于删数据，用户得能找到回来的路。
+  /// 父级归档时子级会被连带归档（见仓库层），那时它们不在这个列表里 ——
+  /// 从「已归档」里恢复父级时会一起回来。
+  List<Category> archivedChildrenOf(int parentId) => <Category>[
+        for (final category in _categories)
+          if (category.parentId == parentId && category.archived) category,
+      ];
+
   /// 已经归档的一级分类（分类管理页底部的「已归档」区）。
   ///
   /// 归档的分类不参与用途选择，但历史记录仍然引用它，所以它不能消失 ——
@@ -321,13 +331,39 @@ class CategoryRegistry extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 新建分类。失败时 [lastFailure] 里是给用户看的原因。
-  Future<bool> create({required String name, required String iconKey}) async {
+  /// 新建分类。成功返回新建的那个分类，失败返回 null（原因在 [lastFailure]）。
+  ///
+  /// [parentId] 非空时建的是**细分用途**（需求：细分用途也要能自己建）。
+  ///
+  /// 返回整个分类而不是 bool：调用方要拿它的 **ID** 接着写图标，
+  /// 而按名字回查在「一级和细分同名」时会拿错那一个。
+  Future<Category?> create({
+    required String name,
+    required String iconKey,
+    int? parentId,
+  }) async {
+    final result = await repository.createCategory(
+      ledgerId: _ledgerId,
+      name: name,
+      iconKey: iconKey,
+      parentId: parentId,
+    );
+    _apply(result);
+    return switch (result) {
+      CategorySaved(:final category) => category,
+      CategoryRejected() => null,
+    };
+  }
+
+  /// 给一个分类改名（指南 3.5.8：重命名保留稳定 ID）。
+  ///
+  /// 内置分类会被仓库拒绝并给出原因，界面拿 [lastFailure] 显示。
+  Future<bool> rename({required int categoryId, required String name}) async {
     return _apply(
-      await repository.createCategory(
+      await repository.renameCategory(
         ledgerId: _ledgerId,
+        categoryId: categoryId,
         name: name,
-        iconKey: iconKey,
       ),
     );
   }

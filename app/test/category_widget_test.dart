@@ -116,6 +116,18 @@ void main() {
     expect(find.text('+ 新建'), findsOneWidget);
   });
 
+  /// 点一个可能落在折叠线以下的控件。
+  ///
+  /// 图标库变大（几十个预设 + emoji 输入）之后，编辑器页面变长了 ——
+  /// 而 `tester.tap` 对屏幕外的控件只是「点了个空」，不报错：
+  /// 用例会以「什么都没发生」的形式失败。所以先滚到它。
+  Future<void> tapBelowFold(WidgetTester tester, Finder finder) async {
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.tap(finder);
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('新建分类真的写进分类表，不只是页面上多一行', (WidgetTester tester) async {
     expect(await categoryNamed('养花'), isNull, reason: '前提：还没有这个分类');
 
@@ -125,8 +137,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, '养花');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('保存分类'));
-    await tester.pumpAndSettle();
+    await tapBelowFold(tester, find.text('保存分类'));
 
     final saved = await categoryNamed('养花');
     expect(saved, isNotNull, reason: '关键：库里有它，整理时才能选到');
@@ -160,8 +171,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, '收入');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('保存分类'));
-    await tester.pumpAndSettle();
+    await tapBelowFold(tester, find.text('保存分类'));
 
     final created = await categoryNamed('收入');
     expect(created, isNotNull, reason: '前提：分类真的建好了');
@@ -222,8 +232,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, '餐饮');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('保存分类'));
-    await tester.pumpAndSettle();
+    await tapBelowFold(tester, find.text('保存分类'));
 
     expect(find.text('这个分类已经存在'), findsOneWidget);
     expect(
@@ -247,10 +256,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // 选一个与原来不同的预设图标（宠物原来是 heart，这里选咖啡）。
-    await tester.tap(find.text('咖啡'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('保存图标'));
-    await tester.pumpAndSettle();
+    await tapBelowFold(tester, find.text('咖啡'));
+    await tapBelowFold(tester, find.text('保存图标'));
 
     final after = (await categoryNamed('宠物'))!;
     expect(after.id, before.id, reason: 'ID 是稳定标识，不能跟着图标变');

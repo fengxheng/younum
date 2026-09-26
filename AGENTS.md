@@ -15,7 +15,7 @@
 | --- | --- |
 | 仓库根 | `D:\dev\younum`（`app/` 是 Flutter 工程；`设计稿/` **不在仓库里**） |
 | 技术栈 | Flutter 3.47.5 / Dart 3.13.4，单 Activity + Kotlin，SQLite（SQLCipher 加密） |
-| 规模 | `lib/` 106 个 Dart 文件；`test/` 58 个测试文件 |
+| 规模 | `lib/` 108 个 Dart 文件；`test/` 62 个测试文件 |
 | 当前基线 | `flutter analyze` **零告警**；`flutter test` **全绿**；真机 SQL 测试**全绿** |
 | 怎么读代码 | 先读 [`app/README.md`](app/README.md) 的「目录结构」，再读 [`app/test/README.md`](app/test/README.md) |
 

@@ -1056,8 +1056,56 @@ final class LedgerRepository {
     }
   }
 
-  /// 归档 / 恢复一个分类（指南 3.5.8：**分类删除默认归档**，历史引用继续有效）。
+  /// 给一个分类改名（指南 3.5.8：「**重命名保留稳定 ID**」）。
   ///
+  /// 只改名字这一列：ID、父子关系、排序、图标、以及所有已经挂在它上面的账目
+  /// 全都不动 —— 记录里存的是分类 ID，所以改完名字，历史账目照旧属于它。
+  ///
+  /// 两条限制，都给出人能看懂的原因：
+  /// * **内置分类不给改名**：它们是设计稿定的基线词汇（餐饮 / 购物 / …），
+  ///   统计口径、示例账本与文档都按这套词写；想要别的词就新建一个自己的分类。
+  /// * 同级重名被拒（与新建同一条规则，`excludingId` 让自己不算重复）。
+  Future<CategoryWriteResult> renameCategory({
+    required int ledgerId,
+    required int categoryId,
+    required String name,
+  }) async {
+    try {
+      final all = await _store.categories(ledgerId: ledgerId);
+      Category? target;
+      for (final category in all) {
+        if (category.id == categoryId) target = category;
+      }
+      if (target == null) {
+        return const CategoryRejected('找不到这个分类，可能已经被删掉了');
+      }
+      if (target.isBuiltin) {
+        return const CategoryRejected(
+          '内置分类不能改名。想要别的说法，可以新建一个自己的分类。',
+        );
+      }
+
+      final siblings = <Category>[
+        for (final category in all)
+          if (category.parentId == target.parentId) category,
+      ];
+      final error = CategoryRules.validateName(
+        name: name,
+        siblings: siblings,
+        excludingId: categoryId,
+      );
+      if (error != null) return CategoryRejected(error.message);
+
+      final saved = await _store.saveCategory(
+        target.copyWith(name: name.trim()),
+      );
+      return CategorySaved(saved);
+    } catch (error) {
+      return CategoryRejected('分类没有保存成功：$error');
+    }
+  }
+
+  /// 归档 / 恢复一个分类（指南 3.5.8：**分类删除默认归档**，历史引用继续有效）。  ///
   /// 归档**不动任何已经发生的分配**：记录里存的还是那个分类 ID，
   /// 明细、月报、导出照旧显示它的名字与图标。变的只有一件事 ——
   /// 它不再出现在「选择用途」的列表里。

@@ -564,6 +564,15 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
               ? args
               : const CategoryEditorArgs(categoryName: null),
         );
+      case AppRoutes.subCategories:
+        final subArgs = settings.arguments;
+        return (context) => SubCategoryScreen(
+          // 没有参数时给一个不存在的 ID：页面会如实说「这个分类已经不在了」，
+          // 而不是随手列出别人的细分用途。
+          args: subArgs is SubCategoryArgs
+              ? subArgs
+              : const SubCategoryArgs(parentId: 0),
+        );
       case AppRoutes.transactionDetail:
         final args = settings.arguments;
         return (context) => TransactionDetailScreen(
