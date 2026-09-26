@@ -7,6 +7,7 @@ import '../../core/components/list_row.dart';
 import '../../core/components/primitives.dart';
 import '../../core/components/progress.dart';
 import '../../core/components/screen_scaffold.dart';
+import '../../core/components/sheets.dart';
 import '../../core/designsystem/younum_colors.dart';
 import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
@@ -15,18 +16,85 @@ import '../../core/money/money.dart';
 import '../../core/preferences/app_state_store.dart';
 import '../organize/review_session.dart';
 
-/// 示例账本标记。
+/// 示例账本标记。**点它可以看到「这是什么」并退出示例体验。**
 ///
-/// 演示账本必须有可见标识，避免用户把样例数字当成自己的账目
-/// （实现指南 1.3：示例体验只能进入独立的演示账本）。
+/// 徽标本身不是一个显眼的入口，所以「我的」页顶部另有一条说清楚的
+/// 「退出示例账本」（见 `ProfileScreen`）。两处都只在演示账本里出现 ——
+/// 真实账本里不该看到「示例」两个字。
 class DemoLedgerBadge extends StatelessWidget {
   const DemoLedgerBadge({super.key});
 
   @override
   Widget build(BuildContext context) {
     if (!AppStateScope.of(context).isDemoLedger) return const SizedBox.shrink();
-    return const YounumBadge('示例账本', tone: YounumBadgeTone.warm);
+    return Semantics(
+      button: true,
+      label: '示例账本，查看说明或退出体验',
+      child: GestureDetector(
+        onTap: () => showDemoLedgerSheet(context),
+        child: const YounumBadge('示例账本', tone: YounumBadgeTone.warm),
+      ),
+    );
   }
+}
+
+/// 退出示例账本，回到自己的账单。
+///
+/// **退出不删任何东西**：样例数据在独立的演示账本里，真实账本一直在原处。
+/// 这句话必须说给用户听 —— 否则他要么以为退出去会把样例数据删掉，
+/// 要么以为自己的账单已经被样例数据顶掉了（这正是没有出口时的困惑）。
+Future<void> leaveDemoLedger(BuildContext context) async {
+  await AppStateScope.read(context).exitDemoLedger();
+  if (!context.mounted) return;
+  showYounumToast(context, '已退出示例账本，这是你自己的账单');
+}
+
+/// 示例账本的说明弹层：讲清这是什么，并给一条出口。
+Future<void> showDemoLedgerSheet(BuildContext context) async {
+  final exit = await showModalBottomSheet<bool>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    isScrollControlled: true,
+    showDragHandle: false,
+    builder: (sheetContext) => YounumSheetSurface(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const Center(
+            child: YounumCircleSymbol(
+              icon: YounumIcons.cards,
+              diameter: YounumDimens.circleSymbolSmall,
+            ),
+          ),
+          const SizedBox(height: YounumDimens.gapLg),
+          Text(
+            '当前是示例账本',
+            textAlign: TextAlign.center,
+            style: YounumText.of(sheetContext).sheetTitle,
+          ),
+          const SizedBox(height: YounumDimens.gapSm),
+          const YounumMutedText(
+            '这里的账目是用来先试一遍的样例数据，不会和你的账单混在一起。'
+            '退出之后回到你自己的账本，样例数据仍会留在原处。',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: YounumDimens.gapXl),
+          PrimaryAction(
+            label: '退出示例账本',
+            onPressed: () => Navigator.of(sheetContext).pop(true),
+          ),
+          const SizedBox(height: YounumDimens.gap),
+          PrimaryAction(
+            label: '继续体验',
+            style: YounumActionStyle.secondary,
+            onPressed: () => Navigator.of(sheetContext).pop(false),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (exit != true || !context.mounted) return;
+  await leaveDemoLedger(context);
 }
 
 // -----------------------------------------------------------------------------
@@ -267,6 +335,14 @@ class _OnboardingSlide extends StatelessWidget {
 /// 改卡片尺寸或旋转角度时必须按上面的公式重算。
 const double _artCardInset = 20;
 
+/// 插画的设计宽度。
+///
+/// 卡片的左右内缩（[_artCardInset]）是按**手机宽度**定的：平板（720dp）上
+/// 若让插画跟着容器一起变宽，两张票据会被推到屏幕两端、中间只剩一个
+/// 圆圈，看起来就像版式散了。所以这里固定在设计宽度上再居中。
+/// 349 = 手机内容区宽度（393 屏 - 2×22 边距），即真机上看到的那一份。
+const double _artFrameWidth = 349;
+
 /// 三屏插画共用的底座：轨道圆圈 + 右下角的圆形浮标。
 class _ArtFrame extends StatelessWidget {
   const _ArtFrame({required this.badge, required this.children});
@@ -281,35 +357,41 @@ class _ArtFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = YounumColors.of(context);
 
-    return SizedBox(
-      height: 250,
-      child: Stack(
-        alignment: Alignment.center,
-        children: <Widget>[
-          Container(
-            width: 200,
-            height: 200,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: colors.borderColor),
-            ),
-          ),
-          ...children,
-          Positioned(
-            right: 8,
-            // 放在票据下方，避免遮住卡片文字。
-            bottom: 0,
-            child: Container(
-              width: 44,
-              height: 44,
+    return Center(
+      child: SizedBox(
+        // 测试锚点：平板回归用例靠它量「插画有没有被拉宽」
+        // （与卡片堆叠的 `review-card-stack` 同一个用法）。
+        key: const ValueKey<String>('art-frame'),
+        width: _artFrameWidth,
+        height: 250,
+        child: Stack(
+          alignment: Alignment.center,
+          children: <Widget>[
+            Container(
+              width: 200,
+              height: 200,
               decoration: BoxDecoration(
-                color: colors.primaryColor,
                 shape: BoxShape.circle,
+                border: Border.all(color: colors.borderColor),
               ),
-              child: Icon(badge, color: colors.onPrimaryColor, size: 22),
             ),
-          ),
-        ],
+            ...children,
+            Positioned(
+              right: 8,
+              // 放在票据下方，避免遮住卡片文字。
+              bottom: 0,
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colors.primaryColor,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(badge, color: colors.onPrimaryColor, size: 22),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

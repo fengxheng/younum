@@ -25,6 +25,7 @@ import '../export/export_files.dart';
 import '../export/export_scope.dart';
 import '../import_flow/import_session.dart';
 import '../organize/review_session.dart';
+import '../start/start_screens.dart';
 import 'update_controller.dart';
 
 /// 导出**当前月份**的明细 CSV。
@@ -131,6 +132,17 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: YounumDimens.gapSm),
+          // 正在体验示例账本时，这里给一条**说清楚的出口**。
+          //
+          // 之前只能从空首页「先用示例账单体验」进来，进来之后没有任何地方
+          // 能回到自己的账单 —— 用户会以为样例数据把真实数据顶掉了。
+          if (AppStateScope.of(context).isDemoLedger)
+            YounumSettingRow(
+              title: '退出示例账本',
+              subtitle: '现在看的是样例数据，真实账单在另一个账本里',
+              icon: YounumIcons.undo,
+              onTap: () => leaveDemoLedger(context),
+            ),
           YounumSettingRow(
             title: '主题与配色',
             subtitle: '${theme.displayName} · 换一种喜欢的颜色',

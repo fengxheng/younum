@@ -136,6 +136,50 @@ abstract final class CategoryRules {
     return null;
   }
 
+  /// 卡片上的用途快捷项最多几个。
+  ///
+  /// 8 个 = 两行（每行四个）。这个数**不是随便定的**：确认按钮与
+  /// 「撤销 / 稍后 / 更多操作」那一行必须在不滚动的情况下可见
+  /// （指南 6.2「核心确认区尽量稳定可达」），排到第三行就会把它们推到
+  /// 折叠线以下。所以用户可以自定义**是哪 8 个、按什么顺序**，但不能无限加。
+  static const int quickPickLimit = 8;
+
+  /// 把存下来的快捷项 ID 解析成真实分类（**有序**）。
+  ///
+  /// 为什么需要这一步：偏好里存的是 ID，而分类会被改名、归档、合并掉 ——
+  /// 那时剩下的 ID 指向一个不该再出现在选择列表里的分类。在这里统一过滤，
+  /// 卡片页与管理页看到的就是同一份。
+  ///
+  /// * [storedIds] 为空 = 用户**没配置过** → 用默认（内置一级分类，即原来的行为）；
+  /// * 过滤掉：已归档、不存在、不是一级分类、以及重复的 ID；
+  /// * 过滤后个数不足时**不自动补**别的分类 —— 用户没选过的东西不该自己冒出来。
+  static List<Category> resolveQuickPick({
+    required List<int> storedIds,
+    required List<Category> all,
+    int limit = quickPickLimit,
+  }) {
+    if (storedIds.isEmpty) {
+      return <Category>[
+        for (final category in all)
+          if (category.isRoot && !category.archived && category.isBuiltin) category,
+      ].take(limit).toList(growable: false);
+    }
+
+    final byId = <int, Category>{
+      for (final category in all)
+        if (category.isRoot && !category.archived) category.id: category,
+    };
+    final picked = <Category>[];
+    for (final id in storedIds) {
+      final category = byId[id];
+      if (category == null) continue;
+      if (picked.any((item) => item.id == id)) continue;
+      picked.add(category);
+      if (picked.length >= limit) break;
+    }
+    return List<Category>.unmodifiable(picked);
+  }
+
   /// 能不能把 [source] 合并到 [targetId]（指南 3.5.8）。
   ///
   /// 同名/同层级的重名检查不在这里：合并本来就是为了把两个不同的名字合成一个，

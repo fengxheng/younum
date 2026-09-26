@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
+import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
@@ -154,6 +155,41 @@ void main() {
 
       expect(cardMerchant(tester), merchants[1]);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('确认之后的提示条', () {
+    /// 选一个用途再点确认按钮，走的就是真机上出过问题的那条路。
+    testWidgets('提示条里写的是商户名，不是对象的 toString', (tester) async {
+      await pumpApp(tester);
+
+      await tester.tap(find.text('餐饮'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(PrimaryAction),
+          matching: find.textContaining('确认 ·'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 这里曾经是「已确认 · ReviewCard(6, 社区药房, 6500).merchant → 餐饮」：
+      // `'… $transaction.merchant …'` 只会插值 `$transaction`，
+      // 再把 `.merchant` 当字面量拼上去（见 DECISIONS.md 76 节）。
+      // 这条断言就是为它写的 —— 写成 `$x.y` 立刻会红。
+      expect(
+        find.textContaining('已确认 · ${merchants.first} → 餐饮'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('ReviewCard'),
+        findsNothing,
+        reason: '给用户看的字符串里出现对象字面量，说明插值写成了 \$x.y',
+      );
+
+      // 等提示条自己的 2 秒过去，别给测试留下待处理的定时器。
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
     });
   });
 }

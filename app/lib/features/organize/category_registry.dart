@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 
 import '../../core/designsystem/younum_icons.dart';
+import '../../core/preferences/category_pick_store.dart';
 import '../../data/seed/demo_ledger_seed.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/category_icon_asset.dart';
@@ -27,10 +28,17 @@ import '../../domain/rules/category_rules.dart';
 /// 图标只按分类 ID 存（`category.icon_key`）；图片图标存成一个资源行加一份
 /// 应用私有目录里的文件（见 `DECISIONS.md` 第 51、52 节）。
 class CategoryRegistry extends ChangeNotifier {
-  CategoryRegistry({required this.repository, ImageFileSource? imageSource})
-      : imageSource = imageSource ?? const UnsupportedImageSource();
+  CategoryRegistry({
+    required this.repository,
+    ImageFileSource? imageSource,
+    CategoryPickStore? pickStore,
+  })  : imageSource = imageSource ?? const UnsupportedImageSource(),
+        pickStore = pickStore ?? InMemoryCategoryPickStore();
 
   final LedgerRepository repository;
+
+  /// 用途快捷项的持久化（卡片上显示哪几个、按什么顺序）。
+  final CategoryPickStore pickStore;
 
   /// 选图片的能力。桌面与测试环境是不支持实现，界面据此把入口显灰。
   final ImageFileSource imageSource;
@@ -53,6 +61,9 @@ class CategoryRegistry extends ChangeNotifier {
   List<CategoryIconAsset> _assets = const <CategoryIconAsset>[];
   String? _lastFailure;
   bool _loaded = false;
+
+  /// 用户配置过的快捷项 ID（顺序即显示顺序）。空 = 没配置过，用默认。
+  List<int> _quickPickIds = const <int>[];
 
   /// 账本 ID。分类本身不按账本划分，这里只为调仓库时带上参数；
   /// 记住它，调用方（界面）就不用自己拼 `isDemo ? 1 : 2`。
@@ -183,8 +194,62 @@ class CategoryRegistry extends ChangeNotifier {
     _ledgerId = ledgerId;
     _categories = await repository.categories(ledgerId: ledgerId);
     _assets = await repository.iconAssets();
+    // 偏好读不出来不影响分类本身：退回「没配置过」，卡片显示内置那 8 个。
+    try {
+      _quickPickIds = await pickStore.loadQuickPickIds();
+    } on Object catch (error) {
+      _quickPickIds = const <int>[];
+      _lastFailure = '用途快捷项的设置没读出来：$error';
+    }
     _loaded = true;
     notifyListeners();
+  }
+
+  /// 卡片上的用途快捷项（有序、已过滤、最多 [CategoryRules.quickPickLimit] 个）。
+  ///
+  /// 未配置过时就是内置一级分类 —— 也就是这个功能之前的行为，
+  /// 所以老用户升级上来看到的东西一模一样。
+  List<Category> get quickPick => CategoryRules.resolveQuickPick(
+        storedIds: _quickPickIds,
+        all: _categories,
+      );
+
+  /// 当前的快捷项 ID（顺序即卡片上的顺序）。管理页用它判断「哪几个已选」。
+  List<int> get quickPickIds => <int>[
+        for (final category in quickPick) category.id,
+      ];
+
+  /// 保存快捷项。返回 false 表示**没存下来**（此时界面上的列表也不变）。
+  ///
+  /// 存失败不能装作成功：用户调完顺序、下次进来又变回原样，比一次明确的
+  /// 失败提示糟糕得多。
+  Future<bool> setQuickPick(List<int> ids) async {
+    final stored = ids.take(CategoryRules.quickPickLimit).toList(growable: false);
+    try {
+      await pickStore.saveQuickPickIds(stored);
+    } on Object catch (error) {
+      _lastFailure = '用途快捷项没保存下来：$error';
+      notifyListeners();
+      return false;
+    }
+    _quickPickIds = stored.isEmpty ? const <int>[] : stored;
+    _lastFailure = null;
+    notifyListeners();
+    return true;
+  }
+
+  /// 这个分类能不能加进快捷项；不能时返回给用户看的原因。
+  ///
+  /// 界面拿它**先把入口置灰并说明**，而不是等用户点下去才被拒 ——
+  /// 与名称校验、归档、合并同一条原则。
+  String? quickPickBlockedReason(int categoryId) {
+    final picked = quickPick;
+    if (picked.any((category) => category.id == categoryId)) return null;
+    if (picked.length >= CategoryRules.quickPickLimit) {
+      return '快捷项最多 ${CategoryRules.quickPickLimit} 个：'
+          '再多就会把确认按钮挤到屏幕外';
+    }
+    return null;
   }
 
   /// 分类当前用的图片资源（内置图标时是 null）。

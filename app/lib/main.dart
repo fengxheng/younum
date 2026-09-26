@@ -4,6 +4,7 @@ import 'package:sqflite_sqlcipher/sqflite.dart' show databaseFactory;
 
 import 'app/app.dart';
 import 'core/preferences/app_state_store.dart';
+import 'core/preferences/category_pick_store.dart';
 import 'core/preferences/reminder_store.dart';
 import 'core/preferences/theme_controller.dart';
 import 'core/preferences/theme_store.dart';
@@ -49,6 +50,7 @@ Future<void> main() async {
   AppStateStore appStateStore;
   ReminderStore reminderStore;
   UpdateStore updateStore;
+  CategoryPickStore categoryPickStore;
   LedgerStore ledgerStore;
   // 分类图片的文件柜。目录从平台通道拿（`filesDir`），这里不猜。
   final IconAssetStore iconFiles = FileIconAssetStore(
@@ -99,12 +101,14 @@ Future<void> main() async {
     appStateStore = await SharedPreferencesAppStateStore.open();
     reminderStore = await SharedPreferencesReminderStore.open();
     updateStore = await SharedPreferencesUpdateStore.open();
+    categoryPickStore = await SharedPreferencesCategoryPickStore.open();
     ledgerStore = SqfliteLedgerStore(password: databasePassword);
   } catch (error) {
     themeStore = InMemoryThemeStore();
     appStateStore = InMemoryAppStateStore();
     reminderStore = InMemoryReminderStore();
     updateStore = InMemoryUpdateStore();
+    categoryPickStore = InMemoryCategoryPickStore();
     ledgerStore = InMemoryLedgerStore();
     // 打出来而不是吞掉：真机上这一句是「为什么这次没落盘」的唯一线索。
     debugPrint('偏好或本地存储不可用，本次会话退回内存实现：$error');
@@ -203,6 +207,7 @@ Future<void> main() async {
       updateSource: githubUpdateSource,
       updateInstaller: updateInstaller,
       updateStore: updateStore,
+      categoryPickStore: categoryPickStore,
       appVersion: appVersion,
       databaseEncrypted: databasePassword != null,
       databaseEncryptionNote: encryptionNote,

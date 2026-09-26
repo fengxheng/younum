@@ -21,6 +21,8 @@ abstract final class YounumIcons {
   static const IconData add = Icons.add;
   static const IconData more = Icons.more_horiz;
 
+  /// 拖动排序用的手柄（用途快捷项里用它，避免整行都能拖而和行内按钮抢手势）。
+  static const IconData dragHandle = Icons.drag_handle;
   static const IconData upload = Icons.file_upload_outlined;
   static const IconData download = Icons.file_download_outlined;
   static const IconData search = Icons.search;

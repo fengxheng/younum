@@ -62,24 +62,29 @@ class YounumScreen extends StatelessWidget {
 
     Widget content;
     if (!scrollable) {
-      content = Padding(padding: padding ?? EdgeInsets.zero, child: child);
+      content = _withinReadingWidth(
+        Padding(padding: padding ?? EdgeInsets.zero, child: child),
+      );
     } else {
       content = LayoutBuilder(
         builder: (context, constraints) => SingleChildScrollView(
           // 键盘弹出时保证输入框可见。
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: resolvedPadding,
-          child: fillViewport
-              ? ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minHeight: (constraints.maxHeight - resolvedPadding.vertical)
-                        .clamp(0.0, double.infinity),
-                  ),
-                  // IntrinsicHeight 让 Column 拿到确定高度，
-                  // 这样 spaceBetween / Spacer 在「未超出视口」时才有意义。
-                  child: IntrinsicHeight(child: child),
-                )
-              : child,
+          child: _withinReadingWidth(
+            fillViewport
+                ? ConstrainedBox(
+                    constraints: BoxConstraints(
+                      minHeight:
+                          (constraints.maxHeight - resolvedPadding.vertical)
+                              .clamp(0.0, double.infinity),
+                    ),
+                    // IntrinsicHeight 让 Column 拿到确定高度，
+                    // 这样 spaceBetween / Spacer 在「未超出视口」时才有意义。
+                    child: IntrinsicHeight(child: child),
+                  )
+                : child,
+          ),
         ),
       );
     }
@@ -105,6 +110,18 @@ class YounumScreen extends StatelessWidget {
     );
   }
 }
+
+/// 把内容限制在阅读宽度内并居中（手机上等于原样）。
+///
+/// 指南 6.3：「大屏居中限制阅读宽度……不能把手机 UI 无限拉宽」。
+/// 页面正文、顶部导航、底部弹层都用它，这样三者左右边缘能对齐 ——
+/// 只限制正文的话，标题会贴在平板最左边、内容却在中间，看起来是错位的。
+Widget _withinReadingWidth(Widget child) => Center(
+  child: ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: YounumDimens.readingMaxWidth),
+    child: child,
+  ),
+);
 
 /// 顶部导航栏：圆形返回按钮 + 居中标题 + 可选右侧操作。
 class YounumTopNav extends StatelessWidget {
@@ -134,31 +151,33 @@ class YounumTopNav extends StatelessWidget {
       ),
       child: SizedBox(
         height: YounumDimens.minTouchTarget,
-        child: Row(
-          children: <Widget>[
-            if (showBack)
-              YounumIconButton(
-                icon: YounumIcons.back,
-                semanticLabel: '返回',
-                onPressed: onBack ?? () => Navigator.of(context).maybePop(),
-              )
-            else
-              const SizedBox(width: YounumDimens.minTouchTarget),
-            Expanded(
-              child: Text(
-                title,
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-                style: text.listPrimary.copyWith(color: colors.inkColor),
+        child: _withinReadingWidth(
+          Row(
+            children: <Widget>[
+              if (showBack)
+                YounumIconButton(
+                  icon: YounumIcons.back,
+                  semanticLabel: '返回',
+                  onPressed: onBack ?? () => Navigator.of(context).maybePop(),
+                )
+              else
+                const SizedBox(width: YounumDimens.minTouchTarget),
+              Expanded(
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.listPrimary.copyWith(color: colors.inkColor),
+                ),
               ),
-            ),
-            SizedBox(
-              width: YounumDimens.minTouchTarget,
-              child: trailing == null
-                  ? null
-                  : Align(alignment: Alignment.centerRight, child: trailing),
-            ),
-          ],
+              SizedBox(
+                width: YounumDimens.minTouchTarget,
+                child: trailing == null
+                    ? null
+                    : Align(alignment: Alignment.centerRight, child: trailing),
+              ),
+            ],
+          ),
         ),
       ),
     );

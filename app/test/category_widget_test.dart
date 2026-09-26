@@ -206,6 +206,16 @@ void main() {
     expect(find.text('已归档'), findsOneWidget, reason: '管理页要给出回来的路');
 
     // 恢复。
+    //
+    // 两个「等」都不能省：
+    // ① 上一步归档时会弹一条浮动提示条，它就浮在屏幕底部，正好压住「恢复」
+    //    这一行；不等它自己收掉（2 秒），点到的是提示条。
+    // ② 管理页在图标网格上面多了一行「用途快捷项」，整段「已归档」跟着下移，
+    //    小屏上「恢复」会落到可视区外（直接 tap 只会打空气，用例假红）。
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('恢复'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('恢复'));
     await tester.pumpAndSettle();
 

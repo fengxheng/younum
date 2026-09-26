@@ -88,6 +88,7 @@ integration_test/
 | `import_cross_source_test.dart` | 跨来源疑似重复（同一笔同时出现在银行卡与微信里，商户名完全不同） |
 | `category_management_test.dart` | 分类：新建、同级重名、改名保留 ID、图标、删除默认归档 |
 | `category_merge_test.dart` | 合并：规则、真的迁账、撞唯一索引时金额相加、退款分配改指向 |
+| `quick_pick_test.dart` | 用途快捷项：默仍然内置那 8 个、按给定顺序取子集、过滤已归档/细分/重复且**不自动补位**、上限 8 个、写偏好失败时列表**不变**并给出原因 |
 | `migrations_test.dart` | 迁移框架（用假执行器跑，不碰真数据库） |
 
 ### 3.2 仓库与编排（内存存储 / mock 通道）
@@ -131,13 +132,16 @@ integration_test/
 | `split_widget_test.dart` | 拆分页带的是**那一笔**、合计不符不能提交、已拆过的要回填 |
 | `nature_widget_test.dart` | 性质页：没有预选、退款要选原消费（且候选里没有自己） |
 | `detail_edit_widget_test.dart` | 详情页：备注回填、保存真的写库 |
-| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次） |
+| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次）；另有一组「确认之后的提示条」—— 提示条里必须是商户名，不能是对象的 `toString`（真机上报过，见 `DECISIONS.md` 76 节） |
 | `text_scale_widget_test.dart` | 系统字号 1.0 / 1.25 / 2.0：不溢出、不重叠、卡片真的长高 |
 | `report_coverage_widget_test.dart` | 月报页的「确认本月范围完整」入口 |
 | `share_export_widget_test.dart` | 隐私开关必须影响**文件**，不是屏幕遮罩 |
 | `reminder_widget_test.dart` | 提醒设置页：拿不到权限时不能显示「已开启」 |
 | `update_widget_test.dart` | 检查更新页：按钮不贴在一起、查不到不能写成已是最新；**启动时的新版本提示**也在这一组（只弹一次、忽略过的版本不弹、出现更高版本再提、「以后再说」不写偏好、Release 正文那种长度与字号 2.0 下不溢出） |
 | `share_import_widget_test.dart` | 系统「分享一份账单到有数」：落到确认导入页、认不出表头去映射页、老式 `.xls` 与读不了的文件要说清原因、同一份分享**只导一次** |
+| `quick_pick_widget_test.dart` | 用途快捷项接线：卡片上的几格就是配好的那几个与那个顺序；管理页移除后卡片跟着变；**拖动改顺序真的落盘**；只剩一个时不能移除；满了显示「已满」且点不动 |
+| `demo_ledger_exit_widget_test.dart` | 退出示例账本：「我的」那一行退出后回到自己的账本且能走回去、徽标 → 弹层 → 退出、「继续体验」什么都不改 |
+| `tablet_layout_widget_test.dart` | 平板竖屏（720×1152dp）：走一遍不溢出、正文正好 560dp 且居中、插画不跟着屏宽变形、弹层也跟着限宽 |
 
 ### 3.4 夹具与手动测试
 

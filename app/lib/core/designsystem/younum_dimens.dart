@@ -12,6 +12,16 @@ abstract final class YounumDimens {
   static const double pageTop = 8;
   static const double pageBottom = 24;
 
+  /// 大屏上内容的最大宽度（超出就居中留白）。
+  ///
+  /// 指南 6.3 的原话：「大屏居中限制阅读宽度……**不能把手机 UI 无限拉宽**」。
+  /// 平板竖屏（本机 720dp 宽）上不加这道限制，一行正文会横跨整个屏幕、
+  /// 金额卡与按钮会拉成一条扁带，看上去就像版式坏了。
+  ///
+  /// 取 560：比手机（360–412）宽，两张卡并排、金额与图表都放得下；
+  /// 又比平板窄，一行不会长到难读。手机上这个值不起作用（宽度本来就不到）。
+  static const double readingMaxWidth = 560;
+
   /// 无障碍最小触控目标（6.2：不得因为图标小而缩小点击区域）。
   static const double minTouchTarget = 48;
 

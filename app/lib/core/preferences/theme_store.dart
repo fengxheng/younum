@@ -53,6 +53,9 @@ abstract final class PreferenceKeys {
 
   /// 用户点过「忽略这个版本」的那个 build number。
   static const String updateSkippedVersionCode = 'younum.update.skipped';
+
+  /// 整理卡片上的用途快捷项（有序的分类 ID 列表）。
+  static const String categoryQuickPick = 'younum.category.quickPick';
 }
 
 /// SharedPreferences 实现。

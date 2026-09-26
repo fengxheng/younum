@@ -14,6 +14,7 @@ import '../../core/designsystem/younum_colors.dart';
 import '../../core/designsystem/younum_dimens.dart';
 import '../../core/designsystem/younum_icons.dart';
 import '../../core/designsystem/younum_text.dart';
+import 'category_registry.dart';
 import 'review_card.dart';
 import 'review_session.dart';
 
@@ -131,7 +132,7 @@ class _CardsScreenState extends State<CardsScreen> {
               ],
             ),
             CategoryGrid(
-              items: _categoryItemsOf(session),
+              items: _categoryItemsOf(context),
               selectedName: session.selectedCategory,
               onSelected: session.select,
             ),
@@ -175,13 +176,25 @@ class _CardsScreenState extends State<CardsScreen> {
     );
   }
 
-  List<YounumCategoryItem> _categoryItemsOf(ReviewSession session) => session
-      .categories
-      .map((category) => YounumCategoryItem(
-            name: category.name,
-            iconKey: category.iconKey ?? YounumIcons.defaultCategoryIconKey,
-          ))
-      .toList(growable: false);
+  /// 卡片上「选择用途」网格里的分类 = 用户在「用途快捷项」里配好的那几个。
+  ///
+  /// 以前写死成「内置的 8 个一级分类」（见 `review_session.dart` 里那段说明），
+  /// 用户既不能换掉、也不能换顺序。现在这两件事都交给用户，默认仍是那 8 个，
+  /// 所以不改设置的人看到的和以前一模一样。
+  ///
+  /// 图标从**同一个注册表**取（含自定义图片图标），不再只看名字 ——
+  /// 指南 14.4.7 要求所有页面从同一个分类仓库解析资源。
+  List<YounumCategoryItem> _categoryItemsOf(BuildContext context) {
+    final registry = CategoryRegistryScope.of(context);
+    return <YounumCategoryItem>[
+      for (final category in registry.quickPick)
+        YounumCategoryItem(
+          name: category.name,
+          iconKey: category.iconKey ?? YounumIcons.defaultCategoryIconKey,
+          imagePath: registry.imagePathOf(category),
+        ),
+    ];
+  }
 
   Future<void> _confirmByButton() async {
     final session = _session;
@@ -192,7 +205,13 @@ class _CardsScreenState extends State<CardsScreen> {
     if (!mounted) return;
     showYounumToast(
       context,
-      ok ? '已确认 · $transaction.merchant → $category' : '保存失败，卡片已保留，请重试',
+      // ⚠️ 必须是 `${...}`：`$transaction.merchant` 只取 `$transaction`
+      // 再把 `.merchant` 当字面量拼上去，于是提示条上会出现
+      // 「ReviewCard(6, 社区药房, 6500).merchant → 餐饮」这种调试味的字符串
+      // （真机截图上看到过）。
+      ok
+          ? '已确认 · ${transaction.merchant} → $category'
+          : '保存失败，卡片已保留，请重试',
     );
   }
 

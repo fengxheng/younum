@@ -16,32 +16,41 @@ class YounumSheetSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = YounumColors.of(context);
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: colors.washColor,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(YounumDimens.radiusSheet),
+    // 大屏上弹层也要居中限宽（指南 6.3）：不限制的话，确认弹层会长得
+    // 跟平板一样宽，两行字之间拉出一大片空白，反而更难读。
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: YounumDimens.readingMaxWidth,
         ),
-      ),
-      padding: YounumDimens.sheetPadding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Center(
-            child: Container(
-              width: 34,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 22),
-              decoration: BoxDecoration(
-                color: colors.borderColor,
-                borderRadius: BorderRadius.circular(4),
-              ),
+        child: Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: colors.washColor,
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(YounumDimens.radiusSheet),
             ),
           ),
-          child,
-        ],
+          padding: YounumDimens.sheetPadding,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Center(
+                child: Container(
+                  width: 34,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 22),
+                  decoration: BoxDecoration(
+                    color: colors.borderColor,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              child,
+            ],
+          ),
+        ),
       ),
     );
   }

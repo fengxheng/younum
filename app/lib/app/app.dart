@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import '../core/components/primitives.dart';
 import '../core/components/sheets.dart';
 import '../core/preferences/app_state_store.dart';
+import '../core/preferences/category_pick_store.dart';
 import '../core/preferences/reminder_controller.dart';
 import '../core/preferences/reminder_store.dart';
 import '../core/preferences/theme_controller.dart';
@@ -25,6 +26,7 @@ import '../features/import_flow/parse_screens.dart';
 import '../features/organize/cards_screen.dart';
 import '../features/organize/category_registry.dart';
 import '../features/organize/category_screens.dart';
+import '../features/organize/quick_pick_screen.dart';
 import '../features/organize/review_screens.dart';
 import '../features/organize/review_session.dart';
 import '../features/profile/profile_screens.dart';
@@ -61,6 +63,7 @@ class YounumApp extends StatefulWidget {
     this.updateSource = const UnsupportedUpdateSource(),
     this.updateInstaller = const UnsupportedUpdateInstaller(),
     this.updateStore,
+    this.categoryPickStore,
     this.appVersion,
     this.databaseEncrypted = false,
     this.databaseEncryptionNote,
@@ -101,6 +104,10 @@ class YounumApp extends StatefulWidget {
 
   /// 「忽略这个版本」的持久化。不传就用内存实现（测试与降级路径）。
   final UpdateStore? updateStore;
+
+  /// 用途快捷项（卡片上显示哪几个分类、按什么顺序）的持久化。
+  /// 不传就用内存实现（测试与降级路径）。
+  final CategoryPickStore? categoryPickStore;
 
   /// 当前安装的版本。读不到时为 null —— 那就**不做升级提示**，
   /// 而不是拿一个猜出来的版本号去比较。
@@ -144,6 +151,7 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
   late final CategoryRegistry _registry = CategoryRegistry(
     repository: widget.ledgerRepository,
     imageSource: widget.imageFileSource,
+    pickStore: widget.categoryPickStore ?? InMemoryCategoryPickStore(),
   );
   late final ReminderController _reminder = ReminderController(
     store: widget.reminderStore ?? InMemoryReminderStore(),
@@ -537,6 +545,8 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
         );
       case AppRoutes.categoryManage:
         return (context) => const CategoryManageScreen();
+      case AppRoutes.categoryQuickPick:
+        return (context) => const QuickPickScreen();
       case AppRoutes.categoryEditor:
         final args = settings.arguments;
         return (context) => CategoryEditorScreen(

@@ -237,6 +237,18 @@ class CategoryManageScreen extends StatelessWidget {
           const SizedBox(height: YounumDimens.gapSm),
           YounumMutedText('点击一个分类，选择它的专属图标。'),
           const SizedBox(height: YounumDimens.gapLg),
+          // 用途快捷项：卡片上显示哪几个、按什么顺序。
+          // 放在图标网格**上面**是有意的：它管的是「整理时先看到什么」，
+          // 比换图标更常被用到，埋在网格下面会很难找。
+          YounumSettingRow(
+            title: '用途快捷项',
+            subtitle:
+                '卡片上显示${registry.quickPick.length}个：'
+                '${registry.quickPick.map((category) => category.name).join('、')}',
+            icon: YounumIcons.navCards,
+            onTap: () => context.open(AppRoutes.categoryQuickPick),
+          ),
+          const SizedBox(height: YounumDimens.gapSm),
           LayoutBuilder(
             builder: (context, constraints) {
               const spacing = 10.0;
