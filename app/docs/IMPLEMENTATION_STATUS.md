@@ -249,8 +249,9 @@ emoji 的存与画由 2 条界面用例 + 8 条规则用例守着，真机上只
 发布（版本号规则见 `DECISIONS.md` 72 节、发版流程见 `docs/RELEASE.md`）。
 release 包在平板上从 `1.3.0+6` 覆盖安装到 `1.4.0+7`，账目逐项一致；
 最后发布的 build number 用的是 **`+8`** —— `v1.4.0+7` 这个标签名被「不可变发布」
-永久占住了（原因、证据与教训见 `DECISIONS.md` 83 节），`+8` 只核了包本身，
-装机验证因设备掉线未做（见 `TEST_REPORT.md`）。
+永久占住了（原因、证据与教训见 `DECISIONS.md` 83 节）。`+8` 也覆盖安装验过：
+versionCode 7→8、`firstInstallTime` 没变、冷启动后账目逐项一致、「我的」页读到
+Version 1.4.0（见 `TEST_REPORT.md`）。
 
 ## 本次验证
 
