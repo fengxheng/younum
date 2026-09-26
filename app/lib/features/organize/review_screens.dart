@@ -179,7 +179,14 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
                 const SizedBox(height: YounumDimens.gapSm),
                 YounumBadge(
                   displayCategory == '待确认'
-                      ? '待确认用途'
+                      // 非消费的记录本来就不需要「用途」（指南 3.3：
+                      // 收入 / 转账 / 排除统计确认性质后即处理完成），
+                      // 所以这里说出它**是什么**，而不是一律写「待确认用途」——
+                      // 那会让一笔收入看起来像少填了什么。
+                      ? (transaction.nature.isExpense ||
+                              transaction.nature == TransactionNature.unknown
+                          ? '待确认用途'
+                          : transaction.directionLabel)
                       : '已归类 · $displayCategory',
                   tone: displayCategory == '待确认'
                       ? YounumBadgeTone.warm
@@ -194,8 +201,18 @@ class _TransactionDetailScreenState extends State<TransactionDetailScreen> {
               children: <Widget>[
                 YounumLineInfo(label: '交易时间', value: transaction.dateText),
                 YounumLineInfo(label: '支付来源', value: transaction.source),
-                const YounumLineInfo(label: '交易类型', value: '商户消费'),
-                const YounumLineInfo(label: '原始单号', value: '•••• 0826'),
+                // 以前这两行是写死的「商户消费」与「•••• 0826」：每一笔都显示
+                // 同一个样例值，一笔收入点进来也会看到「商户消费」。
+                // 「交易性质」是我们**真有**的字段（而且决定这笔算不算消费，
+                // 正是这一页最该核对的东西）；单据号从记录里取，取不到就说取不到。
+                YounumLineInfo(
+                  label: '交易性质',
+                  value: transaction.nature.label,
+                ),
+                YounumLineInfo(
+                  label: '原始单号',
+                  value: transaction.sourceIdText,
+                ),
               ],
             ),
           ),

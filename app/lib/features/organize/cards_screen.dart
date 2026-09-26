@@ -334,7 +334,7 @@ class TransactionCardView extends StatelessWidget {
 
     return Semantics(
       label: '${card.merchant}，'
-          '支出 ¥${_formatForScreenReader(card.amountCents)}，'
+          '${card.directionLabel} ¥${_formatForScreenReader(card.amountCents)}，'
           '${card.dateText}，${card.source}',
       excludeSemantics: true,
       child: Container(
@@ -371,7 +371,9 @@ class TransactionCardView extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                const YounumBadge('支出'),
+                // 徽标跟着交易性质走：写死「支出」会让收入那张卡片说反话
+                // （见 `ReviewCard.directionLabel` 与 `DECISIONS.md` 77 节）。
+                YounumBadge(card.directionLabel),
               ],
             ),
             const SizedBox(height: YounumDimens.gap),
@@ -379,7 +381,8 @@ class TransactionCardView extends StatelessWidget {
               cents: card.amountCents,
               scale: AmountScale.card,
               semanticLabel:
-                  '${card.merchant} 支出 ${_formatForScreenReader(card.amountCents)} 元',
+                  '${card.merchant} ${card.directionLabel} '
+                  '${_formatForScreenReader(card.amountCents)} 元',
             ),
             const SizedBox(height: YounumDimens.gapSm),
             Text(card.merchant, style: text.listPrimary),

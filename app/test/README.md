@@ -131,8 +131,8 @@ integration_test/
 | `category_merge_widget_test.dart` | 合并界面：目标列表只给同层级、确认弹层说清影响、账目真的换了分类 |
 | `split_widget_test.dart` | 拆分页带的是**那一笔**、合计不符不能提交、已拆过的要回填 |
 | `nature_widget_test.dart` | 性质页：没有预选、退款要选原消费（且候选里没有自己） |
-| `detail_edit_widget_test.dart` | 详情页：备注回填、保存真的写库 |
-| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次）；另有一组「确认之后的提示条」—— 提示条里必须是商户名，不能是对象的 `toString`（真机上报过，见 `DECISIONS.md` 76 节） |
+| `detail_edit_widget_test.dart` | 详情页：备注回填、保存真的写库；「说的是这一笔的实话」—— 非消费不等于「待确认用途」、面板里不能有写死的「商户消费」与 `•••• 0826` |
+| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次）；「卡片上的收支方向」—— 徽标与朗读文本都得读交易性质（真机上报过「收入写成支出」）；「确认之后的提示条」—— 提示条里必须是商户名，不能是对象的 `toString`（见 `DECISIONS.md` 76—77 节） |
 | `text_scale_widget_test.dart` | 系统字号 1.0 / 1.25 / 2.0：不溢出、不重叠、卡片真的长高 |
 | `report_coverage_widget_test.dart` | 月报页的「确认本月范围完整」入口 |
 | `share_export_widget_test.dart` | 隐私开关必须影响**文件**，不是屏幕遮罩 |

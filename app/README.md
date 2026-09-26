@@ -12,7 +12,7 @@ Android 记账整理 App：**导入月账单 → 逐笔确认用途 → 生成�
 一笔一笔地给它一个用途，整理完就能看到分类占比、趋势、日均，以及跟上月比怎么样。
 
 **当前状态**：功能闭环，已在真机日常使用。33 个设计状态全部实现；
-`flutter test` 653 项、真机测试 55 项通过（平板竖屏另有走查，见 `docs/MANUAL_CHECKS.md`）。
+`flutter test` 659 项、真机测试 55 项通过（平板竖屏另有走查，见 `docs/MANUAL_CHECKS.md`）。
 
 ---
 
@@ -339,7 +339,7 @@ flutter test integration_test/file_source_test.dart -d <设备> # 真机：文�
 ```
 
 当前数字（会随开发变化，以 [`docs/TEST_REPORT.md`](docs/TEST_REPORT.md) 为准）：
-`flutter test` **653 项通过**（1 个联网用例默认跳过）、真机 **55 项通过**。
+`flutter test` **659 项通过**（1 个联网用例默认跳过）、真机 **55 项通过**。
 
 ---
 

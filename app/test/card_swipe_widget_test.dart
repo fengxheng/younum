@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
 import 'package:younum/core/components/buttons.dart';
+import 'package:younum/core/components/primitives.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
+import 'package:younum/core/time/statistics_time.dart';
 import 'package:younum/data/memory/in_memory_ledger_store.dart';
+import 'package:younum/data/seed/demo_ledger_seed.dart';
+import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
+import 'package:younum/features/organize/cards_screen.dart';
 
 /// 堆叠卡片的滑动手势回归测试。
 ///
@@ -155,6 +160,81 @@ void main() {
 
       expect(cardMerchant(tester), merchants[1]);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('卡片上的收支方向', () {
+    /// 往演示账本里塞一笔**收入**。
+    ///
+    /// 收入行确实会进整理队列 —— 导入时按账单的「收/支」列判定性质
+    /// （`import_workflow.dart` 的 `_natureOf`），微信/支付宝账单里的收入行
+    /// 就是这样进来的。队列按时间倒序，所以这笔排在最前面。
+    Future<void> seedIncome() async {
+      await store.insertTransaction(
+        LedgerTransaction(
+          id: LedgerTransaction.idUnassigned,
+          ledgerId: DemoLedgerSeed.demoLedgerId,
+          occurredAtMs: StatisticsTime.epochMsFor(2026, 9, 26, 10),
+          amountCents: 500000,
+          merchant: '刘旭龙',
+          nature: TransactionNature.income,
+          reviewStatus: ReviewStatus.pending,
+          timeZone: StatisticsTime.timeZone,
+        ),
+      );
+    }
+
+    /// 某个商户那张卡片上的徽标文字。
+    ///
+    /// 堆叠卡片会同时挂着后面几张，所以要**按商户名定位当前那张**，
+    /// 否则会读到别的卡片上的徽标。
+    String badgeOf(WidgetTester tester, String merchant) => tester
+        .widget<YounumBadge>(
+          find.descendant(
+            of: find
+                .ancestor(
+                  of: find.text(merchant),
+                  matching: find.byType(TransactionCardView),
+                )
+                .first,
+            matching: find.byType(YounumBadge),
+          ),
+        )
+        .label;
+
+    testWidgets('收入那一笔写「收入」，不能写死「支出」', (tester) async {
+      // 真机上就是这么看到的：卡片顶着「支出」+ ¥5,000.00，
+      // 而同一笔在「全部明细」里是「收入 · +¥5,000.00」。
+      await seedIncome();
+      await pumpApp(tester);
+
+      // 找不到这张卡片时 finder 会直接报错，不会静默跳过。
+      expect(
+        badgeOf(tester, '刘旭龙'),
+        '收入',
+        reason: '金额一律存绝对值，方向只能由交易性质表达（指南 3.1）',
+      );
+    });
+
+    testWidgets('消费那一笔仍然是「支出」（设计稿的用词，不要改成「消费」）', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+
+      expect(cardMerchant(tester), merchants.first);
+      expect(badgeOf(tester, merchants.first), '支出');
+    });
+
+    testWidgets('朗读文本也报「收入」，不能让读屏用户听到反的', (tester) async {
+      await seedIncome();
+      await pumpApp(tester);
+
+      expect(find.bySemanticsLabel(RegExp('刘旭龙.*收入')), findsWidgets);
+      expect(
+        find.bySemanticsLabel(RegExp('刘旭龙.*支出')),
+        findsNothing,
+        reason: '徽标说一套、朗读说另一套，等于没修',
+      );
     });
   });
 
