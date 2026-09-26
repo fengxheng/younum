@@ -175,6 +175,12 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
     _registry.load(
       ledgerId: _ledgerIdFor(widget.appStateController.isDemoLedger),
     );
+    // 分类一变（新建 / 改名 / 归档 / 合并）就同步给整理会话。
+    //
+    // 两边各拿着一份分类列表，而卡片与详情页都是拿**名字**换分类 ID 的。
+    // 不声不响的后果真机上出现过：新建一个用途、回卡片选中它、右滑 ——
+    // 卡片静默回弹，看着像手势坏了（见 `DECISIONS.md` 78 节）。
+    _registry.addListener(_syncCategories);
     // 提醒设置与平台状态也启动就读：设置页必须显示**实际**状态。
     _reminder.load();
     // 升级检查：**静默**查一次（不阻塞启动、失败不留痕）。
@@ -402,10 +408,14 @@ class _YounumAppState extends State<YounumApp> with WidgetsBindingObserver {
   Future<void> _reloadLedgerViews() =>
       _review.reload(followPreferredMonth: true);
 
+  /// 分类列表变了就同步给整理会话（只重读分类，不动队列与报告）。
+  void _syncCategories() => _review.reloadCategories();
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.appStateController.removeListener(_syncLedgerMode);
+    _registry.removeListener(_syncCategories);
     _update.removeListener(_promptUpdateIfAvailable);
     _tabs.dispose();
     _review.dispose();

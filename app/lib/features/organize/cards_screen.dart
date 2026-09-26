@@ -97,6 +97,15 @@ class _CardsScreenState extends State<CardsScreen> {
                 if (!context.mounted) return;
                 showYounumToast(context, '已确认 · ${session.lastActionLabel ?? '用途已保存'}');
               },
+              // 手势这条路以前失败时只是回弹，一句话都没有 ——
+              // 用户看到的就是「右滑没能确认」（见 DECISIONS.md 78 节）。
+              onRejected: (reason) {
+                if (!context.mounted) return;
+                showYounumToast(
+                  context,
+                  reason ?? session.lastFailure ?? '这次没保存下来，卡片已保留，请重试',
+                );
+              },
             ),
             // 手势提示行（「← 左滑：稍后处理 / 右滑：确认已选分类 →」）按需求不展示。
             //

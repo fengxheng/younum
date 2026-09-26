@@ -33,6 +33,7 @@ class TransactionCardStack extends StatefulWidget {
     required this.onConfirm,
     required this.onDefer,
     required this.onCommitted,
+    this.onRejected,
     this.enabled = true,
     this.backLayerCount = 2,
   });
@@ -54,6 +55,13 @@ class TransactionCardStack extends StatefulWidget {
 
   /// 事务成功后推进队列（移出当前卡、露出下一张）。
   final VoidCallback onCommitted;
+
+  /// 事务没成功时回调，调用方用来说出原因（[reason] 为 null 表示用调用方自己的原因）。
+  ///
+  /// **不能只回弹了事**：回弹是「什么都没发生」的样子，而用户刚才确实做了一次
+  /// 操作。真机上报过「右滑没法确认」，查下去是选中的用途换不成分类 ID
+  /// （见 `DECISIONS.md` 78 节）—— 那种时候必须说出原因，而不是让手势背锅。
+  final void Function(String? reason)? onRejected;
 
   /// 队列为空时禁用。
   final bool enabled;
@@ -249,9 +257,11 @@ class _TransactionCardStackState extends State<TransactionCardStack>
 
     if (direction == CardSwipeDirection.confirm && widget.selectedCategory == null) {
       await _springBack();
+      // 文档里写的就是「回弹**并提示**」：没选用途时右滑不是错误，
+      // 但什么也不说会让人以为手势坏了。
+      widget.onRejected?.call('先选一个用途，再右滑确认');
       return;
     }
-
     _phase.value = CardGesturePhase.committing;
     // 冻结当前卡片：事务成功后父级会立刻换数据，但动画必须先把这一张移出去。
     // `_frozenCard` 是普通字段，变化后需要一次重建 —— 只在提交时发生，不是每帧。
@@ -277,6 +287,8 @@ class _TransactionCardStackState extends State<TransactionCardStack>
       _frozenCard = null;
       setState(() {});
       await _springBack();
+      // 回弹之后再说原因 —— 先说完原因再回弹会显得界面没跟上手势。
+      widget.onRejected?.call(null);
       return;
     }
 

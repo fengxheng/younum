@@ -127,12 +127,12 @@ integration_test/
 | --- | --- |
 | `onboarding_widget_test.dart` | 三屏引导：首尾不循环、竖向滑动不翻页、每屏能跳过、按钮文案随屏变化 |
 | `import_flow_widget_test.dart` | 导入全流程，以及**提交之后首页与整理页立刻能看到**、**跨月导入要跟着走到那个月** |
-| `category_widget_test.dart` | 分类管理：新建真的落库、重名被拒还在原地、归档能从「已归档」恢复 |
+| `category_widget_test.dart` | 分类管理：新建真的落库、重名被拒还在原地、归档能从「已归档」恢复；**新建的分类马上能在卡片上选中并确认**（不用重启应用） |
 | `category_merge_widget_test.dart` | 合并界面：目标列表只给同层级、确认弹层说清影响、账目真的换了分类 |
 | `split_widget_test.dart` | 拆分页带的是**那一笔**、合计不符不能提交、已拆过的要回填 |
 | `nature_widget_test.dart` | 性质页：没有预选、退款要选原消费（且候选里没有自己） |
 | `detail_edit_widget_test.dart` | 详情页：备注回填、保存真的写库；「说的是这一笔的实话」—— 非消费不等于「待确认用途」、面板里不能有写死的「商户消费」与 `•••• 0826` |
-| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次）；「卡片上的收支方向」—— 徽标与朗读文本都得读交易性质（真机上报过「收入写成支出」）；「确认之后的提示条」—— 提示条里必须是商户名，不能是对象的 `toString`（见 `DECISIONS.md` 76—77 节） |
+| `card_swipe_widget_test.dart` | 滑动手势回归（卡片高度实现方式变过一次）；「卡片上的收支方向」—— 徽标与朗读文本都得读交易性质（真机上报过「收入写成支出」）；「手势这条路也要说实话」—— 失败与未选用途都要说出原因，不能静默回弹；「确认之后的提示条」—— 提示条里必须是商户名，不能是对象的 `toString`（见 `DECISIONS.md` 76—78 节） |
 | `text_scale_widget_test.dart` | 系统字号 1.0 / 1.25 / 2.0：不溢出、不重叠、卡片真的长高 |
 | `report_coverage_widget_test.dart` | 月报页的「确认本月范围完整」入口 |
 | `share_export_widget_test.dart` | 隐私开关必须影响**文件**，不是屏幕遮罩 |

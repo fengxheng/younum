@@ -112,6 +112,28 @@ class ReviewSession extends ChangeNotifier {
     }
   }
 
+  /// 只重读分类列表（不动队列与报告）。
+  ///
+  /// 为什么需要它：卡片与详情页都是拿**名字**换分类 ID 的
+  /// （卡片网格上只有名字，见 [categoryIdNamed]），而 [_categories]
+  /// 是本次加载时的快照。用户刚在「分类管理」里新建一个用途、
+  /// 立刻回卡片用它确认 —— 名字换不成 ID，确认就静默失败。
+  /// 真机上就是这么报的（右滑没反应），见 `DECISIONS.md` 78 节。
+  /// 所以分类一变（新建 / 改名 / 归档 / 合并）就同步一次，
+  /// 由 `app.dart` 监听分类注册表来调。
+  Future<void> reloadCategories() async {
+    final ledgerId = _ledgerId;
+    if (ledgerId == null) return;
+    _categories = await repository.categories(ledgerId: ledgerId);
+    // 选中的用途如果已经不在可用分类里（被归档 / 合并掉了），就把选择清掉：
+    // 让确认按钮继续说一个用不了的用途，用户点下去只会失败。
+    final selected = _selectedCategory;
+    if (selected != null && categoryIdNamed(selected) == null) {
+      _selectedCategory = null;
+    }
+    notifyListeners();
+  }
+
   /// 重新加载当前账本与月份。
   ///
   /// [followPreferredMonth] 为真时，**像刚打开应用那样**重新判断该看哪个月
@@ -315,7 +337,14 @@ class ReviewSession extends ChangeNotifier {
     if (_committing) return false;
     final categoryId = selectedCategoryId;
     // 未选择分类时确认按钮不可提交（含右滑）。
-    if (categoryId == null) return false;
+    if (categoryId == null) {
+      // 选中的名字换不成分类 ID。以前这里**静默**返回 false：
+      // 用户右滑只看到卡片回弹，看不出发生了什么（真机上报的就是这个）。
+      // 把原因写进 lastFailure，让调用方说出来。
+      _lastFailure = '这个用途找不到对应的分类，请回到「全部分类」重新选一个';
+      notifyListeners();
+      return false;
+    }
     final card = current;
     if (card == null) return false;
 
@@ -553,6 +582,8 @@ class ReviewSession extends ChangeNotifier {
           );
           // 每次操作后清空临时选择，下一张默认未选分类。
           _selectedCategory = null;
+          // 上一次失败的原因不能留着：否则下一次失败时会把旧原因当新原因说。
+          _lastFailure = null;
           return true;
         case ReviewRejected(:final message):
           _lastFailure = message;

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:younum/app/app.dart';
 import 'package:younum/core/components/buttons.dart';
 import 'package:younum/core/components/screen_scaffold.dart';
+import 'package:younum/core/designsystem/younum_icons.dart';
 import 'package:younum/core/preferences/app_state_store.dart';
 import 'package:younum/core/preferences/theme_controller.dart';
 import 'package:younum/core/preferences/theme_store.dart';
@@ -133,6 +134,85 @@ void main() {
     expect(saved.iconKey, isNotNull);
     expect(find.byType(CategoryManageScreen), findsOneWidget);
     expect(find.text('养花'), findsWidgets);
+  });
+
+  /// 整理页「已整理 n / N 笔」里的 n。
+  int doneCount(WidgetTester tester) {
+    final text = tester
+        .widgetList<Text>(find.textContaining('已整理'))
+        .map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '')
+        .firstWhere((value) => value.contains('已整理'));
+    return int.parse(RegExp(r'已整理 (\d+)').firstMatch(text)!.group(1)!);
+  }
+
+  testWidgets('新建的分类，卡片上立刻就能选中并确认（不用重启应用）', (
+    WidgetTester tester,
+  ) async {
+    // 真机上就是这么撞上的：在「分类管理」里新建了一个用途（收入），
+    // 回到卡片里选中它、右滑 —— **卡片什么都不说地回弹**，像是手势坏了。
+    //
+    // 根因不在手势：会话手里的分类列表是**启动时读的那一份**，
+    // 新建的分类不在里面，于是「名字 → 分类 ID」换不出来，
+    // `confirmCurrent` 静默返回 false（见 DECISIONS.md 78 节）。
+    // 杀掉应用重开之后就好了 —— 那是典型的「界面拿着旧快照」。
+    await openManage(tester);
+    await tester.tap(find.text('+ 新建'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '收入');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存分类'));
+    await tester.pumpAndSettle();
+
+    final created = await categoryNamed('收入');
+    expect(created, isNotNull, reason: '前提：分类真的建好了');
+
+    // 保存后会弹一条「分类已保存」提示条：先把它的 2 秒等过去再走。
+    // 不等的话，路由动画期间两条提示条会撞成同一个 hero tag，
+    // Flutter 自己会抛断言（与要验的东西无关）。
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+
+    // 回到卡片页：分类管理 → 我的 → 整理。
+    await tester.tap(find.byIcon(YounumIcons.back).first);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppBottomBar),
+        matching: find.text('整理'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 从「全部分类」里选刚建的那个，再用。
+    await tester.tap(find.textContaining('全部分类'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('收入').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('使用此分类'));
+    await tester.pumpAndSettle();
+
+    final before = doneCount(tester);
+    await tester.drag(
+      find.byKey(const ValueKey<String>('review-card-stack')),
+      const Offset(200, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      doneCount(tester),
+      before + 1,
+      reason: '新建的分类必须能马上用来确认，不能等重启',
+    );
+
+    // 而且真的落库了：这笔的用途就是新建的那个分类。
+    final dataset = await repository.dataset(ledgerId: ledgerId);
+    expect(
+      dataset
+          .allocationsOf(DemoLedgerSeed.transactionIdAt(0))
+          .map((allocation) => allocation.categoryId)
+          .toList(),
+      <int>[created!.id],
+    );
   });
 
   testWidgets('同级重名被拒绝：显示原因、不落库、也不离开这一页', (WidgetTester tester) async {

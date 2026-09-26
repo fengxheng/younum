@@ -13,6 +13,7 @@ import 'package:younum/domain/models/ledger_transaction.dart';
 import 'package:younum/domain/repositories/ledger_file_source.dart';
 import 'package:younum/domain/repositories/ledger_repository.dart';
 import 'package:younum/features/organize/cards_screen.dart';
+import 'package:younum/features/organize/review_session.dart';
 
 /// 堆叠卡片的滑动手势回归测试。
 ///
@@ -238,8 +239,42 @@ void main() {
     });
   });
 
-  group('确认之后的提示条', () {
-    /// 选一个用途再点确认按钮，走的就是真机上出过问题的那条路。
+  group('手势这条路也要说实话', () {
+    testWidgets('选中的用途换不成分类时：不能静默回弹，要说清原因', (tester) async {
+      await pumpApp(tester);
+
+      // 直接塞一个库里没有的用途名 —— 等价于「刚新建的分类还没同步进会话」，
+      // 真机上就是这么撞上「右滑没法确认」的（见 DECISIONS.md 78 节）。
+      final session = ReviewSessionScope.of(
+        tester.element(find.byType(CardsScreen)),
+      );
+      session.select('库里没有的用途');
+      await tester.pumpAndSettle();
+
+      await swipe(tester, 200);
+
+      expect(
+        find.textContaining('找不到对应的分类'),
+        findsOneWidget,
+        reason: '回弹是「什么都没发生」的样子，而用户确实做了一次操作',
+      );
+      expect(doneCount(tester), 0, reason: '没提交成功就不能算整理完成');
+    });
+
+    testWidgets('一个用途都没选就右滑：也要说一句，不能只是回弹', (tester) async {
+      // 文档里写的就是「未选分类时右滑 → 回弹**并提示**」（见
+      // `transaction_card_stack.dart` 开头的手势语义）。
+      await pumpApp(tester);
+
+      await swipe(tester, 200);
+
+      expect(find.textContaining('先选一个用途'), findsOneWidget);
+      expect(doneCount(tester), 0);
+      expect(cardMerchant(tester), merchants.first, reason: '记录不变，还是同一张');
+    });
+  });
+
+  group('确认之后的提示条', () {    /// 选一个用途再点确认按钮，走的就是真机上出过问题的那条路。
     testWidgets('提示条里写的是商户名，不是对象的 toString', (tester) async {
       await pumpApp(tester);
 

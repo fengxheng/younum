@@ -8,7 +8,7 @@
 | 层级 | 命令 | 结果 |
 | --- | --- | --- |
 | 静态检查 | `flutter analyze` | 零告警 |
-| 单元 + 界面测试 | `flutter test` | **659 passed**（1 个联网用例默认跳过） |
+| 单元 + 界面测试 | `flutter test` | **662 passed**（1 个联网用例默认跳过） |
 | 真机数据库测试 | `flutter test integration_test/database_test.dart -d 412913d4` | **50 passed**（本轮没改 SQL，未重跑，见下） |
 | 真机文件选择通道 | `flutter test integration_test/file_source_test.dart -d 412913d4` | **5 passed**（同上） |
 | 发布包 | `flutter build apk --release` + 平板冷启动 + 逐页截屏 | 成功（67.7 MB），平板竖屏各页与弹层都是 560dp 居中 |
@@ -51,6 +51,10 @@
   `Expected: '收入' Actual: '支出'`）、消费那笔仍然是「支出」、朗读文本也跟着走；
   详情页不能把收入那笔说成「待确认用途」，面板里不能再出现写死的
   「商户消费」与 `•••• 0826`，有单据号时要显示它的后四位（见 `DECISIONS.md` 77 节）。
+* **新建分类马上能用**：分类管理 → 新建 → 回卡片选中它 → 右滑，必须真的确认并落库
+  （修之前红，报 `Expected: <1> Actual: <0>`）；手势失败不许静默 ——
+  「选中的用途换不成分类」与「一个用途都没选就右滑」都要说出原因
+  （见 `DECISIONS.md` 78 节）。
 * **在线升级**：GitHub 响应的各种残缺形态（没有 APK、tag 里没带 build number、
   根本不是对象）、版本号解析、忽略语义（只忽略这一版，更高版本照旧提示）、
   以及**「查不到」绝不能被说成「已是最新」** —— 规则、控制器、界面三层各有用例。
