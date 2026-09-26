@@ -556,6 +556,17 @@ $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 > 验完已恢复现场：新建的测试细分用途「waimai2222」已删除（进归档区），
 > 待选用途改回「餐饮」，没有提交过任何一笔账目。
 
+**同一个包升级到 1.4.0+7（2026-09-26）**：`pubspec.yaml` 改成 `1.4.0+7` 后重新
+`flutter build apk --release`，`adb install -r` 覆盖安装设备上已装的 `1.3.0+6`：
+
+- [x] 包本身：`aapt2 dump badging` → `versionCode=7` / `versionName=1.4.0` / label「有数」；
+      `apksigner verify --print-certs` → 证书 `CN=UnkownGame`（**不是**调试密钥的
+      `CN=Android Debug`），v2 签名
+- [x] 包能打开：冷启动后进程存活，各页正常
+- [x] 数据一条不少：首页 ¥5,565.46 / 73 笔消费 / 2 个来源 / 已经整理 83 笔（78%）、
+      手工补录 7 笔 ¥3,021.11、支付宝 66 笔 ¥2,544.35 —— 与升级前逐项一致
+- [x] 应用内读到的版本号跟着变：「我的」页底部从 Version 1.3.0 → **Version 1.4.0**
+
 ---
 
 ## 已知未验证（明确记录，不当作已完成）
