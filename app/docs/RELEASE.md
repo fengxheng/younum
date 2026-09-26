@@ -122,6 +122,25 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
    `untagged-<hash>` 的占位标签 —— 应用会把结尾那串十六进制里的数字当成 build
    number，于是给所有人推一个假的新版本。
 
+### 几个实测过的细节（2026-09-26 发 1.4.0 时踩到的）
+
+* **上传前把 APK 的文件名改成纯 ASCII**（例如 `younum-1.4.0+8.apk`）：GitHub 会把
+  文件名里的中文去掉 —— `有数-1.4.0+8.apk` 传上去变成 `-1.4.0+8.apk`。应用只认
+  `.apk` 后缀（`UpdateRules.readLatest`），所以**不影响升级**，但页面上很难看。
+* **别用网页上的「Generate release notes」当正文**：它填的是
+  `**Full Changelog**: https://…` 这种 Markdown 行，而应用的更新页是**原样展示**
+  `body` 的 —— 用户看到的就是这串符号。正文要用纯文本的发版说明。
+* **正文在发布之后仍然可以改**（`PATCH /repos/{o}/{r}/releases/{id}` 实测 200）：
+  不可变发布锁的是**资源与标签**，不是正文。发布说明写漏了还有救；
+  资源传错或标签删了，就只能换 build number。
+* **匿名额度是「每 IP 每小时 60 次」**：手机上按「检查更新」、应用启动时的自动
+  检查、同一出口 IP 上其它程序（包括命令行调 `api.github.com`）都算在这 60 次里。
+  用完就返回 403，应用显示「版本信息读不到（HTTP 403）」，等到 Reset 时间自己会好。
+  发版当天别反复点「检查更新」。
+* 发完之后可以自己核一遍**应用会读到什么**：`GET /repos/{o}/{r}/releases/latest`
+  里 `tag_name` 末尾的数字就是 versionCode、`body` 就是更新说明、`assets` 里要有一个
+  `.apk`。这三样齐了，升级路径就是通的。
+
 ### 发布说明会原样显示在应用的更新页里
 
 更新页把 Release 的正文当**纯文本**展示，不会渲染 Markdown。用 `##`、`**`、
