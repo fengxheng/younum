@@ -2241,4 +2241,50 @@ release 断言关闭、最多是动画不自然。这是 Material 的 SnackBar h
 「点击改名或换图标」，进去却发现名字改不了（只读 + 说明）。现在分开写：
 内置的显示「内置名称，只能换图标」。
 
+## 83. 标签名 `v1.4.0+7` 永久作废（发 1.4.0 时撞上的，最后改用 `+8`）
+
+**现象**：`git push origin 'v1.4.0+7'` 报
+
+```text
+remote: error: GH013: Repository rule violations found for refs/tags/v1.4.0+7.
+remote: - Cannot create ref due to creations being restricted.
+ ! [remote rejected] v1.4.0+7 -> v1.4.0+7 (push declined due to repository rule violations)
+```
+
+**排查过程（结论有证据，不是猜的）**：
+
+1. 这个标签**推成功过**：`git ls-remote --tags origin` 当时能看到
+   `refs/tags/v1.4.0+7 -> 26c7073`。之后再查，它**从远端消失了** —— 被删过。
+2. 现在重建它：`git push` 报上面的错；直接调 REST
+   `POST /repos/.../git/refs`（ref = `refs/tags/v1.4.0+7`）报
+   `422 Reference update failed`。
+3. **对照实验**（同一个账号、同一条通道）：新名字
+   `git push origin HEAD:refs/tags/zz-ruleset-probe` **成功**；
+   REST 建 `refs/tags/zz-api-probe` **也成功**（两个随即都删掉、远端已清干净）。
+   ⇒ 建 ref 这件事本身没问题，**只有 `v1.4.0+7` 这个特定名字不行**。
+4. 规则查了个遍：仓库 rulesets **0 条**（REST `/rulesets` 与 GraphQL
+   `repository.rulesets.totalCount` 都是 0）、旧版 `tags/protection` 没有、
+   owner 不是 org（无 org 级规则）。
+
+**根因**：仓库开着「Release 不可变」。这个名字一旦被 Release 占过（哪怕是草稿）、
+随后又被删掉，GitHub 就把名字**永久**扣下：可见的规则列表里什么都没有，所以
+**Settings → Rules 里也没有东西可删/可放行**。`RELEASE.md` 第 5 节记的
+`v1.2.1+4` 是同一回事（当时只看到 `tag_name was used by an immutable release`
+这条更直白的报错，就记成了「API 建 ref 被禁」，其实 API 是好的）。
+
+**修法**：换一个没被占用的 build number —— `1.4.0+7` 改成 `1.4.0+8`
+（版本名仍是 `1.4.0`，用户看到的还是 1.4.0），重编包、改标签。
+
+**教训（写进 `RELEASE.md` 了）**：
+
+* **别删发布相关的标签，也别删 Release。** 删了名字就作废，只能往后加号。
+* 判定一个名字还能不能用，一条命令就够：
+  `git push --dry-run origin '<tag>'` —— 但要注意 dry-run **不会**触发 GitHub
+  的规则检查（这次它对着作废的名字照样报 `[new tag]`），所以别拿它当准；
+  真正的判定是**真推一次**，或者先 `git ls-remote --tags origin` 看名字有没有被用过。
+* 实验性的名字别用真版本号（我用的是 `zz-` 开头的，作废了也不可惜）。
+
+**验证**：`1.4.0+8` 的标签一次推成功；包重编后 `versionCode=8` /
+`versionName=1.4.0`，覆盖安装到平板上账目一条不少（见 `TEST_REPORT.md`）。
+
 

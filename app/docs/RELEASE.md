@@ -75,7 +75,7 @@ storeFile=D:\\dev\\younum\\keystore\\younum_keystore.jks
 * ⚠️ **keystore 与两个密码必须另存一份**（U 盘、密码管理器）。丢了以后这个应用
   再也发不出能覆盖安装的更新，用户只能卸载重装。
 * 密码不要贴进聊天、工单、提交信息；`key.properties` 也永远不要提交。
-* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.4.0+7`）。**在线升级只看
+* 版本号在 `app/pubspec.yaml` 的 `version:`（现在 `1.4.0+8`）。**在线升级只看
   `+` 后面的 build number（versionCode）**，所以每次发布都要让它 +1。
   ⚠️ `+` 后面的数字 **只增不减**：它是 versionCode，比当前安装的小就不会被
   当成新版本（也不会送更新提示），Android 也不让低 versionCode 覆盖安装。
@@ -105,17 +105,22 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 1. **发布之后就不能再加资源了。** 直接建一个「已发布」的 Release，APK 传不上去：
    `422 Cannot upload assets to an immutable release`。
    正确顺序永远是：**先建草稿 → 传 APK → 再发布**。
-2. **标签必须先用 git 推上去。** 这个仓库的规则不允许通过 API 创建 ref，
-   用 API 建带新标签的 Release 会得到这么一串错误：
+2. **标签名一旦被「用掉」，就永久作废**（2026-09-26 实测补充：**删掉标签一样会作废**）。
+   表现是 `git push` 与建 Release 都报
    `Cannot create ref due to creations being restricted` /
-   `tag_name was used by an immutable release` / `Published releases must have a valid tag`。
-   如果忽略它、直接从草稿点发布，GitHub 会**默默地**给一个
+   `Reference update failed (422)` /
+   `tag_name was used by an immutable release`。
+   ⚠️ **这不是能在 Settings → Rules 里改的东西**：实测这个仓库
+   rulesets **0 条**（REST 与 GraphQL 都查了）、没有旧版 tag protection，
+   也不属于任何 org —— 这个限制不可见、改不了，它就是那个名字的墓碎。
+   ⇒ **别删标签、别删 Release**；要重发就加 build number
+   （`v1.2.1+4` → `+5`、`v1.4.0+7` → `+8` 都是这个原因）。
+3. **建议仍然「先用 git 推标签、再建 Release」。** 推标签本身是通的
+   （2026-09-26 实测：新名字 `git push` 能建、REST `POST /git/refs` 也能建），
+   但**让 Release 去替你建标签**会多出一个“这个名字被用掉”的机会；
+   如果哪一步报错又忽略它、直接从草稿点发布，GitHub 会**默默地**给一个
    `untagged-<hash>` 的占位标签 —— 应用会把结尾那串十六进制里的数字当成 build
-   number，于是给所有人推一个假的新版本。所以：**先 `git push origin <tag>`，
-   再建 Release**（标签已存在就不会去建 ref）。
-3. **标签被用掉就不能再用。** 哪怕把 Release 删了，那个标签名也被永久占住
-   （`tag_name was used by an immutable release`）。想重发就得改 build number：
-   这就是 `1.2.1+4` 变成 `1.2.1+5` 的原因。
+   number，于是给所有人推一个假的新版本。
 
 ### 发布说明会原样显示在应用的更新页里
 
@@ -141,14 +146,16 @@ GET https://api.github.com/repos/fengxheng/younum/releases/latest
 ```powershell
 Set-Location app
 # 1. 改版本号：versionName 给人看，+ 后面的 build number 必须比上一版大
-#    （已发布过 1.1.0+2、1.2.0+3、1.2.1+5、1.3.0+6、1.4.0+7；下一个至少是 1.4.1+8）
+#    （已发布过 1.1.0+2、1.2.0+3、1.2.1+5、1.3.0+6、1.4.0+8；下一个至少是 1.4.1+9）
+#    ⚠️ 先用 `git ls-remote --tags origin` 看一眼：被用掉过的名字（比如 v1.4.0+7）
+#      已经永远建不回来了，别再照着旧笔记试
 flutter build apk --release
 # 2. 先把标签推上去（不能靠网页/API 替你建）
 #    标签名里的 + 用引号包住，别让它被当成 refspec 的强制前缀
 #    ⚠ 标签**必须**以 build number 结尾：应用用 `(\d+)\D*$` 取末尾那个数字，
 #      标签写成「1.4.0」会被当成 build 0，升级提示永远不会出来
 #    所以标签名是 `v<版本名>+<build number>`，与 pubspec 的 `version:` 一一对应
-git tag 'v1.4.0+7'; git push origin 'v1.4.0+7'
+git tag 'v1.4.0+8'; git push origin 'v1.4.0+8'
 # 3. 在 GitHub 上 New release：选那个已有标签，**先存为草稿**,
 #    把 app/build/app/outputs/flutter-apk/app-release.apk 拖进去,
 #    然后再点 Publish release（不要勾 pre-release）
